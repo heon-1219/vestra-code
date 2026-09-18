@@ -10,6 +10,22 @@ import { z } from "zod";
  * Variables for steps that have not shipped yet are optional, and become
  * required in the step that introduces them.
  */
+
+/**
+ * `.env.example` declares unset variables as `KEY=""`, so an unconfigured
+ * optional variable arrives as an empty string, not as undefined — and `""`
+ * fails `.url()` while `.optional()` never gets a chance to help. Treat blank
+ * as absent, which is what someone editing the file means by it.
+ */
+function blankAsUndefined(value: unknown): unknown {
+  return typeof value === "string" && value.trim() === "" ? undefined : value;
+}
+
+const optionalString = z.preprocess(blankAsUndefined, z.string().optional());
+const optionalUrl = z.preprocess(
+  blankAsUndefined,
+  z.string().url("must be a full URL including the scheme").optional(),
+);
 const serverSchema = z.object({
   // Step 1
   DATABASE_URL: z
@@ -28,12 +44,12 @@ const serverSchema = z.object({
 
   // Step 4. The LLM provider is configured only by these three, never in code,
   // so the model can be swapped without a deploy that touches source.
-  LLM_BASE_URL: z.string().url().optional(),
-  LLM_API_KEY: z.string().optional(),
-  LLM_MODEL: z.string().optional(),
+  LLM_BASE_URL: optionalUrl,
+  LLM_API_KEY: optionalString,
+  LLM_MODEL: optionalString,
 
   // Step 6 stretch.
-  E2B_API_KEY: z.string().optional(),
+  E2B_API_KEY: optionalString,
 });
 
 export type ServerEnv = z.infer<typeof serverSchema>;
