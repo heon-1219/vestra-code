@@ -31,7 +31,8 @@ Anything here that contradicts `docs/MVP_BUILD_INSTRUCTIONS.md` supersedes the b
 
 ## Open — needs David
 
-- **O1.** The workspace layout in David's hand-drawn wireframe conflicts with the brief's section 3 wireframe in four places (left panel: file tree vs feature list; center: live preview vs the map; a version-control panel that section 4 puts out of scope; the graph as a permanent full-height panel vs an opt-in tab). To be resolved before Step 3 builds the workspace, with the UI research in hand.
+- **O1.** The workspace layout conflict between David's hand-drawn wireframe and the brief's section 3 wireframe. **Researched and answered in `docs/UI_DIRECTION.md` — awaiting David's ruling.** Three of the four conflicts resolved on evidence: the centre panel belongs to the live preview and the map is its tenant (David's wireframe is right and the brief is behind the field — Cursor 2.0, VS Code Agent Host, Windsurf Wave 10 and Zed all converged on that shell within twelve months); the left panel leads with features and keeps Files as a second tab (a file tree is developer muscle memory, and the tool most of these users learned on does not show them one); the version-control panel stays out per section 4. The graph stays an opt-in tab.
+- **O4.** Which UI direction to build. Three were generated and judged by three independent lenses; the top two tied at 20.5 and 20 out of 30 with opposite profiles. My recommendation is a blend — see `docs/UI_DIRECTION.md` section 2. The tradeoff is real: the higher-scoring direction is also the one most likely to fail on David's actual repo.
 - ~~**O2.** What "deployed in an hour" means.~~ Moot — deadline is now two days (D4).
 
 ## From the stack audit, 2026-09-18 (25 agents, verified against current docs)
