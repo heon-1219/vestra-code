@@ -464,12 +464,19 @@ function Stopped({
           다시 시도하기
         </button>
       ) : source === "upload" ? (
-        // D66: there is no origin to fetch from, and section 3 means we kept no
-        // copy. Asking for the folder again is the honest answer, and this is
-        // the first place the trust promise costs the user something visible.
+        /*
+         * Reached only by a project uploaded before we started keeping files.
+         *
+         * This used to be the answer for every upload — there was no origin to
+         * fetch from and we kept no copy, so asking for the folder again was
+         * the honest thing to say. Uploads keep their files now, so a retry is
+         * offered like any other project and this branch is the older case:
+         * rows that predate the change. It says that, rather than the flat "we
+         * do not have it" that is no longer true of anything we store today.
+         */
         <p className="mt-3 text-[13px] leading-[1.75] text-said-faint">
-          올려주신 폴더는 원본을 가지고 있지 않아서 다시 읽을 수 없어요. 폴더를 다시
-          올려 주세요.
+          이 프로젝트는 파일을 보관하기 전에 올리셔서, 폴더를 한 번 더
+          골라주셔야 다시 읽을 수 있어요.
         </p>
       ) : null}
     </div>

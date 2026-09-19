@@ -2,10 +2,12 @@ import { and, eq } from "drizzle-orm";
 import type { NextRequest } from "next/server";
 import { z } from "zod";
 
-import { startAnalysis } from "@/analysis/pipeline";
+import { NOT_STORED_MESSAGE } from "@/analysis/ingest/restore";
+import { startAnalysis, type AnalysisProject } from "@/analysis/pipeline";
 import { db } from "@/db";
 import { projects } from "@/db/schema";
 import { getGithubToken } from "@/lib/github/token";
+import { storageUsageFor } from "@/lib/preview/store";
 import { getSession } from "@/lib/session";
 
 /**
@@ -67,33 +69,27 @@ export async function POST(
   // the token can only be read while the request's cookies are still in scope.
   const githubToken = await getGithubToken(request.headers);
 
-  // An uploaded folder cannot be re-analysed from here: there is no origin to
-  // fetch from, and section 3 means we did not keep a copy. The honest answer
-  // is to ask for the folder again rather than to fail obscurely.
+  // An uploaded folder has no origin to fetch from, so a re-read is possible
+  // only for a project whose files we kept. Asked here rather than left to the
+  // run: a project uploaded before we kept anything should meet a sentence it
+  // can act on, not a run that starts, spins and then fails. One indexed count.
   if (project.source === "upload") {
-    return Response.json(
-      {
-        message:
-          "올려주신 폴더는 다시 분석하려면 폴더를 한 번 더 선택해 주세요. 코드를 보관하지 않아서 다시 읽을 방법이 없어요.",
-      },
-      { status: 400 },
-    );
+    const kept = await storageUsageFor(db, project.id);
+    if (kept.rows === 0) {
+      return Response.json({ message: NOT_STORED_MESSAGE }, { status: 400 });
+    }
   }
 
-  if (!project.repoOwner || !project.repoName || !project.defaultBranch) {
+  const analysisProject = toAnalysisProject(project);
+  if (!analysisProject) {
     return Response.json({ message: NOT_FOUND }, { status: 404 });
   }
 
+  // No `upload` payload, ever, from this endpoint. Nobody picked a folder to
+  // get here, so the run rebuilds one from what we stored.
   const outcome = await startAnalysis({
     db,
-    project: {
-      id: project.id,
-      source: "github",
-      repoOwner: project.repoOwner,
-      repoName: project.repoName,
-      defaultBranch: project.defaultBranch,
-      kind: project.kind,
-    },
+    project: analysisProject,
     githubToken,
   });
 
@@ -107,4 +103,31 @@ export async function POST(
     { runId: outcome.runId, started: outcome.started },
     { status: 202 },
   );
+}
+
+/**
+ * The row as the pipeline wants it, or null when there is nothing to run on.
+ *
+ * A GitHub project missing its owner, name or branch is a row that should not
+ * exist. There is nothing to fetch and nothing to tell the user beyond "we
+ * could not find it" — the same answer as a project that is not theirs, for the
+ * same reason.
+ */
+function toAnalysisProject(
+  project: typeof projects.$inferSelect,
+): AnalysisProject | null {
+  if (project.source === "upload") {
+    return { id: project.id, source: "upload", kind: project.kind };
+  }
+  if (!project.repoOwner || !project.repoName || !project.defaultBranch) {
+    return null;
+  }
+  return {
+    id: project.id,
+    source: "github",
+    repoOwner: project.repoOwner,
+    repoName: project.repoName,
+    defaultBranch: project.defaultBranch,
+    kind: project.kind,
+  };
 }

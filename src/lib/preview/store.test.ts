@@ -3,11 +3,14 @@ import { describe, expect, it } from "vitest";
 import type { Db } from "@/db";
 
 import {
+  listProjectFiles,
+  readProjectFiles,
   STORE_BUDGET_BYTES,
   STORE_MAX_ROWS,
   storeDecision,
   storeProjectFiles,
   type StorableFile,
+  type StoredFile,
 } from "./store";
 
 /**
@@ -48,7 +51,11 @@ describe("storeDecision", () => {
 
   it("refuses a kind with no viewer, because storing it helps nobody", () => {
     // The person still could not open it; the bytes would be pure cost.
-    const decision = storeDecision("data/report.xlsx", 2_000, STORE_BUDGET_BYTES);
+    //
+    // A zip rather than a spreadsheet, and that is the point: which formats have
+    // a viewer changes as viewers are written, and this test is about the rule,
+    // not about one extension. An archive is one we will never draw.
+    const decision = storeDecision("archive/backup.zip", 2_000, STORE_BUDGET_BYTES);
     expect(decision).toMatchObject({ keep: false, reason: "unsupported" });
   });
 
@@ -75,13 +82,13 @@ describe("storeProjectFiles", () => {
     const { db, batches } = fakeDb();
     const outcome = await storeProjectFiles(db, "p1", [
       file("src/a.ts", 100),
-      file("data/b.xlsx", 100),
+      file("archive/b.zip", 100),
       file("img/c.png", 100),
     ]);
 
     expect(outcome.stored).toBe(2);
     expect(outcome.storedBytes).toBe(200);
-    expect(outcome.refused).toEqual([{ path: "data/b.xlsx", reason: "unsupported" }]);
+    expect(outcome.refused).toEqual([{ path: "archive/b.zip", reason: "unsupported" }]);
     expect(batches).toHaveLength(1);
   });
 
@@ -151,9 +158,79 @@ describe("storeProjectFiles", () => {
 
   it("writes nothing when there is nothing to write", async () => {
     const { db, batches } = fakeDb();
-    const outcome = await storeProjectFiles(db, "p1", [file("a.xlsx", 10)]);
+    const outcome = await storeProjectFiles(db, "p1", [file("a.zip", 10)]);
     expect(outcome.stored).toBe(0);
     // An empty INSERT is a syntax error in Postgres, so this is not cosmetic.
     expect(batches).toHaveLength(0);
+  });
+});
+
+/** Records the columns of each SELECT, which is half of what is under test. */
+function fakeReadDb(rows: StoredFile[]) {
+  const asked: string[][] = [];
+
+  type Chain = {
+    from: () => Chain;
+    where: () => Chain;
+    orderBy: () => Promise<unknown[]>;
+  };
+
+  const db = {
+    select(columns: Record<string, unknown>) {
+      const wanted = Object.keys(columns);
+      asked.push(wanted);
+      const answer = wanted.includes("content")
+        ? rows
+        : rows.map((row) => ({ path: row.path, size: row.size }));
+      const chain: Chain = {
+        from: () => chain,
+        where: () => chain,
+        orderBy: () => Promise.resolve(answer),
+      };
+      return chain;
+    },
+  };
+
+  return { db: db as unknown as Db, asked };
+}
+
+describe("reading files back", () => {
+  const kept: StoredFile[] = [
+    { path: "src/app.ts", size: 3, content: Buffer.from("abc", "utf8") },
+  ];
+
+  it("lists what a project kept without moving a byte of it", async () => {
+    const { db, asked } = fakeReadDb(kept);
+    const listed = await listProjectFiles(db, "p1");
+
+    expect(listed).toEqual([{ path: "src/app.ts", size: 3 }]);
+    // The whole reason this is not one function: a project may hold 40 MB of
+    // photographs, and asking what it has must not fetch them.
+    expect(asked).toEqual([["path", "size"]]);
+  });
+
+  it("fetches the bytes only when asked for named files", async () => {
+    const { db, asked } = fakeReadDb(kept);
+    const files = await readProjectFiles(db, "p1", ["src/app.ts"]);
+
+    expect(files[0].content.toString("utf8")).toBe("abc");
+    expect(asked[0]).toContain("content");
+  });
+
+  it("asks nothing at all when nothing is named", async () => {
+    const { db, asked } = fakeReadDb(kept);
+    // `IN ()` is not valid SQL, and "none of them" is a real question with a
+    // real answer rather than an error.
+    await expect(readProjectFiles(db, "p1", [])).resolves.toEqual([]);
+    expect(asked).toHaveLength(0);
+  });
+
+  it("reads in batches rather than one enormous IN list", async () => {
+    const { db, asked } = fakeReadDb([]);
+    const paths = Array.from({ length: 1_200 }, (_, i) => `src/f${i}.ts`);
+    await readProjectFiles(db, "p1", paths);
+
+    // One bound parameter per path against Postgres' ceiling of 65,535.
+    expect(asked).toHaveLength(3);
   });
 });

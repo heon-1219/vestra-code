@@ -6,6 +6,7 @@ import { analysisRuns } from "@/db/schema";
 
 import type { EventSink } from "./events";
 import { ingestRepo, LIMIT_MESSAGES, type IngestOutcome } from "./ingest";
+import { ingestStoredUpload } from "./ingest/restore";
 import { ingestUpload, type UploadPayload } from "./ingest/upload";
 import { persistGraph, promoteRun } from "./persist";
 import {
@@ -33,10 +34,11 @@ import { createTypescriptAnalyzer } from "./typescript/analyzer";
 /**
  * A project the pipeline can run on, discriminated by where its files come from.
  *
- * A union rather than optional fields, because the two cases differ in a way
- * that matters downstream: a GitHub project can have its source re-fetched on
- * demand, which is what section 3's promise rests on, and an uploaded folder
- * cannot. Making that a type-level distinction means no code path can forget.
+ * A union rather than optional fields, because the two cases differ in where a
+ * run gets its files: a GitHub project is fetched from GitHub every time, and
+ * an uploaded folder is either handed to us by the browser that picked it or
+ * rebuilt from the copy we kept. Making that a type-level distinction means no
+ * code path can forget which it is holding.
  */
 export type AnalysisProject =
   | {
@@ -57,12 +59,13 @@ export type RunAnalysisInput = {
   db: Db;
   project: AnalysisProject;
   /**
-   * Required when `project.source` is "upload", and meaningless otherwise.
+   * The folder, when someone has just picked one. Meaningless for GitHub.
    *
-   * Held in memory for the life of the run rather than persisted: section 3
-   * promises we do not keep the user's source, and an upload is the one case
-   * where there is no origin to re-fetch from, so keeping it would be the only
-   * copy in existence.
+   * Present for the first analysis and absent for every re-read after it: the
+   * browser has the folder open once, and nobody should have to find it again
+   * to re-read a project we already hold. Without it the run rebuilds the same
+   * input from `project_files` — see `ingest/restore.ts`, which also decides
+   * what to say about a project uploaded before we kept anything.
    */
   upload?: UploadPayload;
   runId: string;
@@ -151,7 +154,7 @@ export function startAnalysis(input: {
   db: Db;
   project: AnalysisProject;
   githubToken: string | null;
-  /** Required when the project's source is "upload". */
+  /** The folder, when someone has just picked one. A re-read passes nothing. */
   upload?: UploadPayload;
 }): Promise<StartAnalysisResult> {
   const pending = starting.get(input.project.id);
@@ -245,12 +248,18 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
 
     let outcome: IngestOutcome;
     if (project.source === "upload") {
-      if (!upload) {
-        throw new AnalysisFailure(
-          "올려주신 파일을 찾지 못했어요. 폴더를 다시 선택해 주세요.",
-        );
+      if (upload) {
+        outcome = { ok: true, value: await ingestUpload(upload) };
+      } else {
+        // No folder in hand, so this is a re-read: build the same input from
+        // the files we kept when it was first uploaded. It refuses rather than
+        // returning an empty folder, because an empty ingest succeeds and a
+        // successful run sweeps — a project we cannot rebuild would have its
+        // map deleted by the very click meant to refresh it.
+        const restored = await ingestStoredUpload(db, project.id);
+        if (!restored.ok) throw new AnalysisFailure(restored.message);
+        outcome = { ok: true, value: restored.value };
       }
-      outcome = { ok: true, value: await ingestUpload(upload) };
     } else {
       outcome = await ingestRepo(
         project.repoOwner,

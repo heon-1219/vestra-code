@@ -6,6 +6,11 @@ import { describe, expect, it } from "vitest";
 import type { Db } from "@/db";
 
 import type { AnalysisEvent } from "./events";
+import {
+  ingestStoredUpload,
+  NO_CODE_MESSAGE,
+  NOT_STORED_MESSAGE,
+} from "./ingest/restore";
 import { selectAnalyzer } from "./pipeline";
 import { createRunStore } from "./run-store";
 import { createShallowAnalyzer } from "./shallow/analyzer";
@@ -131,6 +136,159 @@ describe("analyzer selection", () => {
     const deep = createTypescriptAnalyzer();
     const contested = kinds.filter((kind) => shallow.handles(kind) && deep.handles(kind));
     expect(contested).toEqual([]);
+  });
+});
+
+/**
+ * The other half of the upload story: what a run is handed when nobody picked
+ * a folder.
+ *
+ * Tested without a database because everything that can go wrong here is a
+ * decision rather than SQL — which stored rows are code, where the asset list
+ * comes from now that nothing holds it, and what we say about a project we
+ * cannot rebuild. The round trip is the opt-in DB test's job.
+ */
+type KeptRow = { path: string; size: number; content?: string };
+type FileNodeRow = { filePath: string | null; metadata: Record<string, unknown> };
+
+/**
+ * A database holding one project's kept files and the file nodes of its map.
+ *
+ * The `WHERE path IN (...)` of a read is not emulated: no test below keeps a
+ * file the restore would not ask for, so handing back everything is the same
+ * answer Postgres would give.
+ */
+function keptDb(kept: KeptRow[], fileNodes: FileNodeRow[] = []) {
+  type Chain = {
+    from: () => Chain;
+    where: () => Chain;
+    orderBy: () => Promise<unknown[]>;
+  };
+
+  const db = {
+    select(columns: Record<string, unknown>) {
+      const wanted = Object.keys(columns);
+      const answer: unknown[] = wanted.includes("metadata")
+        ? fileNodes
+        : kept.map((row) =>
+            wanted.includes("content")
+              ? {
+                  path: row.path,
+                  size: row.size,
+                  content: Buffer.from(row.content ?? "", "utf8"),
+                }
+              : { path: row.path, size: row.size },
+          );
+      const chain: Chain = {
+        from: () => chain,
+        where: () => chain,
+        orderBy: () => Promise.resolve(answer),
+      };
+      return chain;
+    },
+  };
+
+  return db as unknown as Db;
+}
+
+describe("re-reading an uploaded folder from what we kept", () => {
+  it("says so plainly when the project was uploaded before we kept files", async () => {
+    // The case that has to be right: those rows do not exist and never will, so
+    // the only way forward is the folder on their machine. Drawing an empty map
+    // instead would delete the one they already have.
+    const outcome = await ingestStoredUpload(keptDb([]), "p1");
+
+    expect(outcome).toEqual({ ok: false, message: NOT_STORED_MESSAGE });
+    expect(NOT_STORED_MESSAGE).toContain("폴더를 한 번 더 골라주셔야 해요");
+  });
+
+  it("refuses when what we kept holds no code at all", async () => {
+    // A picture is not something an analyzer can read. Running on it would
+    // succeed with an empty graph, and a successful run sweeps.
+    const outcome = await ingestStoredUpload(
+      keptDb([{ path: "public/logo.png", size: 2_048 }]),
+      "p1",
+    );
+
+    expect(outcome).toEqual({ ok: false, message: NO_CODE_MESSAGE });
+  });
+
+  it("rebuilds the folder, assets included, from the stored text and the map", async () => {
+    const outcome = await ingestStoredUpload(
+      keptDb(
+        [
+          {
+            path: "src/price.ts",
+            size: 44,
+            content: "export function formatPrice(n: number) { return n; }\n",
+          },
+        ],
+        [
+          { filePath: "src/price.ts", metadata: { size: 44 } },
+          // A video is never previewable, so its bytes were never stored and
+          // this node is the only record that the folder contains it.
+          {
+            filePath: "public/intro.mp4",
+            metadata: { asset: true, size: 9_000_000 },
+          },
+        ],
+      ),
+      "p1",
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+
+    try {
+      const files = outcome.value.files;
+      expect(files.map((file) => file.path).sort()).toEqual([
+        "public/intro.mp4",
+        "src/price.ts",
+      ]);
+
+      // Text comes back byte for byte, and on disk — ts-morph resolves modules
+      // through the filesystem, which is why this goes through `ingestUpload`
+      // rather than beside it.
+      const code = files.find((file) => file.path === "src/price.ts");
+      expect(code?.read?.()).toContain("formatPrice");
+
+      // And the asset node survives the re-read. Losing it would mean the map
+      // quietly stopped being able to say "이 영상은 아무 데서도 안 써요".
+      const video = files.find((file) => file.path === "public/intro.mp4");
+      expect(video?.read).toBeNull();
+      expect(video?.size).toBe(9_000_000);
+    } finally {
+      await outcome.value.cleanup();
+    }
+  });
+
+  it("reports a file whose bytes we do not have, so its place on the map survives", async () => {
+    const outcome = await ingestStoredUpload(
+      keptDb(
+        [{ path: "src/app.ts", size: 20, content: "export const a = 1;\n" }],
+        [
+          { filePath: "src/app.ts", metadata: { size: 20 } },
+          { filePath: "src/gone.ts", metadata: { size: 31 } },
+        ],
+      ),
+      "p1",
+    );
+
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+
+    try {
+      // Skipped rather than absent: the pipeline hands these paths to
+      // `promoteRun`, which carries their rows past the sweep (D37). Absent,
+      // the node would go and the cascade would take healthy files' edges to it.
+      expect(outcome.value.skipped).toContainEqual({
+        path: "src/gone.ts",
+        reason: expect.stringContaining("보관해 둔 내용이 없어서"),
+      });
+      expect(outcome.value.files.map((file) => file.path)).toEqual(["src/app.ts"]);
+    } finally {
+      await outcome.value.cleanup();
+    }
   });
 });
 

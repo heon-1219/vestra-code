@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 
 import {
   previewShapeFor,
@@ -36,8 +36,9 @@ import { projectFiles } from "@/db/schema";
  *      chunking keeps each round trip a size Postgres and Neon are happy with.
  *
  * Nothing here is reached for a GitHub project. The callers are the upload
- * endpoints, and the preview endpoint reads back only when
- * `projects.source = 'upload'`.
+ * endpoints, and the two readers — the preview endpoint and the re-read that
+ * rebuilds an analysis from what we kept — only ever ask about a project whose
+ * `projects.source` is `'upload'`.
  */
 
 /** What one project may keep. Comfortably more than a codebase, less than a photo library. */
@@ -51,6 +52,16 @@ export const STORE_BUDGET_BYTES = 40 * 1024 * 1024;
  * nowhere near this one.
  */
 export const STORE_MAX_ROWS = 6000;
+
+/**
+ * How many paths go in a single SELECT when reading files back.
+ *
+ * The same reasoning as `WRITE_CHUNK` in `analysis/persist.ts`: one bound
+ * parameter per path against Postgres' ceiling of 65,535, and a project may
+ * hold `STORE_MAX_ROWS` of them. 500 keeps a statement readable in a slow-query
+ * log and is still one round trip for any real project.
+ */
+const READ_CHUNK = 500;
 
 /** How many bytes of file content go in a single INSERT. */
 const BATCH_BYTES = 2 * 1024 * 1024;
@@ -199,4 +210,70 @@ export async function storeProjectFiles(
   await flush();
 
   return { stored, storedBytes, refused };
+}
+
+/** One file we kept, described rather than moved. */
+export type StoredFileInfo = { path: string; size: number };
+
+/** One file we kept, bytes and all. */
+export type StoredFile = StoredFileInfo & { content: Buffer };
+
+/**
+ * What a project has kept, by path and size, without moving a byte.
+ *
+ * This is what the `size` column is for (see the schema). A project may hold
+ * 40 MB of photographs beside 200 KB of code, and the caller that rebuilds an
+ * analysis has to know which rows are code *before* it decides what to read —
+ * selecting `content` to find out would move the photographs to learn their
+ * names.
+ *
+ * Ordered by path so that two reads of the same project hand their caller the
+ * same list in the same order. Postgres is free to return rows in any order it
+ * likes, and an analysis whose file list shuffles between reads is one nobody
+ * can compare with the last one.
+ */
+export async function listProjectFiles(
+  db: Db,
+  projectId: string,
+): Promise<StoredFileInfo[]> {
+  return db
+    .select({ path: projectFiles.path, size: projectFiles.size })
+    .from(projectFiles)
+    .where(eq(projectFiles.projectId, projectId))
+    .orderBy(projectFiles.path);
+}
+
+/**
+ * The bytes of the files named, in batches.
+ *
+ * Named rather than "all of them", because the caller has already decided which
+ * rows it can use and the rest are weight it would carry for nothing. Asking
+ * for none of them is a legitimate question with a legitimate answer — the loop
+ * simply does not run, which also keeps an empty `IN ()` out of the SQL.
+ */
+export async function readProjectFiles(
+  db: Db,
+  projectId: string,
+  paths: readonly string[],
+): Promise<StoredFile[]> {
+  const files: StoredFile[] = [];
+  for (let start = 0; start < paths.length; start += READ_CHUNK) {
+    const batch = paths.slice(start, start + READ_CHUNK);
+    const rows = await db
+      .select({
+        path: projectFiles.path,
+        size: projectFiles.size,
+        content: projectFiles.content,
+      })
+      .from(projectFiles)
+      .where(
+        and(
+          eq(projectFiles.projectId, projectId),
+          inArray(projectFiles.path, batch),
+        ),
+      )
+      .orderBy(projectFiles.path);
+    files.push(...rows);
+  }
+  return files;
 }
