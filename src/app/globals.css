@@ -308,57 +308,114 @@
 }
 
 /**
- * Aurora motion: it breathes, it does not wander.
+ * Aurora motion: slow enough to be weather, not a screensaver.
  *
- * Every layer is centred on the same point and every keyframe scales or fades
- * about that point — nothing translates. Translating is precisely what moves a
- * centre off centre, and the earlier drifting version read as restless because
- * the eye kept following the bright part to wherever it had gone.
+ * Four tracks per light — translate, rotate, scale, opacity — because a real
+ * aurora does not do one thing. It drifts, it leans, it thickens and thins.
+ * One track can only look like a loop; four on periods that share no factor
+ * recombine over hours, which is longer than anyone will watch.
  *
- * The keyframes scale and fade and do NOTHING else. Tailwind v4 centres with
- * the independent `translate` property rather than with `transform`, and those
- * two COMPOSE — so a `translate(-50%, 0)` written in here as well is applied on
- * top of the centring, and the layer lands half its own width to the left.
- * Measured: the crown sat 535px off the midline until this was removed.
+ * The previous version scaled 6% over 31s and did nothing else. That works out
+ * to roughly half a pixel per second at the edge of a layer the size of this
+ * one — below the threshold at which anything reads as moving — so the sky
+ * appeared to move only when the page scrolled past it. The fix is not "more
+ * motion": it is motion that goes somewhere, slowly.
  *
- * The two periods are long and mutually prime (31s / 53s) so they never fall
- * into step. A visible loop is what turns atmosphere into a screensaver.
+ * These are the INDEPENDENT transform properties, and they are separate
+ * animations on purpose. `transform` is a single property, so four keyframes
+ * writing it would mean three of them silently losing; `translate`, `rotate`
+ * and `scale` are three properties that compose, and Chrome composites each on
+ * its own. The trap they come with: Tailwind's centring utilities write the
+ * `translate` property too, and it composes rather than overrides — a layer
+ * centred that way and animated here lands half its own width off (measured at
+ * 535px, and on screen it read only as "the left side is brighter"). Both
+ * layers are anchored by negative insets and carry no translate utility, which
+ * is the precondition for everything below.
+ *
+ * Amplitudes are percentages of each layer's own box, which is larger than the
+ * viewport: 4% is about 60px of travel. Enough to see if you rest your eyes on
+ * it, not enough to catch the eye of someone reading.
  */
-@keyframes aurora-crown {
+@keyframes aurora-drift-crown {
   0%,
-  100% { transform: scale(1); opacity: 1; }
-  50%  { transform: scale(1.06); opacity: 0.86; }
+  100% { translate: 0% 0%; }
+  27%  { translate: 4% -2.5%; }
+  63%  { translate: -3% 2.5%; }
+}
+@keyframes aurora-turn-crown {
+  0%,
+  100% { rotate: 0deg; }
+  50%  { rotate: 5deg; }
+}
+/* Non-uniform on purpose: scaling one axis against the other is what makes a
+   round glow read as a curtain changing shape rather than a light dimming. */
+@keyframes aurora-swell-crown {
+  0%,
+  100% { scale: 1 1; }
+  38%  { scale: 1.09 0.95; }
+  71%  { scale: 0.96 1.07; }
+}
+@keyframes aurora-veil-crown {
+  0%,
+  100% { opacity: 1; }
+  44%  { opacity: 0.74; }
 }
 
-/* Not centred with a transform, so no translate here — adding one would push
-   it off the corner it is meant to anchor. */
-@keyframes aurora-deep {
+/* The far light. Same four tracks, every period longer — distance is the one
+   cue that makes two lights read as one sky rather than as two decorations,
+   and in a sky the far thing is the thing that appears to move least. */
+@keyframes aurora-drift-deep {
   0%,
-  100% { transform: scale(1); opacity: 1; }
-  50%  { transform: scale(1.07); opacity: 0.82; }
+  100% { translate: 0% 0%; }
+  34%  { translate: -3% 2%; }
+  68%  { translate: 2.5% -2%; }
+}
+@keyframes aurora-turn-deep {
+  0%,
+  100% { rotate: 0deg; }
+  50%  { rotate: -4deg; }
+}
+@keyframes aurora-swell-deep {
+  0%,
+  100% { scale: 1 1; }
+  42%  { scale: 0.95 1.08; }
+  74%  { scale: 1.07 0.97; }
+}
+@keyframes aurora-veil-deep {
+  0%,
+  100% { opacity: 1; }
+  52%  { opacity: 0.78; }
 }
 
+/* Every period is prime, so no two tracks share a factor and the pattern does
+   not return to its starting pose within any session. */
 .aurora-crown {
-  animation: aurora-crown 31s ease-in-out infinite;
-  will-change: transform, opacity;
+  animation:
+    aurora-drift-crown 73s ease-in-out infinite,
+    aurora-turn-crown 97s ease-in-out infinite,
+    aurora-swell-crown 61s ease-in-out infinite,
+    aurora-veil-crown 83s ease-in-out infinite;
+  will-change: translate, rotate, scale, opacity;
 }
 .aurora-deep {
-  animation: aurora-deep 53s ease-in-out infinite;
-  will-change: transform, opacity;
+  animation:
+    aurora-drift-deep 101s ease-in-out infinite,
+    aurora-turn-deep 127s ease-in-out infinite,
+    aurora-swell-deep 79s ease-in-out infinite,
+    aurora-veil-deep 109s ease-in-out infinite;
+  will-change: translate, rotate, scale, opacity;
 }
 
 /*
  * Reduced motion keeps the sky and stops the weather. The gradients are the
- * point; their breathing is not. The layers still need their centring
- * transform, so this pins them at the resting frame rather than removing the
- * transform along with the animation.
+ * point; their drifting is not. Dropping the animations is enough here — the
+ * layers are positioned by insets, so with nothing animating they sit at their
+ * resting pose with no transform to restore.
  */
 @media (prefers-reduced-motion: reduce) {
   .aurora-crown,
   .aurora-deep {
     animation: none;
-    /* No transform here either — the centring lives on the `translate`
-       property and resetting `transform` must not disturb it. */
     will-change: auto;
   }
 }
