@@ -5,6 +5,19 @@ import type { NextConfig } from "next";
 import { AVATAR_HOSTS } from "./src/lib/avatar-hosts";
 
 const nextConfig: NextConfig = {
+  /*
+   * Build a self-contained server, because the production image runs it
+   * directly.
+   *
+   * Without this the runtime container would have to carry every installed
+   * package to run `next start`, including the compiler and test tooling the
+   * app never loads. Tracing the imports instead keeps the image to what the
+   * server actually reaches for — see the runner stage in the Dockerfile, which
+   * copies `public` and `.next/static` in by hand because a standalone build
+   * expects a CDN to serve them and we have none.
+   */
+  output: "standalone",
+
   // There is a stray package-lock.json in the user's home directory, above the
   // repo, and Turbopack otherwise walks up to it and warns. Pin the root to
   // this project so the file tracing is unambiguous.

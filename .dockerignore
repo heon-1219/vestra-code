@@ -1,0 +1,37 @@
+# What must never enter the build context.
+#
+# The first two entries are correctness, not size. `.env.local` holds the real
+# Neon URL and the real OAuth secrets: Next loads it automatically during
+# `next build`, so copying it in would both bake the founder's credentials into
+# an image layer and silently build against the wrong database. `node_modules`
+# is the other one — DECISIONS D39 is about a stray `node_modules` changing how
+# the parser resolves imports, and a host copy would also be the wrong platform
+# for sharp and the SWC binaries.
+
+.env
+.env.*
+node_modules
+
+# Build output. A host `.next` would be copied over and then overwritten, and
+# `next build` inside the container must start from nothing to be reproducible.
+.next
+out
+build
+
+.git
+.gitignore
+
+# Editor, agent and OS noise.
+.claude
+.vscode
+.idea
+.DS_Store
+
+# Not read by the build.
+docs
+*.md
+!README.md
+.vercel
+coverage
+*.tsbuildinfo
+npm-debug.log*
