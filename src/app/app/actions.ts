@@ -13,6 +13,7 @@ import {
   fetchTextFile,
   fetchTree,
   GITHUB_MESSAGES,
+  listUserRepos,
 } from "@/lib/github/api";
 import {
   detectProject,
@@ -141,5 +142,63 @@ export async function addProject(
     deep: detection.deep,
     fileCount: paths.length,
     existing: false,
+  };
+}
+
+export type MyReposState =
+  | { status: "no_github" }
+  | { status: "error"; message: string }
+  | {
+      status: "ok";
+      repos: {
+        owner: string;
+        name: string;
+        fullName: string;
+        description: string | null;
+        language: string | null;
+        pushedAt: string | null;
+        /** Already connected, so the picker can say so instead of duplicating. */
+        connected: boolean;
+      }[];
+      privateCount: number;
+      more: boolean;
+    };
+
+/**
+ * The signed-in user's repositories, for the picker.
+ *
+ * Returns `no_github` rather than an error when the account has no GitHub
+ * token — someone who signed in with Google has done nothing wrong, and the UI
+ * offers them the paste-a-URL path instead.
+ */
+export async function listMyRepos(): Promise<MyReposState> {
+  const session = await requireSession();
+  const token = await getGithubToken(await nextHeaders());
+  if (!token) return { status: "no_github" };
+
+  const result = await listUserRepos(token);
+  if (!result.ok) {
+    return { status: "error", message: GITHUB_MESSAGES[result.error] };
+  }
+
+  const mine = await db
+    .select({ owner: projects.repoOwner, name: projects.repoName })
+    .from(projects)
+    .where(eq(projects.userId, session.user.id));
+  const already = new Set(mine.map((row) => `${row.owner}/${row.name}`));
+
+  return {
+    status: "ok",
+    repos: result.value.repos.map((repo) => ({
+      owner: repo.owner.login,
+      name: repo.name,
+      fullName: repo.full_name,
+      description: repo.description,
+      language: repo.language,
+      pushedAt: repo.pushed_at,
+      connected: already.has(repo.full_name),
+    })),
+    privateCount: result.value.privateCount,
+    more: result.value.more,
   };
 }

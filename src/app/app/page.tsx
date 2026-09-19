@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 
-import { AddProjectForm } from "@/components/app/add-project-form";
+import { AddProject } from "@/components/app/add-project";
 import { db } from "@/db";
 import { projects } from "@/db/schema";
 import { requireSession } from "@/lib/session";
@@ -21,8 +21,8 @@ export default async function AppDashboard() {
     <div className="mx-auto max-w-[1180px] px-6 py-16">
       <h1 className="display-kr text-[30px]">내 프로젝트</h1>
 
-      <div className="mt-8 max-w-[680px]">
-        <AddProjectForm />
+      <div className="mt-8 max-w-[720px]">
+        <AddProject />
       </div>
 
       {myProjects.length === 0 ? (

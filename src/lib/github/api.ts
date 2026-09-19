@@ -197,3 +197,74 @@ export async function fetchTextFile(
     return null;
   }
 }
+
+const userRepoSchema = z.object({
+  full_name: z.string(),
+  name: z.string(),
+  owner: z.object({ login: z.string() }),
+  private: z.boolean(),
+  fork: z.boolean(),
+  archived: z.boolean(),
+  description: z.string().nullable(),
+  default_branch: z.string(),
+  language: z.string().nullable(),
+  pushed_at: z.string().nullable(),
+  html_url: z.string(),
+});
+
+export type UserRepo = z.infer<typeof userRepoSchema>;
+
+export type RepoList = {
+  /** Public, non-archived repos, most recently pushed first. */
+  repos: UserRepo[];
+  /**
+   * How many private repos we saw and are not offering. Shown as a count so the
+   * user is not left wondering where their repo went — the MVP reads public
+   * repositories only, and saying nothing would look like a bug.
+   */
+  privateCount: number;
+  /** True when the account has more repos than one page holds. */
+  more: boolean;
+};
+
+/**
+ * The signed-in user's repositories, for the picker.
+ *
+ * One page of 100, newest push first. Someone with more than 100 repositories
+ * will not find an old one by scrolling anyway, which is what the search box
+ * and the paste-a-URL field are for.
+ */
+export async function listUserRepos(
+  token: string,
+): Promise<GithubResult<RepoList>> {
+  let response: Response;
+  try {
+    response = await fetch(
+      `${GITHUB_API}/user/repos?per_page=100&sort=pushed&affiliation=owner,collaborator,organization_member`,
+      { headers: headers(token), cache: "no-store" },
+    );
+  } catch {
+    return { ok: false, error: "unavailable" };
+  }
+
+  if (!response.ok) {
+    return { ok: false, error: classify(response.status), status: response.status };
+  }
+
+  const parsed = z.array(userRepoSchema).safeParse(await response.json());
+  if (!parsed.success) return { ok: false, error: "malformed" };
+
+  const all = parsed.data;
+  const repos = all
+    .filter((repo) => !repo.private && !repo.archived)
+    .sort((a, b) => (b.pushed_at ?? "").localeCompare(a.pushed_at ?? ""));
+
+  return {
+    ok: true,
+    value: {
+      repos,
+      privateCount: all.filter((repo) => repo.private).length,
+      more: all.length === 100,
+    },
+  };
+}
