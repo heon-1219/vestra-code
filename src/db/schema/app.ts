@@ -1,4 +1,5 @@
 import {
+  customType,
   index,
   integer,
   jsonb,
@@ -326,6 +327,73 @@ export const chatMessages = pgTable(
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (table) => [index("chat_messages_project_idx").on(table.projectId, table.createdAt)],
+);
+
+/**
+ * Postgres `bytea`, which Drizzle has no column helper for.
+ *
+ * `pg` already hands back a Buffer for this type and already accepts one going
+ * in, so both directions are the identity function and the whole purpose of
+ * this block is to say so in the type system. Bytes, not text: an uploaded PNG
+ * is not valid UTF-8, and a `text` column would either mangle it or reject it
+ * depending on the encoding, in both cases at write time and for no benefit.
+ */
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType: () => "bytea",
+});
+
+/**
+ * The bytes of an uploaded project's files.
+ *
+ * **This is the one table in the product that stores a user's source code, and
+ * it exists because "we never keep your code" turned out to be a promise made
+ * to the wrong half of the product.** For a GitHub project it costs the user
+ * nothing: we hold the map, and a preview re-fetches the file from GitHub on
+ * demand. For an uploaded folder there is nothing to re-fetch — the temp
+ * directory is deleted the moment analysis ends — so the same promise meant
+ * every file in the map opened onto an apology. The map is worth much less if
+ * you cannot look at the thing it points to.
+ *
+ * So the rule is narrower than it was, and it is now stated by the schema
+ * rather than by a sentence in the UI: rows exist ONLY for
+ * `projects.source = 'upload'`, they are deleted with the project, and nothing
+ * outside the preview endpoint reads them. A GitHub project still stores no
+ * source, because for a GitHub project the old promise costs nothing to keep.
+ *
+ * Paths are repo-relative with POSIX separators (D18), exactly as `nodes` holds
+ * them, because the preview endpoint looks a file up by the path the map shows
+ * and any second spelling of a path is a bug waiting for a Windows upload.
+ */
+export const projectFiles = pgTable(
+  "project_files",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+
+    /** Repo-relative, POSIX separators — the same spelling `nodes.file_path` uses. */
+    path: text("path").notNull(),
+
+    /**
+     * The size we stored, which is the file's real size. Kept as its own column
+     * so a listing can show it without reading the bytes: `octet_length` on a
+     * bytea is cheap but still touches the value, and this column is what lets
+     * the workspace say "3.2 MB" for a hundred files in one query.
+     */
+    size: integer("size").notNull(),
+
+    content: bytea("content").notNull(),
+
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    // One row per path per project, and the index the preview endpoint reads
+    // by. Unique rather than plain: a second row for the same path would mean
+    // two answers to "show me this file", and the endpoint has no way to
+    // choose between them.
+    uniqueIndex("project_files_project_path_idx").on(table.projectId, table.path),
+  ],
 );
 
 export const generatedPrompts = pgTable(

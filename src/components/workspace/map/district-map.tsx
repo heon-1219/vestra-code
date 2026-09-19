@@ -3,6 +3,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
   ReactNode,
 } from "react";
@@ -10,7 +11,10 @@ import type {
 import type { Certainty, GraphConnection, GraphItem } from "@/lib/graph/view";
 import { KIND_WORDS } from "@/lib/graph/view";
 
+import { previewTargetFor } from "../preview/file-preview";
+
 import { buildBeamIndex, runBeam, type BeamResult } from "./beam";
+import { districtLookup, groupItems, DEFAULT_GROUPING, type Grouping } from "./grouping";
 import { layoutMap, type MapLayout, type PlacedDistrict } from "./layout";
 
 /**
@@ -66,8 +70,20 @@ export type DistrictMapProps = {
    * IME's composition state and eats a half-typed 한글 syllable.
    */
   query?: string;
+  /**
+   * What a territory IS. The map is indifferent to the answer — it packs named
+   * places and the things inside them — so switching is a different picture of
+   * the same project, never a different project.
+   */
+  grouping?: Grouping;
   selectedId?: string | null;
   onSelect?: (id: string | null) => void;
+  /**
+   * Open this item's file. Double-clicking an item on the canvas asks for it,
+   * and so does the 열어보기 button beside every item in the reachable list
+   * below the canvas — a keyboard has no double click.
+   */
+  onOpen?: (id: string) => void;
   onHoverChange?: (id: string | null) => void;
   className?: string;
 };
@@ -253,8 +269,10 @@ export function DistrictMap({
   items,
   connections,
   query = "",
+  grouping = DEFAULT_GROUPING,
   selectedId = null,
   onSelect,
+  onOpen,
   onHoverChange,
   className,
 }: DistrictMapProps) {
@@ -292,7 +310,10 @@ export function DistrictMap({
     return () => observer.disconnect();
   }, []);
 
-  const layout = useMemo(() => layoutMap(items), [items]);
+  const layout = useMemo(
+    () => layoutMap(items, districtLookup(groupItems(items, connections, grouping))),
+    [items, connections, grouping],
+  );
 
   const itemsById = useMemo(() => {
     const map = new Map<string, GraphItem>();
@@ -512,13 +533,26 @@ export function DistrictMap({
    * moving their view out from under them is the rudest thing this screen could
    * do.
    */
+  const groupingRef = useRef(grouping);
   useEffect(() => {
+    /*
+     * A new grouping is a new picture, so the view is fitted again even for
+     * someone who had panned somewhere on purpose. The territory they were
+     * looking into does not exist under the next grouping — keeping their
+     * camera would leave them staring at blank paper and wondering where their
+     * project went. Everything else about their place is kept: the selection
+     * stands, and the item they had chosen is still on screen.
+     */
+    if (groupingRef.current !== grouping) {
+      groupingRef.current = grouping;
+      userMovedRef.current = false;
+    }
     if (userMovedRef.current) {
       requestDraw();
       return;
     }
     fitToBounds();
-  }, [layout, size, fitToBounds, requestDraw]);
+  }, [layout, size, grouping, fitToBounds, requestDraw]);
 
   useEffect(() => {
     requestDraw();
@@ -587,6 +621,16 @@ export function DistrictMap({
     onSelectRef.current = onSelect;
   });
   const selectItem = useCallback((id: string | null) => onSelectRef.current?.(id), []);
+
+  /** Same trick for opening, and for the same reason: the outline is memoised. */
+  const onOpenRef = useRef(onOpen);
+  useEffect(() => {
+    onOpenRef.current = onOpen;
+  });
+  const openItem = useCallback((id: string) => {
+    onOpenRef.current?.(id);
+  }, []);
+  const canOpen = onOpen !== undefined;
 
   const changeHover = useCallback(
     (next: string | null) => {
@@ -708,6 +752,27 @@ export function DistrictMap({
   );
 
   /**
+   * A second click on the same item opens it.
+   *
+   * The first click has already selected it, so by the time this fires the
+   * right panel is showing what the file is — and "누른 걸 한 번 더 누르면 열린다"
+   * is the one gesture a person brings with them from every file manager they
+   * have ever used. It is not the only way in: the panel has a button, the
+   * left list has one per row, and the reachable list below this canvas has
+   * one too, because a keyboard cannot double click.
+   */
+  const onDoubleClick = useCallback(
+    (event: ReactMouseEvent<HTMLCanvasElement>) => {
+      if (!canOpen) return;
+      const world = toWorld(event.clientX, event.clientY);
+      if (!world) return;
+      const hit = itemAt(world.x, world.y);
+      if (hit) openItem(hit);
+    },
+    [canOpen, itemAt, openItem, toWorld],
+  );
+
+  /**
    * Wheel zoom, anchored on the pointer.
    *
    * Attached by hand rather than with `onWheel` because React registers wheel
@@ -816,6 +881,7 @@ export function DistrictMap({
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onDoubleClick={onDoubleClick}
         onPointerLeave={() => changeHover(null)}
         onKeyDown={onKeyDown}
       />
@@ -833,6 +899,15 @@ export function DistrictMap({
               ? "아는 연결이 없어요"
               : `${tooltip.item.usedBy + tooltip.item.uses}개와 이어져 있어요`}
           </p>
+          {/*
+            Said on the thing itself, because a gesture nobody mentions is a
+            gesture nobody finds. Only where it is true: a package has no file.
+          */}
+          {canOpen && previewTargetFor(tooltip.item) ? (
+            <p className="text-[11px] leading-[1.5] text-said-faint">
+              두 번 누르면 열어볼 수 있어요
+            </p>
+          ) : null}
         </div>
       ) : null}
 
@@ -877,6 +952,7 @@ export function DistrictMap({
         districtItems={districtItems}
         itemsById={itemsById}
         onSelect={selectItem}
+        onOpen={canOpen ? openItem : undefined}
       />
     </div>
   );
@@ -900,11 +976,14 @@ const MapOutline = memo(function MapOutline({
   districtItems,
   itemsById,
   onSelect,
+  onOpen,
 }: {
   districts: PlacedDistrict[];
   districtItems: Map<string, string[]>;
   itemsById: Map<string, GraphItem>;
   onSelect: (id: string) => void;
+  /** Undefined when nothing can be opened from here. */
+  onOpen?: (id: string) => void;
 }) {
   return (
     <ul className="sr-only">
@@ -915,11 +994,19 @@ const MapOutline = memo(function MapOutline({
             {(districtItems.get(district.id) ?? []).slice(0, SR_ITEMS_PER_DISTRICT).map((id) => {
               const item = itemsById.get(id);
               if (!item) return null;
+              // A package has no file behind it, so it gets no way to open
+              // one — an offer that cannot be honoured is worse than none.
+              const openable = onOpen !== undefined && previewTargetFor(item) !== null;
               return (
                 <li key={id}>
                   <button type="button" onClick={() => onSelect(id)}>
                     {displayNameOf(item)} · {KIND_WORDS[item.kind]}
                   </button>
+                  {openable ? (
+                    <button type="button" onClick={() => onOpen(id)}>
+                      {displayNameOf(item)} 열어보기
+                    </button>
+                  ) : null}
                 </li>
               );
             })}

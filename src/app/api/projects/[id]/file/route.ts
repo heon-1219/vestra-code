@@ -3,13 +3,15 @@ import type { NextRequest } from "next/server";
 import { z } from "zod";
 
 import {
+  formatBytes,
   isSafeRepoPath,
+  PREVIEW_MESSAGES,
   previewShapeFor,
   tooLargeMessage,
   type PreviewRefusal,
 } from "@/components/workspace/preview/preview-kinds";
 import { db } from "@/db";
-import { analysisRuns, nodes, projects } from "@/db/schema";
+import { analysisRuns, nodes, projectFiles, projects } from "@/db/schema";
 import { fetchRawFile, RAW_MESSAGES } from "@/lib/github/raw";
 import { getGithubToken } from "@/lib/github/token";
 import { getSession } from "@/lib/session";
@@ -67,8 +69,17 @@ const querySchema = z.object({
 
 const UNAUTHENTICATED = "로그인이 필요해요. 다시 로그인한 뒤에 시도해 주세요.";
 const NOT_FOUND = "이 파일을 찾지 못했어요. 지도에서 다시 열어 주세요.";
-const UPLOAD =
-  "이 프로젝트는 내 컴퓨터에서 올려주신 폴더로 만들었어요. 코드를 보관하지 않아서 파일 내용을 다시 보여드릴 수 없어요. 올리셨던 폴더에서 바로 열어보실 수 있어요.";
+/**
+ * An uploaded file we do not have, which after this change is a narrow case:
+ * it was over its kind's ceiling, or it is a kind we cannot draw, or the
+ * project filled its storage budget. Never "we threw your code away".
+ *
+ * Taken from the viewer's own table rather than written again here: the popup
+ * and the endpoint must not be able to describe the same refusal differently.
+ */
+const UPLOAD_MISSING = PREVIEW_MESSAGES.upload;
+const UPLOAD_UNSUPPORTED =
+  "이 파일은 아직 열어볼 수 없어요. 보여드릴 방법을 아직 준비하지 못했어요.";
 const UNSUPPORTED =
   "이 파일은 아직 열어볼 수 없어요. 보여드릴 방법을 아직 준비하지 못했어요. GitHub에서 열어보실 수 있어요.";
 
@@ -122,10 +133,70 @@ export async function GET(
   // The same answer for "no such project" and "somebody else's project".
   if (!project) return refuse("not_found", NOT_FOUND, 404);
 
+  /*
+   * An uploaded folder is served from what we kept, not from an origin.
+   *
+   * This used to be a refusal, on the reasoning that we store no source. That
+   * reasoning was right for GitHub and wrong here: an upload has no origin to
+   * re-fetch from, so the rule did not protect the user's code, it only made
+   * their own map unreadable — and unreadable on the very machine the folder
+   * was not sitting on. Uploads now keep their bytes (see `lib/preview/store`),
+   * and this is the only endpoint that reads them back.
+   *
+   * The stored row is its own authority. There is no `nodes` lookup on this
+   * path because nothing can be in this table that we did not put there during
+   * that project's own upload — the query string cannot name a file we never
+   * stored, which is the same property the `nodes` check buys the GitHub path.
+   */
   if (project.source === "upload") {
-    // D66, second instance: the trust promise costs the user something visible,
-    // and saying so is better than a preview that mysteriously never loads.
-    return refuse("upload", UPLOAD, 409);
+    const [stored] = await db
+      .select({ content: projectFiles.content, size: projectFiles.size })
+      .from(projectFiles)
+      .where(
+        and(
+          eq(projectFiles.projectId, project.id),
+          eq(projectFiles.path, query.data.path),
+        ),
+      )
+      .limit(1);
+
+    if (!stored) return refuse("upload", UPLOAD_MISSING, 409);
+
+    const uploadShape = previewShapeFor(query.data.path);
+    if (uploadShape.contentType === null) {
+      return refuse("unsupported", UPLOAD_UNSUPPORTED, 415);
+    }
+    // A ceiling can move down between the upload and the read. Checking it here
+    // as well means the viewer is never handed more than it agreed to draw.
+    if (stored.size > uploadShape.maxBytes) {
+      return refuse(
+        "too_large",
+        `파일이 ${formatBytes(stored.size)}라 여기서는 열지 않았어요. ${formatBytes(uploadShape.maxBytes)}까지 보여드릴 수 있어요.`,
+        413,
+      );
+    }
+
+    // A view, not a copy. `Buffer` is a `Uint8Array` at runtime but not to
+    // TypeScript's `BodyInit`, and re-allocating up to 20 MB to satisfy a type
+    // would be a real cost paid for a cosmetic reason.
+    const body = new Uint8Array(
+      // `Buffer.buffer` is typed `ArrayBufferLike` because a Uint8Array may in
+      // principle be backed by a SharedArrayBuffer. One handed to us by `pg`
+      // never is — it allocates its own — and `BodyInit` will not take the
+      // wider type, so the narrowing is stated rather than worked around.
+      stored.content.buffer as ArrayBuffer,
+      stored.content.byteOffset,
+      stored.content.byteLength,
+    );
+
+    return new Response(body, {
+      status: 200,
+      headers: previewHeaders(
+        query.data.path,
+        uploadShape.contentType,
+        stored.size,
+      ),
+    });
   }
 
   if (!project.repoOwner || !project.repoName) {
@@ -218,41 +289,57 @@ export async function GET(
     );
   }
 
+  const headers = previewHeaders(
+    query.data.path,
+    shape.contentType,
+    result.value.size,
+  );
+
+  // Straight through. Nothing in this process ever holds the whole file.
+  return new Response(result.value.body, { status: 200, headers });
+}
+
+/**
+ * The headers every preview goes out with, whichever side it came from.
+ *
+ * Shared rather than written twice because these are not formatting: each line
+ * is a decision about somebody's source code, and two copies is how one of them
+ * quietly stops matching the other. An uploaded PNG and a GitHub PNG must be
+ * served under exactly the same rules.
+ *
+ * The content type is ours, derived from the path, never the file's own claim
+ * and never anything the client asked for. `nosniff` is what stops a browser
+ * from deciding for itself that our text/plain is really HTML.
+ *
+ * An SVG is a document, not a picture. It can carry script and can reach other
+ * addresses. Inside an `<img>` tag — the only place the viewer in this
+ * repository ever puts one — the browser already refuses to run it; this
+ * header covers the other door, so somebody who opens the address directly
+ * gets an inert, sandboxed picture rather than a page running on our origin
+ * with their session attached. `style-src` stays open because an SVG's own
+ * `<style>` block is how it is coloured, and a logo drawn in the wrong colours
+ * is a bug we would have shipped for nothing. Not applied to the PDF: the
+ * browser's built-in viewer is itself a sandboxed document, and a `sandbox`
+ * directive is what stops it from opening at all.
+ */
+function previewHeaders(
+  path: string,
+  contentType: string,
+  size: number | null,
+): Headers {
   const headers = new Headers(NO_STORE);
-  headers.set("Content-Type", shape.contentType);
-  headers.set("Content-Disposition", dispositionFor(query.data.path));
-  // The content type above is ours, not the file's. `nosniff` is what stops a
-  // browser from deciding for itself that our text/plain is really HTML.
+  headers.set("Content-Type", contentType);
+  headers.set("Content-Disposition", dispositionFor(path));
   headers.set("X-Content-Type-Options", "nosniff");
   headers.set("Referrer-Policy", "no-referrer");
-  if (result.value.size !== null) {
-    headers.set("Content-Length", String(result.value.size));
-  }
-
-  /*
-   * An SVG is a document, not a picture.
-   *
-   * It can carry script and can reach other addresses. Inside an `<img>` tag —
-   * the only place the viewer in this repository ever puts one — the browser
-   * already refuses to run it. This header covers the other door: somebody who
-   * opens the address directly gets an inert, sandboxed picture rather than a
-   * page running on our origin with their session attached. `style-src` stays
-   * open because an SVG's own `<style>` block is how it is coloured, and a logo
-   * drawn in the wrong colours is a bug we would have shipped for nothing.
-   *
-   * Not applied to the PDF: the browser's built-in viewer is itself a sandboxed
-   * document, and a `sandbox` directive on the response is what stops it from
-   * opening at all.
-   */
-  if (shape.contentType === "image/svg+xml") {
+  if (size !== null) headers.set("Content-Length", String(size));
+  if (contentType === "image/svg+xml") {
     headers.set(
       "Content-Security-Policy",
       "default-src 'none'; style-src 'unsafe-inline'; sandbox",
     );
   }
-
-  // Straight through. Nothing in this process ever holds the whole file.
-  return new Response(result.value.body, { status: 200, headers });
+  return headers;
 }
 
 /**

@@ -28,6 +28,7 @@ import {
   type Neighbour,
   type Neighbourhood,
 } from "./neighbourhood";
+import { previewTargetFor } from "../preview/file-preview";
 import {
   AnalysisRunningState,
   AnswerState,
@@ -71,6 +72,8 @@ export type RightPanelProps = {
   onLockChange: (id: string, lock: ConnectionLock) => void;
   onSelect: (id: string) => void;
   onRetry?: () => void;
+  /** Open the selected item's file. Undefined hides the offer entirely. */
+  onOpen?: (id: string) => void;
   /** Step 4 wires these two. Until then the buttons say so rather than lie. */
   onAsk?: (text: string) => void;
   onMakePrompt?: (text: string) => void;
@@ -94,6 +97,7 @@ export function RightPanel({
   onLockChange,
   onSelect,
   onRetry,
+  onOpen,
   onAsk,
   onMakePrompt,
   answer = null,
@@ -130,6 +134,7 @@ export function RightPanel({
         locks={locks}
         onLockChange={onLockChange}
         onSelect={onSelect}
+        onOpen={onOpen}
         limit={limit}
       />
     );
@@ -187,6 +192,7 @@ export function ConnectionsPanel({
   locks,
   onLockChange,
   onSelect,
+  onOpen,
   limit = DEFAULT_LIMIT,
 }: {
   view: GraphView;
@@ -198,6 +204,7 @@ export function ConnectionsPanel({
   locks: LockMap;
   onLockChange: (id: string, lock: ConnectionLock) => void;
   onSelect: (id: string) => void;
+  onOpen?: (id: string) => void;
   limit?: number;
 }) {
   const around = useMemo(
@@ -210,6 +217,9 @@ export function ConnectionsPanel({
   const name = selected.label ?? selected.name;
   // A file's name IS its path, and printing it twice reads as two facts.
   const showPath = selected.path !== null && selected.path !== name;
+  // 외부 도구 and, later, a feature have no file behind them. The offer only
+  // appears where it can be kept.
+  const canOpen = onOpen !== undefined && previewTargetFor(selected) !== null;
 
   return (
     <div>
@@ -239,6 +249,24 @@ export function ConnectionsPanel({
         <p className="mt-3 text-[13px] text-said-soft">
           {reachSentence(around.reach.places, around.reach.pages)}
         </p>
+
+        {canOpen ? (
+          /*
+            Reading the map is one thing and looking at the file is another, so
+            the way in is a button rather than something that happens when you
+            click. For a piece of a file it says which lines it will land on,
+            because that is the answer to "어디를 말하는 거예요?" before it opens.
+          */
+          <button
+            type="button"
+            onClick={() => onOpen(selected.id)}
+            className="mt-3 rounded-lg border border-edge-lit px-3 py-1.5 text-[13px] text-said-soft transition-colors hover:text-said"
+          >
+            {selected.kind === "file" || selected.startLine === null
+              ? "파일 열어보기"
+              : `${selected.startLine}줄부터 열어보기`}
+          </button>
+        ) : null}
       </header>
 
       <div className="mt-4 flex items-center gap-1 border-b border-edge pb-2">

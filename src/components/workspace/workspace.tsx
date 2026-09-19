@@ -10,8 +10,16 @@ import type { GraphView } from "@/lib/graph/view";
 import { AnalysisScreen } from "./analysis-screen";
 import { DistrictMap } from "./map/district-map";
 import { buildBeamIndex, runBeam, IDLE_BEAM } from "./map/beam";
+import {
+  DEFAULT_GROUPING,
+  groupingOptions,
+  resolveGrouping,
+  type Grouping,
+} from "./map/grouping";
+import { GroupingControl } from "./map/grouping-control";
 import { PlacesPanel } from "./places-panel";
 import { RightPanel, type ConnectionLock, type LockMap } from "./panel/connections-panel";
+import { FilePreview, previewTargetFor, type PreviewTarget } from "./preview/file-preview";
 import { toAnalysisProgress, toRunProgress } from "./stream-adapter";
 
 /**
@@ -74,6 +82,20 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
   const [query, setQuery] = useState("");
   const [locks, setLocks] = useState<LockMap>({});
   const inputRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * What the map is grouped by.
+   *
+   * Two pieces of state, not one. `wanted` is what the person asked for and it
+   * is kept even while it cannot be drawn — re-read a project, let Pass 2 name
+   * its first feature, and the 기능 map they asked for once comes back on its
+   * own. `grouping` is what is actually drawable right now; `resolveGrouping`
+   * falls back to 폴더, which cannot fail.
+   */
+  const [wantedGrouping, setWantedGrouping] = useState<Grouping>(DEFAULT_GROUPING);
+
+  /** The file being looked at, if any. Null is the normal state. */
+  const [preview, setPreview] = useState<PreviewTarget | null>(null);
 
   const stream = useAnalysisStream(project.id, runId);
 
@@ -177,6 +199,32 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
     [beamIndex, query],
   );
 
+  const groupings = useMemo(
+    () => groupingOptions(view.items, view.connections),
+    [view.items, view.connections],
+  );
+  const grouping = resolveGrouping(groupings, wantedGrouping);
+
+  /**
+   * Open a file from wherever someone pointed at it.
+   *
+   * One handler for the left list, the map and the right panel, so all three
+   * open the same thing the same way — and so a piece of a file always opens
+   * its file at its own lines rather than at the top.
+   */
+  const openItem = useCallback(
+    (id: string) => {
+      const item = view.items.find((candidate) => candidate.id === id);
+      if (!item) return;
+      const target = previewTargetFor(item);
+      // A package or a feature has no file behind it. Nothing opens, and
+      // nothing pretends to.
+      if (!target) return;
+      setPreview(target);
+    },
+    [view.items],
+  );
+
   const running = runId !== null;
   const hasGraph = view.items.length > 0;
   const neverRead = !hasGraph && view.lastRun === null;
@@ -221,6 +269,7 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
           items={view.items}
           selectedId={selectedId}
           onSelect={onSelect}
+          onOpen={openItem}
           beam={beam}
           loading={running}
         />
@@ -258,6 +307,19 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
                 지우기
               </button>
             ) : null}
+
+            {/*
+              Beside the beam, in the same toolbar, and mounted for every state
+              of the centre — the same reason the beam is. Opening its panel
+              touches nothing else in this row, so a 한글 syllable being typed
+              into the beam survives it.
+            */}
+            <GroupingControl
+              options={groupings}
+              value={grouping}
+              onChange={setWantedGrouping}
+              disabled={running || !hasGraph}
+            />
           </div>
 
           <div className="relative min-h-0 flex-1">
@@ -276,8 +338,10 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
                 items={view.items}
                 connections={view.connections}
                 query={query}
+                grouping={grouping}
                 selectedId={selectedId}
                 onSelect={onSelect}
+                onOpen={openItem}
                 className="absolute inset-0"
               />
             ) : (
@@ -338,11 +402,26 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
           onLockChange={onLockChange}
           onSelect={onSelect}
           onRetry={project.source === "github" ? start : undefined}
+          onOpen={openItem}
           // The centre is already showing the checklist while a run goes; the
           // same five steps twice reads as two things happening.
           showRunSteps={false}
         />
       </div>
+
+      {preview ? (
+        <FilePreview
+          projectId={project.id}
+          source={project.source}
+          repo={
+            project.repoOwner && project.repoName
+              ? { owner: project.repoOwner, name: project.repoName }
+              : null
+          }
+          target={preview}
+          onClose={() => setPreview(null)}
+        />
+      ) : null}
 
       {/*
         Section 4: the change timeline is out of scope for the MVP and this
@@ -388,13 +467,14 @@ function EmptyCentre({
         <p className="mt-3 text-[14px] leading-[1.8] text-said-soft">
           {failed && error
             ? error
-            : "코드를 한 번 읽어서 앱의 지도를 그릴게요. 파일과 그 사이의 연결만 저장하고, 코드 자체는 보관하지 않아요."}
+            : source === "upload"
+              ? "코드를 한 번 읽어서 앱의 지도를 그릴게요. 올려주신 파일은 나중에 열어보실 수 있게 함께 보관해요."
+              : "코드를 한 번 읽어서 앱의 지도를 그릴게요. 파일과 그 사이의 연결만 저장하고, 코드 자체는 보관하지 않아요."}
         </p>
 
         {source === "upload" && !neverRead ? (
           <p className="mt-4 text-[13px] leading-[1.75] text-said-faint">
-            올려주신 폴더는 코드를 보관하지 않아서, 다시 읽으려면 폴더를 한 번 더
-            골라주셔야 해요.
+            올려주신 폴더를 다시 읽으려면 폴더를 한 번 더 골라주셔야 해요.
           </p>
         ) : (
           <button

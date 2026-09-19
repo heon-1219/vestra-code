@@ -8,6 +8,7 @@ import { startAnalysis } from "@/analysis/pipeline";
 import { db } from "@/db";
 import { projects } from "@/db/schema";
 import { detectProject, type PackageManifest } from "@/lib/github/detect";
+import { STORE_BUDGET_BYTES, storeProjectFiles } from "@/lib/preview/store";
 import { getSession } from "@/lib/session";
 
 /**
@@ -112,6 +113,33 @@ export async function POST(request: Request) {
     kind: detection.kind,
   });
 
+  /*
+   * Keep the text, because for an upload there is nowhere else to get it.
+   *
+   * Before the analysis, not after: `startAnalysis` deletes the temp directory
+   * when it finishes, and these are the only copies of these bytes that will
+   * ever exist on our side. Doing it here also means a person whose analysis
+   * fails can still open their files, which is precisely when they want to.
+   *
+   * Storage failing must not fail the upload. The map is the product; previews
+   * are what make it pleasant. A database that refuses this insert has a
+   * problem worth logging and not worth losing someone's project over.
+   */
+  let storedText = 0;
+  try {
+    const outcome = await storeProjectFiles(
+      db,
+      projectId,
+      texts.map((file) => ({
+        path: file.path,
+        content: Buffer.from(file.content, "utf8"),
+      })),
+    );
+    storedText = outcome.storedBytes;
+  } catch (error) {
+    console.error("[upload] keeping file contents failed", projectId, error);
+  }
+
   const payload: UploadPayload = { texts, assets, skippedCount, limitsHit: [] };
 
   const outcome = await startAnalysis({
@@ -134,6 +162,11 @@ export async function POST(request: Request) {
       fileCount: paths.length,
       textCount: texts.length,
       skippedCount,
+      // What is left of this project's storage budget, so the browser knows how
+      // many of the pictures and PDFs it is holding are worth sending. The
+      // server re-checks; this only saves the user an upload that would be
+      // refused on arrival.
+      storageRemaining: Math.max(0, STORE_BUDGET_BYTES - storedText),
     },
     { status: 202 },
   );

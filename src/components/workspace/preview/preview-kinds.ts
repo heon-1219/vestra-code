@@ -266,7 +266,7 @@ export function isSafeRepoPath(path: string): boolean {
   if (path.includes("\\")) return false;
   if (path.includes("\0")) return false;
   // Control characters would survive into a header value.
-  if (/[ -]/.test(path)) return false;
+  if (/[\x00-\x1f\x7f]/.test(path)) return false;
   if (path.split("/").some((segment) => segment === "." || segment === "..")) {
     return false;
   }
@@ -359,8 +359,14 @@ export function formatBytes(bytes: number): string {
  * none of them blames the user for a limit we chose.
  */
 export const PREVIEW_MESSAGES = {
+  /**
+   * Said only about a file we do not have, which is now a narrow case: it was
+   * over its kind's ceiling when the folder was uploaded, or the project had
+   * filled its storage. Never said about an uploaded project as a whole — those
+   * keep their files, and most of them open.
+   */
   upload:
-    "이 프로젝트는 내 컴퓨터에서 올려주신 폴더로 만들었어요. 코드를 보관하지 않아서 파일 내용을 다시 보여드릴 수 없어요. 올리셨던 폴더에서 바로 열어보실 수 있어요.",
+    "이 파일은 따로 보관하지 못했어요. 용량이 크거나 아직 열어볼 수 없는 종류예요. 폴더를 다시 올리시면 같이 보관할게요.",
   spreadsheet:
     "표 파일은 아직 열어볼 수 없어요. 읽는 방법을 아직 준비하지 못했어요. 대신 GitHub에서 받아보실 수 있어요.",
   unknown:

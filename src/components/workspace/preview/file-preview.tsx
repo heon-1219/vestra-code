@@ -112,18 +112,19 @@ export function FilePreview({
   /**
    * The answers that need no network, worked out while rendering.
    *
-   * An uploaded folder, a spreadsheet, a file type we have no viewer for, and
-   * the PDF — which is an address handed to the browser rather than bytes we
-   * fetched. None of these waits on anything, so none of them should flash
-   * "받아오는 중" first: a popup that says it is loading and then says it never
-   * could have loaded is the product looking like it tried and failed, when in
-   * fact it knew the answer before it opened.
+   * A spreadsheet, a file type we have no viewer for, and the PDF — which is an
+   * address handed to the browser rather than bytes we fetched. None of these
+   * waits on anything, so none of them should flash "받아오는 중" first: a popup
+   * that says it is loading and then says it never could have loaded is the
+   * product looking like it tried and failed, when in fact it knew the answer
+   * before it opened.
+   *
+   * An uploaded folder used to be on this list, refused here without a request.
+   * It is not any more: uploads keep their files now, so the answer is no longer
+   * knowable without asking — the endpoint has the bytes or it does not, and one
+   * file being too large to have kept says nothing about the next one.
    */
   const immediate = useMemo<ViewState | null>(() => {
-    // D66: there is no origin to fetch from and we kept no copy.
-    if (source === "upload") {
-      return { state: "refused", reason: "upload", message: PREVIEW_MESSAGES.upload };
-    }
     if (shape.kind === "spreadsheet") {
       return {
         state: "refused",
@@ -145,7 +146,7 @@ export function FilePreview({
      */
     if (shape.kind === "pdf") return { state: "pdf", url: fileUrl };
     return null;
-  }, [source, shape, fileUrl]);
+  }, [shape, fileUrl]);
 
   /* ------------------------------------------------ getting the bytes */
 
@@ -309,9 +310,20 @@ export function FilePreview({
         </div>
 
         <footer className="flex shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-1.5 border-t border-edge px-4 py-2.5">
-          <p className="text-[11px] leading-[1.7] text-said-faint">
-            {PREVIEW_MESSAGES.trust}
-          </p>
+          {/*
+            Only where it is true. On an uploaded folder there is no GitHub to
+            have fetched anything from, and the body above has already said the
+            harder version of the same thing — that the code is not kept, and
+            that this is what it costs. Saying it twice, the second time about a
+            place this project has never been, is the sentence reading as boilerplate.
+          */}
+          {source === "github" ? (
+            <p className="text-[11px] leading-[1.7] text-said-faint">
+              {PREVIEW_MESSAGES.trust}
+            </p>
+          ) : (
+            <span />
+          )}
           {viewOnGithub ? (
             <a
               href={viewOnGithub}

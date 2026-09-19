@@ -106,7 +106,7 @@ export const GROUPING_WORDS: Record<Grouping, { name: string; meaning: string }>
   },
   kind: {
     name: "종류",
-    meaning: "파일인지, 페이지인지, 밖에서 가져온 도구인지로 묶어요.",
+    meaning: "파일·페이지·밖에서 가져온 도구처럼, 무엇인지에 따라 묶어요.",
   },
   job: {
     name: "역할",
@@ -489,7 +489,7 @@ function byKind(items: readonly GraphItem[]): Assignment {
 const JOB_WORDS: Record<string, DistrictDescriptor | undefined> = {
   component: { id: "job:component", name: "화면 조각", folder: "화면에 보이는 것" },
   hook: { id: "job:hook", name: "화면 도우미", folder: "화면을 돕는 것" },
-  function: { id: "job:function", name: "일 처리", folder: "시키면 일을 해요" },
+  function: { id: "job:function", name: "일 처리", folder: "불러서 쓰는 것" },
   class: { id: "job:class", name: "설계도", folder: "찍어내는 틀" },
   type: { id: "job:type", name: "정해 둔 모양", folder: "데이터의 모양" },
   style_rule: { id: "job:style", name: "꾸미기", folder: "보이는 모습" },
@@ -498,7 +498,7 @@ const JOB_WORDS: Record<string, DistrictDescriptor | undefined> = {
 const JOB_OTHER: DistrictDescriptor = {
   id: "job:other",
   name: "그 밖에",
-  folder: "역할을 나눌 수 없어요",
+  folder: "역할을 나누기 어려워요",
 };
 
 function byJob(items: readonly GraphItem[]): Assignment {

@@ -1,0 +1,159 @@
+import { describe, expect, it } from "vitest";
+
+import type { Db } from "@/db";
+
+import {
+  STORE_BUDGET_BYTES,
+  STORE_MAX_ROWS,
+  storeDecision,
+  storeProjectFiles,
+  type StorableFile,
+} from "./store";
+
+/**
+ * The caps and the batching, without a database.
+ *
+ * Everything worth getting wrong in this module is arithmetic: which files are
+ * kept, in what order the budget runs out, and how the kept ones are split into
+ * statements. A real Postgres would test the same arithmetic far more slowly
+ * and would not test it any harder — the opt-in DB test covers the round trip.
+ */
+
+/** Records what each INSERT was handed, which is the thing under test. */
+function fakeDb() {
+  const batches: { path: string; size: number }[][] = [];
+  const db = {
+    insert() {
+      return {
+        values(rows: { path: string; size: number }[]) {
+          batches.push(rows.map((row) => ({ path: row.path, size: row.size })));
+          return { onConflictDoUpdate: async () => undefined };
+        },
+      };
+    },
+  };
+  return { db: db as unknown as Db, batches };
+}
+
+function file(path: string, size: number): StorableFile {
+  return { path, content: Buffer.alloc(size) };
+}
+
+describe("storeDecision", () => {
+  it("keeps a file we can draw", () => {
+    expect(storeDecision("src/app.ts", 2_000, STORE_BUDGET_BYTES).keep).toBe(true);
+    expect(storeDecision("docs/plan.pdf", 2_000, STORE_BUDGET_BYTES).keep).toBe(true);
+    expect(storeDecision("public/logo.png", 2_000, STORE_BUDGET_BYTES).keep).toBe(true);
+  });
+
+  it("refuses a kind with no viewer, because storing it helps nobody", () => {
+    // The person still could not open it; the bytes would be pure cost.
+    const decision = storeDecision("data/report.xlsx", 2_000, STORE_BUDGET_BYTES);
+    expect(decision).toMatchObject({ keep: false, reason: "unsupported" });
+  });
+
+  it("refuses a file over its own kind's ceiling, not some global one", () => {
+    // 12 MB: fine for a PDF (20 MB), over the line for an image (8 MB). The
+    // ceiling that decides what we render decides what we keep.
+    expect(storeDecision("a/big.pdf", 12 * 1024 * 1024, STORE_BUDGET_BYTES).keep).toBe(true);
+    expect(storeDecision("a/big.png", 12 * 1024 * 1024, STORE_BUDGET_BYTES)).toMatchObject({
+      keep: false,
+      reason: "too_large",
+    });
+  });
+
+  it("refuses what does not fit in the budget left", () => {
+    expect(storeDecision("a/photo.png", 5_000, 4_999)).toMatchObject({
+      keep: false,
+      reason: "budget",
+    });
+  });
+});
+
+describe("storeProjectFiles", () => {
+  it("keeps what fits and reports what it refused", async () => {
+    const { db, batches } = fakeDb();
+    const outcome = await storeProjectFiles(db, "p1", [
+      file("src/a.ts", 100),
+      file("data/b.xlsx", 100),
+      file("img/c.png", 100),
+    ]);
+
+    expect(outcome.stored).toBe(2);
+    expect(outcome.storedBytes).toBe(200);
+    expect(outcome.refused).toEqual([{ path: "data/b.xlsx", reason: "unsupported" }]);
+    expect(batches).toHaveLength(1);
+  });
+
+  it("spends the budget in order, and one refusal does not end the run", async () => {
+    const { db } = fakeDb();
+    const mb = 1024 * 1024;
+    // 32 MB of pictures, each exactly at the image ceiling, leaves 8 MB. The
+    // PDF is under its OWN ceiling (20 MB) and over what is left, which is the
+    // case that distinguishes a budget refusal from a size refusal.
+    const outcome = await storeProjectFiles(db, "p1", [
+      file("a.png", 8 * mb),
+      file("b.png", 8 * mb),
+      file("c.png", 8 * mb),
+      file("d.png", 8 * mb),
+      file("big.pdf", 20 * mb),
+      file("after.ts", 10),
+    ]);
+
+    // The small file after the refusal is still kept: running out of room for
+    // one file is not running out for every file, and stopping at the first
+    // refusal would silently drop the rest of the folder.
+    expect(outcome.stored).toBe(5);
+    expect(outcome.refused).toEqual([{ path: "big.pdf", reason: "budget" }]);
+  });
+
+  it("counts a budget already spent by an earlier batch", async () => {
+    const { db } = fakeDb();
+    const outcome = await storeProjectFiles(
+      db,
+      "p1",
+      [file("a.png", 1_000)],
+      { bytes: STORE_BUDGET_BYTES - 999, rows: 4 },
+    );
+    expect(outcome.stored).toBe(0);
+    expect(outcome.refused).toEqual([{ path: "a.png", reason: "budget" }]);
+  });
+
+  it("stops at the row ceiling even when there are bytes to spare", async () => {
+    const { db } = fakeDb();
+    const outcome = await storeProjectFiles(db, "p1", [file("a.ts", 1)], {
+      bytes: 0,
+      rows: STORE_MAX_ROWS,
+    });
+    expect(outcome.refused).toEqual([{ path: "a.ts", reason: "count" }]);
+  });
+
+  it("splits into statements by row count", async () => {
+    const { db, batches } = fakeDb();
+    const files = Array.from({ length: 450 }, (_, i) => file(`src/f${i}.ts`, 10));
+    const outcome = await storeProjectFiles(db, "p1", files);
+
+    expect(outcome.stored).toBe(450);
+    // 200 rows per statement, so three of them — not one 450-row INSERT.
+    expect(batches.map((b) => b.length)).toEqual([200, 200, 50]);
+  });
+
+  it("splits into statements by weight, not only by count", async () => {
+    const { db, batches } = fakeDb();
+    // Three 1 MB images: under the 200-row ceiling, over the 2 MB one.
+    const files = Array.from({ length: 3 }, (_, i) =>
+      file(`img/${i}.png`, 1024 * 1024),
+    );
+    await storeProjectFiles(db, "p1", files);
+
+    expect(batches.map((b) => b.length)).toEqual([2, 1]);
+  });
+
+  it("writes nothing when there is nothing to write", async () => {
+    const { db, batches } = fakeDb();
+    const outcome = await storeProjectFiles(db, "p1", [file("a.xlsx", 10)]);
+    expect(outcome.stored).toBe(0);
+    // An empty INSERT is a syntax error in Postgres, so this is not cosmetic.
+    expect(batches).toHaveLength(0);
+  });
+});

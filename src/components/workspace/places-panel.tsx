@@ -6,6 +6,7 @@ import { KIND_WORDS, type GraphItem } from "@/lib/graph/view";
 
 import { districtOf } from "./map/layout";
 import type { BeamResult } from "./map/beam";
+import { previewTargetFor } from "./preview/file-preview";
 
 /**
  * The left panel: what is in this project, listed.
@@ -25,6 +26,11 @@ export type PlacesPanelProps = {
   items: readonly GraphItem[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  /**
+   * Open this file and look at it. Undefined means the workspace has nowhere
+   * to show one, and then no row offers it.
+   */
+  onOpen?: (id: string) => void;
   /** What the beam is lighting. Unmatched rows dim; nothing is removed. */
   beam: BeamResult;
   /** True while a run is still filling the graph. */
@@ -116,6 +122,7 @@ export function PlacesPanel({
   items,
   selectedId,
   onSelect,
+  onOpen,
   beam,
   loading = false,
 }: PlacesPanelProps) {
@@ -184,28 +191,52 @@ export function PlacesPanel({
                     // tells someone their project lost the file they were
                     // looking at; the map next to it follows the same rule.
                     const dim = beam.active && !beam.matched.has(item.id);
+                    const name = group.labels.get(item.id) ?? item.name;
+                    // A server address has no file of its own to open, and a
+                    // row that offers what it cannot do is worse than a row
+                    // that offers nothing.
+                    const openable = onOpen !== undefined && previewTargetFor(item) !== null;
                     return (
-                      <li key={item.id}>
+                      <li
+                        key={item.id}
+                        className={`group flex items-center rounded-md transition-colors ${
+                          item.id === selectedId ? "bg-edge-lit" : "hover:bg-edge"
+                        } ${dim ? "opacity-35" : ""}`}
+                      >
                         <button
                           type="button"
                           onClick={() => onSelect(item.id)}
                           title={item.path ?? item.name}
                           aria-current={item.id === selectedId ? "true" : undefined}
-                          className={`flex w-full items-baseline gap-1.5 rounded-md px-2 py-1 text-left transition-colors ${
-                            item.id === selectedId
-                              ? "bg-edge-lit text-said"
-                              : "text-said-soft hover:bg-edge"
-                          } ${dim ? "opacity-35" : ""}`}
+                          className={`flex min-w-0 flex-1 items-baseline gap-1.5 px-2 py-1 text-left ${
+                            item.id === selectedId ? "text-said" : "text-said-soft"
+                          }`}
                         >
-                          <span className="truncate text-[13px]">
-                            {group.labels.get(item.id) ?? item.name}
-                          </span>
+                          <span className="truncate text-[13px]">{name}</span>
                           {item.kind !== "file" ? (
                             <span className="shrink-0 text-[11px] text-said-faint">
                               {KIND_WORDS[item.kind]}
                             </span>
                           ) : null}
                         </button>
+                        {openable ? (
+                          /*
+                            Out of the way until it is wanted. The column is
+                            150px wide and a permanent second control on every
+                            row would take a third of it — but it is only
+                            hidden by opacity, so it is still in the tab order
+                            and a keyboard reaches it exactly where a mouse
+                            does.
+                          */
+                          <button
+                            type="button"
+                            onClick={() => onOpen(item.id)}
+                            aria-label={`${name} 열어보기`}
+                            className="mr-1 shrink-0 rounded px-1.5 py-0.5 text-[11px] text-said-faint opacity-0 transition-opacity hover:text-said focus-visible:opacity-100 group-hover:opacity-100"
+                          >
+                            열기
+                          </button>
+                        ) : null}
                       </li>
                     );
                   })}
