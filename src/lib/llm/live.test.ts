@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import { createLlm } from "./client";
-import { llmConfig } from "./config";
 
 /**
  * The one test that proves the key, the endpoint and the model actually work
@@ -25,15 +24,27 @@ import { llmConfig } from "./config";
  *      investigation loop rests on, and the one that varies by serving provider
  *      rather than by model. An endpoint that quietly ignores `tools` and
  *      answers in prose looks fine until the loop never takes a step.
+ *
+ * The configuration is imported INSIDE the test, not at the top of the file.
+ * `./config` reads `env.ts`, which validates all eleven variables the moment it
+ * is imported and throws when any is missing — so a top-level import makes this
+ * file fail to load on every machine without a full environment, including when
+ * the suite is skipped. The first version of this file did exactly that and
+ * broke the whole run for everyone else. A dynamic import inside the body only
+ * happens when the test actually runs, which is when a configured process is
+ * the precondition anyway.
  */
 
 const live = process.env.VESTRA_LIVE === "1";
-const config = llmConfig();
+// Read the raw variable rather than the parsed config, for the same reason.
+const keyed = Boolean(process.env.LLM_API_KEY);
 
-describe.skipIf(!live || !config)("the configured endpoint, for real", () => {
+describe.skipIf(!live || !keyed)("the configured endpoint, for real", () => {
   it("answers, reports what it cost, and can call a tool", async () => {
-    // Non-null: the suite is skipped above when the config is missing, and
-    // repeating the check inside would suggest it could be null here.
+    const { llmConfig } = await import("./config");
+    const config = llmConfig();
+    expect(config, "LLM_BASE_URL / LLM_API_KEY / LLM_MODEL must all be set").not.toBeNull();
+
     const llm = createLlm(config!);
 
     const reply = await llm.complete({
