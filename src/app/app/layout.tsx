@@ -16,7 +16,15 @@ export default async function AppLayout({ children }: LayoutProps<"/app">) {
   const session = await requireSession();
 
   return (
-    <div className="flex min-h-screen flex-col">
+    /*
+     * The shell is exactly the viewport tall, and scrolling happens inside
+     * <main>. The workspace is a three-column screen with its own scrolling
+     * regions (a file list, a connections panel, a canvas that sizes itself
+     * from its container), and none of that can be laid out against a page
+     * that grows: the canvas would chase the document height. The dashboard
+     * simply scrolls inside the same box.
+     */
+    <div className="flex h-dvh flex-col">
       <header className="border-b border-edge">
         <div className="mx-auto flex max-w-[1180px] items-center justify-between px-6 py-4">
           <Link
@@ -33,7 +41,7 @@ export default async function AppLayout({ children }: LayoutProps<"/app">) {
           </div>
         </div>
       </header>
-      <main className="flex-1">{children}</main>
+      <main className="min-h-0 flex-1 overflow-y-auto">{children}</main>
     </div>
   );
 }

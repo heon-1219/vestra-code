@@ -1,0 +1,808 @@
+"use client";
+
+import { useId, useImperativeHandle, useMemo, useRef, useState } from "react";
+
+import {
+  CERTAINTY_WORDS,
+  KIND_WORDS,
+  type GraphItem,
+  type GraphView,
+} from "@/lib/graph/view";
+
+import {
+  CertaintyLegend,
+  ConnectionRow,
+  displayName,
+  distanceWord,
+  lockOf,
+  type ConnectionLock,
+  type LockMap,
+} from "./connection-row";
+import {
+  buildNeighbourhood,
+  DEFAULT_HOPS,
+  DEFAULT_LIMIT,
+  isAlone,
+  MAX_HOPS,
+  type Neighbour,
+  type Neighbourhood,
+} from "./neighbourhood";
+import {
+  AnalysisRunningState,
+  AnswerState,
+  NoKnownConnections,
+  NothingSelectedState,
+  PromptState,
+  RunFailedState,
+  type PanelAnswer,
+  type PanelPrompt,
+  type RunProgress,
+} from "./states";
+
+export type { ConnectionLock, LockMap } from "./connection-row";
+export { DEFAULT_LOCK, lockOf } from "./connection-row";
+export type { PanelAnswer, PanelCitation, PanelPrompt, RunProgress } from "./states";
+
+/**
+ * The right panel: what happens when someone points at a part of their app.
+ *
+ * Reading order is the brief's and it is deliberate — see what is connected,
+ * decide what may change, type the request. So the panel is one column, and
+ * the request box is the last thing in it.
+ *
+ * **The request box is mounted once, at the bottom of this component, for
+ * every state.** Moving a React input to a different parent unmounts and
+ * remounts it: new DOM node, lost focus, lost caret, and — the one with teeth
+ * for a Korean-first product — lost IME composition state, which means a
+ * half-typed 한글 syllable vanishes mid-word. Everything above it swaps; the
+ * box itself only ever moves by layout.
+ */
+
+export type PanelTab = "list" | "graph";
+
+export type RightPanelProps = {
+  /** Null while the map is still loading. */
+  view: GraphView | null;
+  selectedId: string | null;
+  /** The live run, if one is going. Null once the map is the thing on screen. */
+  run?: RunProgress | null;
+  locks: LockMap;
+  onLockChange: (id: string, lock: ConnectionLock) => void;
+  onSelect: (id: string) => void;
+  onRetry?: () => void;
+  /** Step 4 wires these two. Until then the buttons say so rather than lie. */
+  onAsk?: (text: string) => void;
+  onMakePrompt?: (text: string) => void;
+  answer?: PanelAnswer | null;
+  prompt?: PanelPrompt | null;
+  /** How many connections one direction may show before the panel says it capped. */
+  limit?: number;
+  /**
+   * False when the workspace is already showing the phase checklist in the
+   * centre. The panel then shows the counts and the file list without
+   * repeating the steps beside them.
+   */
+  showRunSteps?: boolean;
+};
+
+export function RightPanel({
+  view,
+  selectedId,
+  run = null,
+  locks,
+  onLockChange,
+  onSelect,
+  onRetry,
+  onAsk,
+  onMakePrompt,
+  answer = null,
+  prompt = null,
+  limit = DEFAULT_LIMIT,
+  showRunSteps = true,
+}: RightPanelProps) {
+  // Tab and depth live here rather than inside the connections view, so that
+  // clicking a second item does not throw away the way the user was looking at
+  // the first one.
+  const [tab, setTab] = useState<PanelTab>("list");
+  const [hops, setHops] = useState<number>(DEFAULT_HOPS);
+  const requestRef = useRef<RequestBoxHandle>(null);
+
+  const selected = view?.items.find((item) => item.id === selectedId) ?? null;
+  const running = run?.status === "running";
+
+  let body: React.ReactNode;
+  if (run && (run.status === "running" || (run.status === "completed" && !view))) {
+    body = <AnalysisRunningState run={run} showSteps={showRunSteps} />;
+  } else if (run?.status === "failed" && !selected) {
+    body = <RunFailedState message={run.message} onRetry={onRetry} />;
+  } else if (!view) {
+    body = <PanelLoading />;
+  } else if (selected) {
+    body = (
+      <ConnectionsPanel
+        view={view}
+        selected={selected}
+        tab={tab}
+        onTabChange={setTab}
+        hops={hops}
+        onHopsChange={setHops}
+        locks={locks}
+        onLockChange={onLockChange}
+        onSelect={onSelect}
+        limit={limit}
+      />
+    );
+  } else {
+    body = (
+      <NothingSelectedState
+        view={view}
+        onSelect={onSelect}
+        onSuggestion={onAsk ? (text) => requestRef.current?.fill(text) : undefined}
+      />
+    );
+  }
+
+  return (
+    <aside
+      aria-label="연결 패널"
+      className="flex h-full min-h-0 flex-col border-l border-edge bg-ink-raised"
+    >
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5">
+        {body}
+
+        {answer ? (
+          <div className="mt-5">
+            <AnswerState answer={answer} onSelect={onSelect} />
+          </div>
+        ) : null}
+
+        {prompt ? (
+          <div className="mt-4">
+            <PromptState prompt={prompt} />
+          </div>
+        ) : null}
+      </div>
+
+      <RequestBox
+        ref={requestRef}
+        selected={selected}
+        disabled={running || !view}
+        onAsk={onAsk}
+        onMakePrompt={onMakePrompt}
+      />
+    </aside>
+  );
+}
+
+/* ------------------------------------------------------------ item chosen */
+
+export function ConnectionsPanel({
+  view,
+  selected,
+  tab,
+  onTabChange,
+  hops,
+  onHopsChange,
+  locks,
+  onLockChange,
+  onSelect,
+  limit = DEFAULT_LIMIT,
+}: {
+  view: GraphView;
+  selected: GraphItem;
+  tab: PanelTab;
+  onTabChange: (tab: PanelTab) => void;
+  hops: number;
+  onHopsChange: (hops: number) => void;
+  locks: LockMap;
+  onLockChange: (id: string, lock: ConnectionLock) => void;
+  onSelect: (id: string) => void;
+  limit?: number;
+}) {
+  const around = useMemo(
+    () => buildNeighbourhood(view, selected.id, { hops, limit }),
+    [view, selected.id, hops, limit],
+  );
+
+  if (!around) return <PanelLoading />;
+
+  const name = selected.label ?? selected.name;
+  // A file's name IS its path, and printing it twice reads as two facts.
+  const showPath = selected.path !== null && selected.path !== name;
+
+  return (
+    <div>
+      <header>
+        <p className="text-[12px] text-said-faint">{KIND_WORDS[selected.kind]}</p>
+        <h2 className="mt-0.5 text-[18px] font-semibold tracking-[-0.02em] text-said">
+          {selected.label ? (
+            displayName(selected)
+          ) : (
+            <code className="text-[16px]">{selected.name}</code>
+          )}
+        </h2>
+
+        {selected.summary ? (
+          <p className="mt-2 text-[13px] leading-[1.8] text-said-soft">{selected.summary}</p>
+        ) : null}
+
+        {showPath ? (
+          <p className="mt-2 truncate font-mono text-[11px] text-said-faint" title={selected.path ?? ""}>
+            {selected.path}
+            {selected.startLine
+              ? ` · ${selected.startLine}–${selected.endLine ?? selected.startLine}줄`
+              : ""}
+          </p>
+        ) : null}
+
+        <p className="mt-3 text-[13px] text-said-soft">
+          {reachSentence(around.reach.places, around.reach.pages)}
+        </p>
+      </header>
+
+      <div className="mt-4 flex items-center gap-1 border-b border-edge pb-2">
+        <TabButton active={tab === "list"} onClick={() => onTabChange("list")}>
+          목록
+        </TabButton>
+        <TabButton active={tab === "graph"} onClick={() => onTabChange("graph")}>
+          그림
+        </TabButton>
+      </div>
+
+      {/*
+        The depth control sits outside both tabs on purpose. The two tabs are
+        two drawings of the same neighbourhood, so the depth belongs to the
+        neighbourhood, not to the tab — and a control that appears when you
+        switch tabs makes the same facts look like different facts.
+      */}
+      <HopControl hops={around.hops} onChange={onHopsChange} />
+
+      {isAlone(around) ? (
+        <div className="mt-4">
+          <NoKnownConnections />
+        </div>
+      ) : tab === "list" ? (
+        <ConnectionList
+          around={around}
+          locks={locks}
+          onLockChange={onLockChange}
+          onSelect={onSelect}
+        />
+      ) : (
+        <NeighbourhoodGraph around={around} onSelect={onSelect} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * The one sentence the product is sold on: "this is used in N places".
+ *
+ * Said without a number when we found none — "아직 찾지 못했어요" is a statement
+ * about our reading, where "0곳에서 쓰여요" would be a statement about their
+ * code, and only one of those is something we know.
+ */
+function reachSentence(places: number, pages: number): string {
+  if (places === 0) return "쓰는 곳은 아직 찾지 못했어요";
+  if (pages === places) return `화면 ${places.toLocaleString("ko-KR")}곳에서 쓰여요`;
+  if (pages > 0) {
+    return `${places.toLocaleString("ko-KR")}곳에서 쓰여요 · 화면 ${pages.toLocaleString("ko-KR")}곳 포함`;
+  }
+  return `${places.toLocaleString("ko-KR")}곳에서 쓰여요`;
+}
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`rounded-lg px-3 py-1.5 text-[14px] font-medium transition-colors ${
+        active ? "bg-ink text-said" : "text-said-faint hover:text-said-soft"
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * Three labelled choices, not a slider.
+ *
+ * A slider's value is a number the user has to interpret — "2" means nothing
+ * to someone who does not think in hops — and at rest it shows neither the
+ * range nor what the positions mean. It also asks for a drag, which is the
+ * most precision this panel demands of anyone. With exactly three stops the
+ * affordance costs more than it buys: three buttons show every option and its
+ * meaning at once, answer in one click, and are a radio group to a screen
+ * reader without any extra work.
+ */
+function HopControl({ hops, onChange }: { hops: number; onChange: (hops: number) => void }) {
+  return (
+    <div
+      role="radiogroup"
+      aria-label="얼마나 멀리까지 볼지"
+      className="mt-3 flex items-center gap-1"
+    >
+      {Array.from({ length: MAX_HOPS }, (_, index) => index + 1).map((value) => (
+        <button
+          key={value}
+          type="button"
+          role="radio"
+          aria-checked={hops === value}
+          onClick={() => onChange(value)}
+          className={`rounded-md border px-2.5 py-1 text-[12px] transition-colors ${
+            hops === value
+              ? "border-lamp-dim bg-lamp/10 text-lamp"
+              : "border-edge-lit text-said-faint hover:text-said-soft"
+          }`}
+        >
+          {distanceWord(value)}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------- list tab */
+
+function ConnectionList({
+  around,
+  locks,
+  onLockChange,
+  onSelect,
+}: {
+  around: Neighbourhood;
+  locks: LockMap;
+  onLockChange: (id: string, lock: ConnectionLock) => void;
+  onSelect: (id: string) => void;
+}) {
+  // `contains` gets its own headings rather than being filed under "what this
+  // uses". A file does not USE the component written in it, it HOLDS it — and
+  // forty rows reading 안에 있어요 under a heading that says 쓰는 것 is the kind
+  // of small wrongness that teaches someone their map cannot be trusted.
+  const inside = around.uses.filter((n) => n.relation === "contains");
+  const uses = around.uses.filter((n) => n.relation !== "contains");
+  const home = around.usedBy.filter((n) => n.relation === "contains");
+  const usedBy = around.usedBy.filter((n) => n.relation !== "contains");
+  const cap = capNotice(around);
+
+  return (
+    <div className="mt-4">
+      <p className="text-[12px] leading-[1.7] text-said-faint">
+        연결된 것은 처음엔 모두 잠겨 있어요. 같이 고쳐도 되는 것만 열어 주세요.
+      </p>
+
+      <Section title="여기가 있는 곳" rows={home} locks={locks} onLockChange={onLockChange} onSelect={onSelect} />
+      <Section title="안에 있는 것" rows={inside} locks={locks} onLockChange={onLockChange} onSelect={onSelect} />
+      <Section title="여기서 쓰는 것" rows={uses} locks={locks} onLockChange={onLockChange} onSelect={onSelect} />
+      <Section title="여기를 쓰는 곳" rows={usedBy} locks={locks} onLockChange={onLockChange} onSelect={onSelect} />
+
+      {cap ? (
+        <p className="mt-4 rounded-lg border border-edge bg-ink px-3 py-2.5 text-[12px] leading-[1.75] text-said-soft">
+          {cap}
+        </p>
+      ) : null}
+
+      <CertaintyLegend className="mt-4 border-t border-edge pt-3" />
+    </div>
+  );
+}
+
+function Section({
+  title,
+  rows,
+  locks,
+  onLockChange,
+  onSelect,
+}: {
+  title: string;
+  rows: Neighbour[];
+  locks: LockMap;
+  onLockChange: (id: string, lock: ConnectionLock) => void;
+  onSelect: (id: string) => void;
+}) {
+  if (rows.length === 0) return null;
+
+  return (
+    <section className="mt-4">
+      <h3 className="text-[12px] text-said-faint">
+        {title} {rows.length.toLocaleString("ko-KR")}
+      </h3>
+      <ul className="mt-1">
+        {rows.map((neighbour) => (
+          <ConnectionRow
+            key={`${neighbour.direction}:${neighbour.item.id}`}
+            neighbour={neighbour}
+            lock={lockOf(locks, neighbour.item.id)}
+            onLockChange={onLockChange}
+            onSelect={onSelect}
+          />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * What the cap left out, in the user's numbers.
+ *
+ * A list that silently stops reads as "that is all there is", which on this
+ * product is a false statement about someone's own code — the one kind of
+ * mistake we cannot make.
+ */
+export function capNotice(around: Neighbourhood): string | null {
+  const parts: string[] = [];
+  // Said by direction rather than by heading: the cap is applied to everything
+  // going one way, and the headings below split that into two. Naming a
+  // heading here would attach a number to a list it does not describe.
+  if (around.hidden.uses > 0) {
+    parts.push(
+      `여기서 이어진 것 ${around.found.uses.toLocaleString("ko-KR")}개 중 ${around.uses.length.toLocaleString("ko-KR")}개`,
+    );
+  }
+  if (around.hidden.usedBy > 0) {
+    parts.push(
+      `여기로 이어진 곳 ${around.found.usedBy.toLocaleString("ko-KR")}개 중 ${around.usedBy.length.toLocaleString("ko-KR")}개`,
+    );
+  }
+  if (parts.length === 0) return null;
+
+  const hidden = around.hidden.uses + around.hidden.usedBy;
+  return `연결이 많아서 ${parts.join(", ")}만 보여 드려요. 나머지 ${hidden.toLocaleString("ko-KR")}개도 있어요.`;
+}
+
+/* ------------------------------------------------------------ graph tab */
+
+/** Per row, so labels keep room to be read. Anything over this is counted out loud. */
+const PER_ROW = 7;
+const ROW_HEIGHT = 62;
+const WIDTH = 360;
+
+type Placed = { neighbour: Neighbour; x: number; y: number };
+
+/**
+ * The same neighbourhood, drawn.
+ *
+ * Laid out rather than simulated: rows by distance, what uses this above, what
+ * this uses below, the selection in the middle. A force layout here would move
+ * every item each time the panel opened, and a picture that will not sit still
+ * cannot be pointed at — which is the only thing this tab is for.
+ */
+function NeighbourhoodGraph({
+  around,
+  onSelect,
+}: {
+  around: Neighbourhood;
+  onSelect: (id: string) => void;
+}) {
+  const rawId = useId();
+  // Colons are legal in an id and awkward everywhere else, url(#…) included.
+  const hatchId = `hatch-${rawId.replace(/:/g, "")}`;
+
+  const aboveRows: Neighbour[][] = [];
+  const belowRows: Neighbour[][] = [];
+  let hiddenInPicture = 0;
+
+  for (let hop = 1; hop <= around.hops; hop += 1) {
+    const up = around.usedBy.filter((n) => n.hops === hop);
+    const down = around.uses.filter((n) => n.hops === hop);
+    hiddenInPicture += Math.max(0, up.length - PER_ROW) + Math.max(0, down.length - PER_ROW);
+    if (up.length > 0) aboveRows.push(up.slice(0, PER_ROW));
+    if (down.length > 0) belowRows.push(down.slice(0, PER_ROW));
+  }
+
+  const height = ROW_HEIGHT * (aboveRows.length + belowRows.length) + 76;
+  const cy = ROW_HEIGHT * aboveRows.length + 38;
+  const placed = new Map<string, Placed>();
+
+  // Furthest row first going up, so row 0 of `aboveRows` (one hop) ends up
+  // nearest the centre.
+  aboveRows.forEach((row, index) => {
+    const y = cy - ROW_HEIGHT * (index + 1);
+    row.forEach((neighbour, column) => {
+      placed.set(key(neighbour), { neighbour, x: columnX(column, row.length), y });
+    });
+  });
+  belowRows.forEach((row, index) => {
+    const y = cy + ROW_HEIGHT * (index + 1);
+    row.forEach((neighbour, column) => {
+      placed.set(key(neighbour), { neighbour, x: columnX(column, row.length), y });
+    });
+  });
+
+  const centre = { x: WIDTH / 2, y: cy };
+
+  return (
+    <div className="mt-4">
+      <svg
+        viewBox={`0 0 ${WIDTH} ${height}`}
+        className="w-full"
+        role="img"
+        aria-label={`${displayName(around.selected)} 주변 연결 그림. 같은 내용을 목록 탭에서 글로 볼 수 있어요.`}
+      >
+        <defs>
+          {/*
+            The guessed connection is a hatched ribbon, not a dashed hairline.
+            At the size a real project is looked at, a 1px dash and a 1px solid
+            line are the same line — the distinction the product rests on would
+            quietly stop existing. A band with texture in it survives being
+            made smaller, and survives a projector.
+          */}
+          <pattern
+            id={hatchId}
+            width="4"
+            height="4"
+            patternUnits="userSpaceOnUse"
+            patternTransform="rotate(45)"
+          >
+            <rect width="4" height="4" fill="var(--color-ink-raised)" />
+            <rect width="1.6" height="4" fill="var(--color-guess)" />
+          </pattern>
+        </defs>
+
+        {[...placed.values()].map(({ neighbour, x, y }) => {
+          const from = neighbour.via ? placed.get(keyOf(neighbour.via.id, neighbour.direction)) : null;
+          const anchor = from ? { x: from.x, y: from.y } : centre;
+          return (
+            <line
+              key={`line-${key(neighbour)}`}
+              x1={anchor.x}
+              y1={anchor.y}
+              x2={x}
+              y2={y}
+              stroke={
+                neighbour.hopCertainty === "certain" ? "var(--color-wire)" : `url(#${hatchId})`
+              }
+              strokeWidth={neighbour.hopCertainty === "certain" ? 1.4 : 5}
+              strokeLinecap="butt"
+            />
+          );
+        })}
+
+        {[...placed.values()].map(({ neighbour, x, y }) => (
+          <GraphDot
+            key={`dot-${key(neighbour)}`}
+            x={x}
+            y={y}
+            item={neighbour.item}
+            below={neighbour.direction === "uses"}
+            onSelect={onSelect}
+          />
+        ))}
+
+        <circle cx={centre.x} cy={centre.y} r="8" fill="var(--color-lamp)" />
+        <text
+          x={centre.x}
+          y={centre.y + 22}
+          textAnchor="middle"
+          className="fill-[var(--color-said)]"
+          fontSize="11"
+          fontWeight="600"
+        >
+          {truncate(displayName(around.selected), 20)}
+        </text>
+      </svg>
+
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
+        <p className="text-[12px] text-said-faint">위: 여기를 쓰는 곳 · 아래: 여기서 쓰는 것</p>
+        <CertaintyLegend />
+      </div>
+
+      {hiddenInPicture > 0 ? (
+        <p className="mt-2 text-[12px] leading-[1.75] text-said-soft">
+          그림이 좁아서 {hiddenInPicture.toLocaleString("ko-KR")}개는 그리지 못했어요. 목록 탭에는
+          다 있어요.
+        </p>
+      ) : null}
+
+      {capNotice(around) ? (
+        <p className="mt-2 text-[12px] leading-[1.75] text-said-soft">{capNotice(around)}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function GraphDot({
+  x,
+  y,
+  item,
+  below,
+  onSelect,
+}: {
+  x: number;
+  y: number;
+  item: GraphItem;
+  below: boolean;
+  onSelect: (id: string) => void;
+}) {
+  const name = displayName(item);
+  return (
+    <g
+      role="button"
+      tabIndex={0}
+      aria-label={`${name}, ${KIND_WORDS[item.kind]}`}
+      onClick={() => onSelect(item.id)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect(item.id);
+        }
+      }}
+      className="cursor-pointer"
+    >
+      <title>{`${name} · ${KIND_WORDS[item.kind]}`}</title>
+      <circle cx={x} cy={y} r="5" fill="var(--color-ink-raised)" stroke="var(--color-wire)" strokeWidth="1.5" />
+      <text
+        x={x}
+        y={below ? y + 17 : y - 10}
+        textAnchor="middle"
+        className="fill-[var(--color-said-soft)]"
+        fontSize="10"
+      >
+        {truncate(lastPart(name), 10)}
+      </text>
+    </g>
+  );
+}
+
+function columnX(column: number, count: number): number {
+  const usable = WIDTH - 36;
+  return 18 + ((column + 0.5) * usable) / count;
+}
+
+function key(neighbour: Neighbour): string {
+  return keyOf(neighbour.item.id, neighbour.direction);
+}
+
+function keyOf(id: string, direction: Neighbour["direction"]): string {
+  return `${direction}:${id}`;
+}
+
+function truncate(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/**
+ * The end of a path, for a label with room for about ten characters.
+ *
+ * `app/checkout/page.jsx` cut from the front is "app/chec…", which is the part
+ * every file in the folder shares. The tail is the part that identifies it, and
+ * the full name is still on hover and in the list.
+ */
+function lastPart(name: string): string {
+  const cut = name.lastIndexOf("/");
+  return cut === -1 || cut === name.length - 1 ? name : name.slice(cut + 1);
+}
+
+/* ----------------------------------------------------------- request box */
+
+export type RequestBoxHandle = {
+  /** Put text in the box and focus it, without sending anything. */
+  fill: (text: string) => void;
+};
+
+/**
+ * The box at the bottom, mounted once for the life of the panel.
+ *
+ * Uncontrolled on purpose. A controlled textarea re-renders this whole panel on
+ * every keystroke — with a Korean IME that is every keystroke of every syllable
+ * — and the panel is sitting next to a live map. The only thing React needs to
+ * know is whether the box is empty, so that is the only thing it is told.
+ */
+function RequestBox({
+  ref,
+  selected,
+  disabled,
+  onAsk,
+  onMakePrompt,
+}: {
+  ref: React.RefObject<RequestBoxHandle | null>;
+  selected: GraphItem | null;
+  disabled: boolean;
+  onAsk?: (text: string) => void;
+  onMakePrompt?: (text: string) => void;
+}) {
+  const boxRef = useRef<HTMLTextAreaElement>(null);
+  const [hasText, setHasText] = useState(false);
+
+  useImperativeHandle(ref, () => ({
+    fill(text: string) {
+      const box = boxRef.current;
+      if (!box) return;
+      box.value = text;
+      setHasText(text.trim().length > 0);
+      box.focus();
+    },
+  }));
+
+  function read(): string {
+    return boxRef.current?.value.trim() ?? "";
+  }
+
+  function send(handler?: (text: string) => void) {
+    const text = read();
+    if (!handler || text.length === 0) return;
+    handler(text);
+  }
+
+  const ready = Boolean(onAsk || onMakePrompt);
+
+  return (
+    <div className="shrink-0 border-t border-edge bg-ink-raised px-4 py-3">
+      <textarea
+        ref={boxRef}
+        rows={2}
+        disabled={disabled}
+        onInput={(event) => {
+          const next = event.currentTarget.value.trim().length > 0;
+          // Same value means React bails out, so a long sentence re-renders
+          // this component once, not once per character.
+          setHasText(next);
+        }}
+        onKeyDown={(event) => {
+          // isComposing is the whole point: Enter while a 한글 syllable is
+          // being assembled belongs to the IME, not to us.
+          if (event.nativeEvent.isComposing) return;
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            send(onAsk ?? onMakePrompt);
+          }
+        }}
+        placeholder={
+          selected
+            ? `${displayName(selected)}에 대해 묻거나, 바꾸고 싶은 걸 적어 주세요`
+            : "이 프로젝트에 대해 물어보세요"
+        }
+        aria-label="질문이나 바꾸고 싶은 내용"
+        className="w-full resize-none rounded-xl border border-edge-lit bg-ink px-3 py-2.5 text-[14px] leading-[1.7] text-said placeholder:text-said-faint focus:border-lamp-dim focus:outline-none disabled:opacity-55"
+      />
+
+      <div className="mt-2 flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => send(onAsk)}
+          disabled={disabled || !onAsk || !hasText}
+          className="rounded-lg border border-edge-lit px-3 py-1.5 text-[13px] font-medium text-said-soft transition-colors hover:text-said disabled:opacity-45"
+        >
+          물어보기
+        </button>
+        <button
+          type="button"
+          onClick={() => send(onMakePrompt)}
+          disabled={disabled || !onMakePrompt || !hasText}
+          className="rounded-lg bg-paper px-3 py-1.5 text-[13px] font-semibold text-ink transition-colors hover:bg-lamp disabled:opacity-45"
+        >
+          프롬프트 만들기
+        </button>
+      </div>
+
+      {!ready ? (
+        <p className="mt-2 text-[12px] leading-[1.7] text-said-faint">
+          묻고 답하기와 프롬프트 만들기는 아직 준비 중이에요.
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- loading */
+
+function PanelLoading() {
+  return (
+    <div>
+      <p className="text-[14px] text-said-soft">지도를 불러오는 중이에요.</p>
+      <p className="mt-1.5 text-[12px] text-said-faint">
+        {CERTAINTY_WORDS.certain}와 {CERTAINTY_WORDS.inferred}를 구분해서 보여 드려요.
+      </p>
+    </div>
+  );
+}

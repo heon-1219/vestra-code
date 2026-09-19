@@ -56,6 +56,79 @@
     system-ui, "Segoe UI", sans-serif;
   --font-mono:
     ui-monospace, "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
+
+  /**
+   * The landing page's type scale.
+   *
+   * Three sizes carry the page and everything else is small. The authority is
+   * meant to come from the size jump and the space around it rather than from
+   * weight — see `display-hero` below — so the scale is deliberately gappy:
+   * there is nothing between the lede (17px) and the section head (~42px).
+   * A scale with a rung on every step invites a page to fill them all in.
+   *
+   * Measured off the reference at 1440px, so the adaptation is on the record:
+   * it sets 64 / 32 / 20 / 16 / 14 / 11px, weight 400 almost everywhere (500
+   * for small UI, nothing above 600 anywhere on the page), display leading of
+   * 1.05, and a flat -0.01em of tracking on everything down to 14px. Its
+   * hero-to-section ratio is exactly 2:1, which is why the two sizes here are
+   * 72 and 36 rather than something chosen by eye.
+   *
+   * Three things are deliberately not copied, because Hangul is not Latin at
+   * the same optical size:
+   *
+   * - Weight. 400 is right for a grotesque with one or two strokes per
+   *   letter; Hangul packs two to four times that into the same square, so at
+   *   400 a 72px headline goes spindly and a 15px paragraph goes grey. The
+   *   display sizes run 600 and body stays 400 — see `display-hero`.
+   * - Leading. 1.05 works for Latin because its optical line is the x-height
+   *   band; a Hangul syllable block is full-height and square, with no
+   *   ascender/descender rhythm to open the gap, so 1.05 sets consecutive
+   *   lines touching. Display runs 1.2 here and body runs 1.8.
+   * - Tracking. Not flat. Hangul carries its sidebearing inside the syllable
+   *   block, which reads as too loose at display size and collides if you
+   *   tighten it at text size — so this goes further negative than -0.01em at
+   *   the top of the scale and stops short of it at the bottom.
+   */
+  --text-hero: clamp(2.5rem, 6vw, 4.5rem);
+  --text-hero--line-height: 1.2;
+  --text-section: clamp(1.5rem, 3vw, 2.25rem);
+  --text-section--line-height: 1.34;
+  --text-closing: clamp(1.75rem, 4vw, 3rem);
+  --text-closing--line-height: 1.26;
+  --text-card: 1.25rem;
+  --text-card--line-height: 1.45;
+  --text-lede: 1.0625rem;
+  --text-lede--line-height: 1.8;
+  --text-copy: 0.9375rem;
+  --text-copy--line-height: 1.85;
+  --text-micro: 0.8125rem;
+  --text-micro--line-height: 1.6;
+
+  /**
+   * The width at which the 3D hero scene starts loading, kept identical to the
+   * `(min-width: 900px)` query inside `hero-graph.tsx`. The hero is tall only
+   * where there is a scene to untangle: below this width the still picture is
+   * all there is, and 260vh of scrolling past a static image is just a long
+   * wait. Named so the two cannot drift apart silently.
+   */
+  --breakpoint-scene: 900px;
+
+  /**
+   * Motion, measured off the reference rather than guessed.
+   *
+   * What it actually uses, by frequency: movement (transform/translate/scale)
+   * for 300ms on cubic-bezier(0, 0, 0.2, 1) — a pure decelerate, no ease-in —
+   * with 500-600ms for larger objects; colour for 150ms on
+   * cubic-bezier(0.4, 0, 0.2, 1); opacity for 200ms on the decelerate curve.
+   * It has essentially no CSS keyframe animations: nothing on that page moves
+   * unless the pointer or the scroll position moved it. Tailwind's own
+   * `transition-colors` default is already 150ms on cubic-bezier(0.4, 0, 0.2, 1),
+   * so colour changes here match the reference without any token at all.
+   *
+   * The rule taken from this: only transform and opacity ever animate, always
+   * decelerating, always in response to something the visitor did.
+   */
+  --ease-decel: cubic-bezier(0, 0, 0.2, 1);
 }
 
 /**
@@ -118,8 +191,108 @@
   line-height: 1.14;
 }
 
+/**
+ * The landing page's display voice. Separate from `display-kr` on purpose:
+ * that one is used by the workspace at 21-32px, where 800 is right, and
+ * retuning it here would restyle screens this page has no business touching.
+ *
+ * 600 rather than 800. A heavy weight is the loudest thing a page can do and
+ * it is the first thing that makes a page read as marketing; the reference
+ * this page takes its structure from sets its 64px headline at 400 and gets
+ * its authority from size and silence instead. 400 is not the answer for
+ * Hangul — its glyphs carry two to four times the strokes of a Latin letter
+ * in the same square, so a light weight turns to grey mush at text sizes and
+ * loses its counters at display sizes. 600 is the Korean equivalent of that
+ * restraint: unmistakably not-bold, still solid on a near-black ground, where
+ * irradiation makes light-on-dark type read heavier than it measures.
+ *
+ * Tracking is -0.035em, looser than `display-kr`'s -0.042em. Hangul carries
+ * its own optical sidebearing inside the syllable block, so over-tightening
+ * collides the blocks rather than tightening the word.
+ */
+@utility display-hero {
+  font-weight: 600;
+  letter-spacing: -0.035em;
+}
+
+@utility display-section {
+  font-weight: 600;
+  letter-spacing: -0.028em;
+  /* Korean wraps on word boundaries already; balance stops the last line from
+     being a single orphaned word under a wide heading. */
+  text-wrap: balance;
+}
+
+/**
+ * The small all-caps label. Korean has no case and the mono stack has no
+ * Hangul, so `font-mono uppercase` on a Korean word silently falls back to
+ * whatever face the OS picks for Hangul — a different family from the rest of
+ * the page. Korean labels get the sans with open tracking instead; `font-mono`
+ * stays reserved for Latin and numerals, where it means something.
+ */
+@utility label-kr {
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  line-height: 1.5;
+}
+
+/**
+ * 0.8px, not 1px. On a 2x display this resolves to a genuinely finer line than
+ * a 1px border, which is what keeps a dark page with many boxes on it from
+ * reading as a wireframe. On a 1x display it snaps back to 1px and nothing is
+ * lost.
+ */
 @utility hairline {
-  border-color: var(--color-edge);
+  border: 0.8px solid var(--color-edge);
+}
+
+@utility rule-t {
+  border-top: 0.8px solid var(--color-edge);
+}
+
+/**
+ * Hover motion for a card, using the reference's own two durations rather than
+ * a round number: 300ms decelerating for movement, 150ms on the standard curve
+ * for colour. Transform and colour are the only things that animate — nothing
+ * here changes size, blurs, or glows. The global reduced-motion block above
+ * collapses both durations, so this needs no guard of its own.
+ */
+@utility lift {
+  transition:
+    transform 300ms var(--ease-decel),
+    border-color 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/**
+ * Section entrances, driven by scroll position rather than by a timer, and
+ * with no JavaScript at all — `view()` is a CSS timeline.
+ *
+ * The un-animated state is the *visible* one, so a browser without scroll
+ * timelines shows a perfectly ordinary page rather than a blank one. The
+ * hidden start state exists only inside the `@supports` block, and only when
+ * the visitor has not asked for less motion. Vertical movement only: a
+ * horizontal transform on a full-width element is one of the ways this page
+ * grew a horizontal scrollbar before (D61).
+ */
+@media (prefers-reduced-motion: no-preference) {
+  @supports (animation-timeline: view()) {
+    .rise {
+      animation: rise var(--ease-decel) both;
+      animation-timeline: view();
+      animation-range: entry 10% cover 28%;
+    }
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 
 /* Reduced motion is respected globally, not per component. */

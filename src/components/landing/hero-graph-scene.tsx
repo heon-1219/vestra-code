@@ -4,10 +4,20 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D, { type ForceGraphMethods } from "react-force-graph-3d";
 import * as THREE from "three";
 
+/**
+ * The hero graph is the pitch, so it carries the same three facts the real
+ * product's map carries — and nothing else.
+ *
+ * `kind` decides size: a hub is a piece of code many things lean on, and on the
+ * real map those are the ones a change ripples out from. `certain` decides how
+ * a link is drawn, because the whole promise is that we say what we know and
+ * what we are guessing. Everything else the product tracks is deliberately not
+ * here: an illustration that encodes six channels is a diagram nobody reads.
+ */
 type HeroNode = {
   id: string;
   cluster: number;
-  isHub: boolean;
+  kind: "hub" | "piece" | "leaf";
 };
 
 type HeroLink = { source: string; target: string; certain: boolean };
@@ -21,51 +31,83 @@ const CLUSTER_COLORS = [
   "#7e9ba8",
 ];
 
+/** What each cluster becomes once the map resolves. Product areas, not code. */
+const CLUSTER_LABELS = ["결제", "로그인", "장바구니", "상품", "주문", "알림"];
+
+/** Uneven on purpose: a real app is not six equal piles. */
+const CLUSTER_SIZES = [26, 18, 22, 31, 15, 20];
+
 /** The colour every node starts as: undifferentiated, before we know anything. */
 const TANGLED_COLOR = new THREE.Color("#5c574c");
 
 const BASE_DISTANCE = 470;
 
+const RADIUS: Record<HeroNode["kind"], number> = {
+  hub: 5.4,
+  piece: 3.1,
+  leaf: 2.1,
+};
+
 /**
- * A synthetic graph shaped like a small real app: a few hub symbols shared
- * across clusters, most nodes local to one. Illustrative, not a real analysis —
+ * A synthetic graph shaped like a small real app: a few hub pieces shared
+ * across areas, most things local to one. Illustrative, not a real analysis —
  * the page says so in copy, because the brief forbids presenting anything
  * fabricated as real.
  */
 function buildGraph(): { nodes: HeroNode[]; links: HeroLink[] } {
   const nodes: HeroNode[] = [];
   const links: HeroLink[] = [];
-  const perCluster = 13;
 
-  for (let c = 0; c < CLUSTER_COLORS.length; c++) {
-    for (let i = 0; i < perCluster; i++) {
-      nodes.push({ id: `n${c}-${i}`, cluster: c, isHub: i === 0 });
+  // A small deterministic generator. Math.random would reshuffle the picture on
+  // every render and make the scroll-driven resolve look different each visit.
+  let seed = 20260919;
+  const rand = () => {
+    seed = (seed * 1664525 + 1013904223) % 4294967296;
+    return seed / 4294967296;
+  };
+
+  for (let c = 0; c < CLUSTER_SIZES.length; c++) {
+    const size = CLUSTER_SIZES[c];
+    for (let i = 0; i < size; i++) {
+      nodes.push({
+        id: `n${c}-${i}`,
+        cluster: c,
+        kind: i === 0 ? "hub" : i < Math.max(3, size / 4) ? "piece" : "leaf",
+      });
     }
   }
 
-  for (let c = 0; c < CLUSTER_COLORS.length; c++) {
-    for (let i = 1; i < perCluster; i++) {
+  for (let c = 0; c < CLUSTER_SIZES.length; c++) {
+    const size = CLUSTER_SIZES[c];
+    for (let i = 1; i < size; i++) {
+      // Attach toward the front of the cluster, so hubs accumulate degree the
+      // way a genuinely shared helper does.
+      const target = Math.floor(Math.sqrt(i) * rand());
       links.push({
         source: `n${c}-${i}`,
-        target: `n${c}-${Math.floor(Math.sqrt(i))}`,
-        certain: i % 5 !== 0,
+        target: `n${c}-${target}`,
+        certain: rand() > 0.16,
       });
-      if (i % 4 === 0 && i + 2 < perCluster) {
+      if (rand() > 0.62 && i + 2 < size) {
         links.push({
           source: `n${c}-${i}`,
           target: `n${c}-${i + 2}`,
-          certain: i % 3 !== 0,
+          certain: rand() > 0.3,
         });
       }
     }
   }
 
-  // The shared helpers — why the resolved picture still has structure between
-  // districts rather than six disconnected balls.
-  for (let c = 0; c < CLUSTER_COLORS.length; c++) {
-    const next = (c + 1) % CLUSTER_COLORS.length;
+  // The shared pieces — why the resolved picture still has structure between
+  // areas rather than six disconnected balls.
+  for (let c = 0; c < CLUSTER_SIZES.length; c++) {
+    const next = (c + 1) % CLUSTER_SIZES.length;
+    const far = (c + 2) % CLUSTER_SIZES.length;
     links.push({ source: `n${c}-0`, target: `n${next}-0`, certain: true });
-    links.push({ source: `n${c}-3`, target: `n${next}-5`, certain: false });
+    links.push({ source: `n${c}-2`, target: `n${next}-4`, certain: false });
+    if (c % 2 === 0) {
+      links.push({ source: `n${c}-1`, target: `n${far}-3`, certain: rand() > 0.5 });
+    }
   }
 
   return { nodes, links };
@@ -117,6 +159,11 @@ export default function HeroGraphScene({
   const wrapRef = useRef<HTMLDivElement>(null);
   const strengthRef = useRef(0);
   const materialsRef = useRef(new Map<string, THREE.MeshLambertMaterial>());
+  const meshesRef = useRef(new Map<string, THREE.Mesh>());
+  /** The id under the pointer, and everything one step from it. */
+  const hoverRef = useRef<{ id: string; near: Set<string> } | null>(null);
+  /** One label per area, positioned each frame by projecting its centre. */
+  const labelsRef = useRef<(HTMLSpanElement | null)[]>([]);
   const pointerRef = useRef({ x: 0, y: 0 });
   const visibleRef = useRef(true);
   const engineReadyRef = useRef(false);
@@ -161,6 +208,27 @@ export default function HeroGraphScene({
 
   const data = useMemo(() => buildGraph(), []);
 
+  /**
+   * Who is one step from whom.
+   *
+   * Built once. Hovering asks this question on every pointer move, and the
+   * answer is the product's whole pitch in a single gesture — point at a thing,
+   * see what it touches — so it has to be instant.
+   */
+  const neighbours = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    const add = (a: string, b: string) => {
+      const set = map.get(a) ?? new Set<string>();
+      set.add(b);
+      map.set(a, set);
+    };
+    for (const link of data.links) {
+      add(link.source, link.target);
+      add(link.target, link.source);
+    }
+    return map;
+  }, [data.links]);
+
   const centers = useMemo(() => {
     const radius = 170;
     return CLUSTER_COLORS.map((_, i) => {
@@ -180,11 +248,32 @@ export default function HeroGraphScene({
       opacity: 0.92,
     });
     materialsRef.current.set(node.id, material);
-    return new THREE.Mesh(
-      new THREE.SphereGeometry(node.isHub ? 4.6 : 2.7, 12, 10),
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(RADIUS[node.kind], 12, 10),
       material,
     );
+    meshesRef.current.set(node.id, mesh);
+    return mesh;
   }, []);
+
+  /**
+   * Point at a thing and its connections light up while everything else steps
+   * back. This is the one interaction the product is actually about, so the
+   * landing page demonstrates it rather than describing it.
+   *
+   * Nothing is ever hidden — unrelated pieces fall to 18% rather than to zero.
+   * A map that blanks out is a map that has stopped telling you the truth about
+   * the rest of your app, and that is the habit this product is trying to break.
+   */
+  const handleNodeHover = useCallback(
+    (node: HeroNode | null) => {
+      hoverRef.current = node
+        ? { id: node.id, near: neighbours.get(node.id) ?? new Set() }
+        : null;
+      wakeRef.current?.();
+    },
+    [neighbours],
+  );
 
   /**
    * Forces are registered on the engine's first tick, not in a mount effect.
@@ -221,9 +310,12 @@ export default function HeroGraphScene({
     let raf = 0;
     let running = false;
     let shownProgress = -1;
+    let shownHover = "";
     let shownYaw = Number.NaN;
     let shownPitch = Number.NaN;
     const target = new THREE.Color();
+    const projected = new THREE.Vector3();
+    let placeLabels = true;
 
     const stop = () => {
       if (raf) cancelAnimationFrame(raf);
@@ -243,15 +335,33 @@ export default function HeroGraphScene({
       const eased = p * p * (3 - 2 * p);
       let didWork = false;
 
-      if (Math.abs(eased - shownProgress) > 0.0015) {
+      const hover = hoverRef.current;
+      const hoverKey = hover ? hover.id : "";
+
+      if (Math.abs(eased - shownProgress) > 0.0015 || hoverKey !== shownHover) {
         shownProgress = eased;
+        shownHover = hoverKey;
         strengthRef.current = eased;
+
         for (const node of data.nodes) {
           const material = materialsRef.current.get(node.id);
           if (!material) continue;
+
           target.set(CLUSTER_COLORS[node.cluster]);
           material.color.copy(TANGLED_COLOR).lerp(target, eased);
+
+          // Nothing is hidden: unrelated pieces fall to 18%, never to zero.
+          const related =
+            !hover || node.id === hover.id || hover.near.has(node.id);
+          material.opacity = related ? 0.94 : 0.18;
+
+          const mesh = meshesRef.current.get(node.id);
+          if (mesh) {
+            const scale = hover && node.id === hover.id ? 1.6 : 1;
+            mesh.scale.setScalar(scale);
+          }
         }
+
         if (fg && engineReadyRef.current) fg.d3ReheatSimulation();
         didWork = true;
       }
@@ -265,6 +375,7 @@ export default function HeroGraphScene({
       ) {
         shownYaw = yaw;
         shownPitch = pitch;
+        placeLabels = true;
         // Drive the three.js camera directly. cameraPosition() goes through
         // the library's transition machinery, which is not meant to be called
         // every frame.
@@ -279,6 +390,38 @@ export default function HeroGraphScene({
           camera.lookAt(0, 0, 0);
         }
         didWork = true;
+      }
+
+      /**
+       * The names arrive with the map.
+       *
+       * This is the whole pitch in one gesture: a tangle of grey becomes six
+       * named places. The labels are HTML over the canvas rather than sprites
+       * in the scene — real text, selectable, readable by a screen reader, and
+       * it costs no texture memory. Positions are written straight to the DOM
+       * because doing it through React state would re-render the tree sixty
+       * times a second for six numbers.
+       */
+      if (placeLabels || didWork) {
+        const camera = fg?.camera();
+        const box = size;
+        if (camera && box) {
+          const visibleFrom = 0.45;
+          const strength = Math.max(0, (eased - visibleFrom) / (1 - visibleFrom));
+          for (let c = 0; c < centers.length; c++) {
+            const el = labelsRef.current[c];
+            if (!el) continue;
+            projected.set(centers[c].x, centers[c].y, centers[c].z);
+            projected.project(camera);
+            const x = (projected.x * 0.5 + 0.5) * box.width;
+            const y = (-projected.y * 0.5 + 0.5) * box.height;
+            // Behind the camera projects to a mirrored point; hide rather than
+            // draw a name in the wrong place.
+            const behind = projected.z > 1;
+            el.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0) translate(-50%, -50%)`;
+            el.style.opacity = behind ? "0" : String(strength * 0.9);
+          }
+        }
       }
 
       idleFramesRef.current = didWork ? 0 : idleFramesRef.current + 1;
@@ -310,7 +453,7 @@ export default function HeroGraphScene({
       wakeRef.current = null;
       stop();
     };
-  }, [data.nodes, progressRef]);
+  }, [data.nodes, progressRef, centers, size]);
 
   /** Only animate while the hero is actually on screen. */
   useEffect(() => {
@@ -348,7 +491,7 @@ export default function HeroGraphScene({
   }, []);
 
   return (
-    <div ref={wrapRef} className="h-full w-full overflow-hidden" aria-hidden="true">
+    <div ref={wrapRef} className="relative h-full w-full overflow-hidden" aria-hidden="true">
       {size === null ? null : (
       <ForceGraph3D<HeroNode, HeroLink>
         ref={fgRef}
@@ -358,17 +501,42 @@ export default function HeroGraphScene({
         backgroundColor="rgba(0,0,0,0)"
         showNavInfo={false}
         enableNodeDrag={false}
-        enablePointerInteraction={false}
+        enablePointerInteraction={true}
+        onNodeHover={handleNodeHover}
         enableNavigationControls={false}
         nodeThreeObject={nodeThreeObject}
-        linkColor={(link: HeroLink) => (link.certain ? "#6b6659" : "#3c3831")}
-        linkWidth={(link: HeroLink) => (link.certain ? 0.7 : 0.35)}
-        linkOpacity={0.5}
+        // A guess reads as a guess even at a glance: thinner, dimmer, cooler.
+        // This is the page making the product's central promise visually, not
+        // in copy — we tell you what we know and what we are only guessing.
+        linkColor={(link: HeroLink) => (link.certain ? "#7d776a" : "#46423b")}
+        linkWidth={(link: HeroLink) => (link.certain ? 0.85 : 0.3)}
+        linkOpacity={0.55}
         warmupTicks={8}
         cooldownTime={6000}
         onEngineTick={handleEngineTick}
       />
       )}
+
+      {/*
+        Real text over the canvas, not sprites in the scene. It is selectable,
+        it is in the accessibility tree, and it needs no texture memory. Hidden
+        from assistive tech only because the whole hero is decorative — the
+        headline beside it carries the meaning.
+      */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        {CLUSTER_LABELS.map((label, index) => (
+          <span
+            key={label}
+            ref={(el) => {
+              labelsRef.current[index] = el;
+            }}
+            className="absolute top-0 left-0 text-[13px] font-semibold tracking-[0.14em] whitespace-nowrap opacity-0 transition-opacity duration-500"
+            style={{ color: CLUSTER_COLORS[index] }}
+          >
+            {label}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }

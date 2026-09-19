@@ -1,4 +1,5 @@
 import { eq } from "drizzle-orm";
+import Link from "next/link";
 
 import { AddProject } from "@/components/app/add-project";
 import { db } from "@/db";
@@ -38,16 +39,30 @@ export default async function AppDashboard() {
       ) : (
         <ul className="mt-10 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {myProjects.map((project) => (
-            <li
-              key={project.id}
-              className="rounded-2xl border border-edge bg-ink-raised p-6"
-            >
-              <h2 className="text-[17px] font-semibold tracking-[-0.02em]">
-                {project.displayName}
-              </h2>
-              <p className="mt-1 font-mono text-[13px] text-said-faint">
-                {project.repoOwner}/{project.repoName}
-              </p>
+            <li key={project.id}>
+              {/* The whole card is the link, not a word inside it: this is the
+                  only way into the workspace, and a small target in the corner
+                  of a card is a thing people miss. */}
+              <Link
+                href={`/app/${project.id}`}
+                className="block h-full rounded-2xl border border-edge bg-ink-raised p-6 transition-colors hover:border-edge-lit"
+              >
+                <h2 className="text-[17px] font-semibold tracking-[-0.02em]">
+                  {project.displayName}
+                </h2>
+                <p className="mt-1 text-[13px] text-said-faint">
+                  {project.source === "upload" ? (
+                    // An uploaded folder has no owner and no repository name,
+                    // and printing "null/null" for it would be the app telling
+                    // someone their project is broken.
+                    "내 컴퓨터에서 올린 폴더"
+                  ) : (
+                    <span className="font-mono">
+                      {project.repoOwner}/{project.repoName}
+                    </span>
+                  )}
+                </p>
+              </Link>
             </li>
           ))}
         </ul>
