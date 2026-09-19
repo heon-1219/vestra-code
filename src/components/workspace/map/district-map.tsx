@@ -24,7 +24,7 @@ import {
   type Grouping,
 } from "./grouping";
 import { layoutMap, type PlacedDistrict } from "./layout";
-import { HUB_BOOST, itemAlphaFor } from "./render/lod";
+import { HUB_BOOST, itemAlphaFor, MAX_SCALE, MIN_SCALE } from "./render/lod";
 import { drawMap, displayNameOf, type Camera, type Road, type Scene } from "./render/paint";
 import { FALLBACK, readPalette, type Palette } from "./render/palette";
 import {
@@ -126,8 +126,6 @@ export type DistrictMapProps = {
   className?: string;
 };
 
-const MIN_SCALE = 0.06;
-const MAX_SCALE = 6;
 const FIT_PADDING = 56;
 
 const TWEEN_MS = 260;
@@ -431,6 +429,20 @@ export function DistrictMap({
     const scene = sceneRef.current;
     const measured = scene.size;
     if (!measured) return;
+    /*
+     * A container with no width is a measurement, not a view to fit.
+     *
+     * The workspace's panes are resizable and one of them can be dragged shut
+     * or maximised over this one, and a ResizeObserver reports that as a real
+     * 0×0 box. Fitting to it would set `fitScaleRef` to the minimum zoom — and
+     * `fitScaleRef` is what every level of detail is measured against, so the
+     * map would come back with item lines and their words switched on at the
+     * resting zoom: the exact tangle the thresholds exist to prevent, arriving
+     * with no error and no obvious cause. Ignoring the measurement leaves the
+     * last good fit in place, and the observer fires again with a real box the
+     * moment the pane reopens, which re-fits properly.
+     */
+    if (measured.width <= 0 || measured.height <= 0) return;
     const { bounds } = scene.layout;
     const worldWidth = Math.max(bounds.maxX - bounds.minX, 1);
     const worldHeight = Math.max(bounds.maxY - bounds.minY, 1);

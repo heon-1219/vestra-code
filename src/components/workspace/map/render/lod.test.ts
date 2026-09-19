@@ -8,6 +8,7 @@ import {
   scaleForBudget,
   thresholdsFor,
   viewFraction,
+  MAX_SCALE,
   NAME_BUDGET,
   RELATION_BUDGET,
   type LodInput,
@@ -60,6 +61,35 @@ describe("thresholdsFor", () => {
     // through at any zoom. The pitch between packed items is what stops it.
     const tiny = thresholdsFor({ ...CROWDED, itemCount: 8, mapArea: 200 * 200 });
     expect(tiny.nameScale).toBeGreaterThan(0);
+  });
+
+  /**
+   * A threshold past the maximum zoom is a feature that does not exist.
+   * Measured on the 300-item fixture in a 1400×900 pane, the density rule alone
+   * asked for a zoom of 6.81 against a ceiling of 6 — so the relation words
+   * would never have appeared on a large screen, and nothing would have said so.
+   */
+  it("never puts a threshold where the wheel cannot reach it", () => {
+    const huge = thresholdsFor({
+      linkCount: 40_000,
+      itemCount: 12_000,
+      mapArea: 4000 * 3000,
+      viewWidth: 1400,
+      viewHeight: 900,
+      fitScale: 0.08,
+    });
+    expect(huge.relationScale).toBeLessThan(MAX_SCALE);
+    expect(huge.nameScale).toBeLessThan(MAX_SCALE);
+
+    const measured = thresholdsFor({
+      linkCount: 626,
+      itemCount: 300,
+      mapArea: 997 * 610,
+      viewWidth: 1400,
+      viewHeight: 900,
+      fitScale: 1.291,
+    });
+    expect(measured.relationScale).toBeLessThan(MAX_SCALE);
   });
 
   it("makes a 300-item project earn its words and a small one not", () => {

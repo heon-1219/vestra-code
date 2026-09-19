@@ -105,6 +105,30 @@ export const NAME_MIN_PITCH = 52;
 export const RANK_CEILING = 220;
 
 /**
+ * How far the map can be zoomed, and how far in the thresholds above are
+ * allowed to sit.
+ *
+ * The zoom range lives here rather than beside the pointer handlers because it
+ * is the thing every threshold has to stay inside. **A threshold past the
+ * maximum zoom is a feature that does not exist**, and this is not theoretical:
+ * measured on the 300-item fixture in a 1400×900 pane, the density rule put the
+ * relation words at a zoom of 6.81 against a ceiling of 6, so the founder's
+ * "관계까지 엣지에 보여줌으로써" would simply never have happened on a large screen —
+ * silently, with the map looking correct the whole time. Clamping to three
+ * quarters of the ceiling leaves room to zoom past the threshold and watch the
+ * words settle rather than meeting them on the last notch of the wheel.
+ *
+ * Where the clamp bites, the budget is the thing that gives: more than 28
+ * connections may then be named at once, and `rankCeilingAt` is what keeps that
+ * from becoming a grey rectangle. That is the right way round — the picture
+ * gets crowded on a pathological graph, rather than going permanently silent on
+ * an ordinary one.
+ */
+export const MIN_SCALE = 0.06;
+export const MAX_SCALE = 6;
+const REACHABLE_SHARE = 0.75;
+
+/**
  * The width of the zoom band a label class fades in over, as a fraction of its
  * threshold.
  *
@@ -169,17 +193,21 @@ export function thresholdsFor(input: LodInput): LodThresholds {
   const screenArea = Math.max(input.viewWidth * input.viewHeight, 1);
   const mapArea = Math.max(input.mapArea, 1);
   const linkScale = input.fitScale * LINK_ZOOM_FACTOR;
+  /** Nothing may be put where the wheel cannot reach it. */
+  const reachable = (scale: number) => Math.min(scale, MAX_SCALE * REACHABLE_SHARE);
   return {
     linkScale,
     // Words can never appear before the line they sit on, whatever the density
-    // says — which is what the max is for on a small project.
+    // says — which is what the outer max is for on a small project.
     relationScale: Math.max(
       linkScale,
-      scaleForBudget(input.linkCount, RELATION_BUDGET, mapArea, screenArea),
+      reachable(scaleForBudget(input.linkCount, RELATION_BUDGET, mapArea, screenArea)),
     ),
-    nameScale: Math.max(
-      NAME_MIN_PITCH / ITEM_SPACING,
-      scaleForBudget(input.itemCount, NAME_BUDGET, mapArea, screenArea),
+    nameScale: reachable(
+      Math.max(
+        NAME_MIN_PITCH / ITEM_SPACING,
+        scaleForBudget(input.itemCount, NAME_BUDGET, mapArea, screenArea),
+      ),
     ),
     screenArea,
     mapArea,

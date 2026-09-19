@@ -7,10 +7,12 @@ import type { MapLayout, PlacedDistrict } from "../layout";
 import {
   arrowAt,
   clamp,
+  hatchStart,
   labelAnchor,
   onScreen,
   shifted,
   spanBetween,
+  visibleRange,
   type Span,
 } from "./geometry";
 import {
@@ -292,10 +294,28 @@ export function drawMap(
     }
     ctx.closePath();
 
-    const gradient = ctx.createRadialGradient(cx, cy, r * 0.1, cx, cy, r);
-    gradient.addColorStop(0, withAlpha(hue, 0.17 * strength));
-    gradient.addColorStop(1, withAlpha(hue, 0.05 * strength));
-    ctx.fillStyle = gradient;
+    /*
+     * The soft centre is a gradient until the territory is bigger than the
+     * window, and a flat fill after that.
+     *
+     * A radial gradient is evaluated per pixel, so once you have zoomed inside
+     * one territory the browser is shading every pixel on screen — the single
+     * largest cost in a deep-zoom repaint on a 300-item project. What it buys
+     * at that zoom is nothing: the visible sliver spans a few percent of the
+     * radius, over which the gradient moves by about three hundredths of an
+     * alpha. So past that size it is filled at the alpha the middle would have
+     * had, which is the same picture for a fraction of the work. Degrading by
+     * zoom rather than dropping the gradient outright keeps the resting screen
+     * — the one people actually look at — exactly as it was.
+     */
+    if (r > Math.hypot(width, height)) {
+      ctx.fillStyle = withAlpha(hue, 0.15 * strength);
+    } else {
+      const gradient = ctx.createRadialGradient(cx, cy, r * 0.1, cx, cy, r);
+      gradient.addColorStop(0, withAlpha(hue, 0.17 * strength));
+      gradient.addColorStop(1, withAlpha(hue, 0.05 * strength));
+      ctx.fillStyle = gradient;
+    }
     ctx.fill();
     ctx.lineWidth = 1.2;
     ctx.strokeStyle = withAlpha(hue, 0.42 * strength);
@@ -308,7 +328,7 @@ export function drawMap(
       strengthOfDistrict(road.a.id),
       strengthOfDistrict(road.b.id),
     );
-    drawRoad(ctx, road, sx, sy, camera.scale, palette, strength);
+    drawRoad(ctx, road, sx, sy, camera.scale, palette, strength, width, height);
   }
 
   // 3. The names, lying flat on the surface.
@@ -406,6 +426,8 @@ export function drawMap(
         alpha,
         1,
         room ? textWidth / 2 + LABEL_CLEARANCE : 0,
+        width,
+        height,
       );
       if (laid.length >= MIN_ARROW_LENGTH) {
         drawArrow(ctx, laid, link.certainty === "certain" ? palette.wire : palette.guess, alpha);
@@ -519,6 +541,8 @@ export function drawMap(
           0.92,
           1.6,
           room ? textWidth / 2 + LABEL_CLEARANCE : 0,
+          width,
+          height,
         );
         if (laid.length >= MIN_ARROW_LENGTH) {
           drawArrow(
@@ -607,26 +631,29 @@ function drawRoad(
   scale: number,
   palette: Palette,
   strength: number,
+  width: number,
+  height: number,
 ): void {
-  const ax = sx(road.a.x);
-  const ay = sy(road.a.y);
-  const bx = sx(road.b.x);
-  const by = sy(road.b.y);
-  const dx = bx - ax;
-  const dy = by - ay;
-  const length = Math.hypot(dx, dy);
-  if (length < 6) return;
-
-  const ux = dx / length;
-  const uy = dy / length;
   // Start and end at the rims, so a road never runs under a district's name.
-  const startTrim = road.a.r * scale * 0.94;
-  const endTrim = road.b.r * scale * 0.94;
-  const span = length - startTrim - endTrim;
-  if (span < 8) return;
+  const base = spanBetween(
+    sx(road.a.x),
+    sy(road.a.y),
+    sx(road.b.x),
+    sy(road.b.y),
+    road.a.r * scale * 0.94,
+    road.b.r * scale * 0.94,
+    8,
+  );
+  if (!base) return;
 
-  const x0 = ax + ux * startTrim;
-  const y0 = ay + uy * startTrim;
+  // Roads are the one thing on this map with no bounding box worth testing —
+  // a road between two territories either side of the window crosses it while
+  // both of its ends are off screen. The parametric clip answers both
+  // questions at once: is any of it visible, and which part.
+  const range = visibleRange(base, width, height, 24);
+  if (!range) return;
+
+  const { ux, uy, x0, y0 } = base;
   const px = -uy;
   const py = ux;
 
@@ -639,7 +666,10 @@ function drawRoad(
   if (certainWidth > 0) {
     ctx.beginPath();
     ctx.moveTo(x0 + px * certainOffset, y0 + py * certainOffset);
-    ctx.lineTo(x0 + ux * span + px * certainOffset, y0 + uy * span + py * certainOffset);
+    ctx.lineTo(
+      x0 + ux * base.length + px * certainOffset,
+      y0 + uy * base.length + py * certainOffset,
+    );
     ctx.lineWidth = certainWidth;
     ctx.lineCap = "round";
     ctx.strokeStyle = withAlpha(palette.wire, 0.62 * strength);
@@ -652,7 +682,8 @@ function drawRoad(
     ctx.lineCap = "butt";
     ctx.strokeStyle = withAlpha(palette.guess, 0.95 * strength);
     ctx.beginPath();
-    for (let t = 0; t <= span; t += HATCH_PITCH) {
+    const end = Math.min(base.length, range.to);
+    for (let t = hatchStart(range.from, HATCH_PITCH); t <= end; t += HATCH_PITCH) {
       const hx = x0 + ux * t + px * inferredOffset;
       const hy = y0 + uy * t + py * inferredOffset;
       ctx.moveTo(hx - px * half, hy - py * half);
@@ -662,7 +693,10 @@ function drawRoad(
     // A faint spine holds the ticks together as one road rather than a fence.
     ctx.beginPath();
     ctx.moveTo(x0 + px * inferredOffset, y0 + py * inferredOffset);
-    ctx.lineTo(x0 + ux * span + px * inferredOffset, y0 + uy * span + py * inferredOffset);
+    ctx.lineTo(
+      x0 + ux * base.length + px * inferredOffset,
+      y0 + uy * base.length + py * inferredOffset,
+    );
     ctx.lineWidth = 0.7;
     ctx.strokeStyle = withAlpha(palette.guess, 0.45 * strength);
     ctx.stroke();
@@ -687,6 +721,8 @@ function drawThread(
   alpha: number,
   weight: number,
   hole: number,
+  width: number,
+  height: number,
 ): void {
   const mid = span.length / 2;
   const before = Math.max(0, mid - hole);
@@ -720,8 +756,15 @@ function drawThread(
   const px = -span.uy;
   const py = span.ux;
   const half = 1.4 + weight;
+  // Only the visible stretch is laddered. At a deep zoom a line between two
+  // items can be thousands of pixels long with a dozen of them on screen, and
+  // the pitch is fixed in screen pixels by design — so without this the cost of
+  // one guessed connection would grow without bound as the user zooms in.
+  const range = visibleRange(span, width, height, 16);
+  if (!range) return;
   ctx.beginPath();
-  for (let t = 0; t <= span.length; t += HATCH_PITCH) {
+  const end = Math.min(span.length, range.to);
+  for (let t = hatchStart(range.from, HATCH_PITCH); t <= end; t += HATCH_PITCH) {
     if (hole > 0 && t > before && t < after) continue;
     const [hx, hy] = at(t);
     ctx.moveTo(hx - px * half, hy - py * half);

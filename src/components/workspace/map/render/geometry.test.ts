@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   arrowAt,
+  hatchStart,
   labelAnchor,
   onScreen,
   shifted,
   smoothstep,
   spanBetween,
+  visibleRange,
 } from "./geometry";
 
 const HALF_PI = Math.PI / 2;
@@ -96,6 +98,57 @@ describe("labelAnchor", () => {
     expect(span).not.toBeNull();
     if (!span) return;
     expect(labelAnchor(span).x).toBeCloseTo(60, 6);
+  });
+});
+
+describe("visibleRange", () => {
+  const span = (ax: number, ay: number, bx: number, by: number) => {
+    const made = spanBetween(ax, ay, bx, by, 0, 0, 0);
+    if (!made) throw new Error("the test fixture itself is wrong");
+    return made;
+  };
+
+  it("keeps a line that is entirely inside", () => {
+    const range = visibleRange(span(10, 10, 90, 90), 100, 100, 0);
+    expect(range?.from).toBeCloseTo(0, 6);
+    expect(range?.to).toBeCloseTo(Math.hypot(80, 80), 6);
+  });
+
+  /**
+   * The case that costs: a road between two territories either side of the
+   * window. Both ends are off screen, so no bounding box test would keep it,
+   * and it crosses the whole view.
+   */
+  it("finds the crossing part of a line whose two ends are both outside", () => {
+    const range = visibleRange(span(-500, 50, 600, 50), 100, 100, 0);
+    expect(range).not.toBeNull();
+    expect(range?.from).toBeCloseTo(500, 6);
+    expect(range?.to).toBeCloseTo(600, 6);
+  });
+
+  it("drops a line that misses the window entirely", () => {
+    expect(visibleRange(span(-500, -500, -400, -450), 100, 100, 0)).toBeNull();
+    expect(visibleRange(span(200, 0, 200, 100), 100, 100, 0)).toBeNull();
+  });
+
+  it("keeps a line running just outside an edge when the slack allows it", () => {
+    expect(visibleRange(span(-10, 20, -10, 80), 100, 100, 0)).toBeNull();
+    expect(visibleRange(span(-10, 20, -10, 80), 100, 100, 20)).not.toBeNull();
+  });
+});
+
+describe("hatchStart", () => {
+  /**
+   * Clipping must not re-phase the ladder. If the first tick were drawn at
+   * wherever the window happens to cut the line, the texture would crawl under
+   * the hand as the map is dragged — a moving pattern on a static picture,
+   * which is far more distracting than the cost it was meant to save.
+   */
+  it("snaps back to the line's own grid, so the ticks never move as you pan", () => {
+    expect(hatchStart(0, 5)).toBe(0);
+    expect(hatchStart(12, 5)).toBe(10);
+    expect(hatchStart(15, 5)).toBe(15);
+    expect(hatchStart(-3, 5)).toBe(0);
   });
 });
 

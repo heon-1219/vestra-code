@@ -155,6 +155,69 @@ export function labelAnchor(span: Span): LabelAnchor {
 }
 
 /**
+ * The part of a line that is actually on screen, as a range along it.
+ *
+ * Liang–Barsky, and it is here for a measured reason rather than for tidiness.
+ * A hatched line is a ladder of ticks at a fixed pitch in screen pixels, so the
+ * number of ticks is the line's SCREEN length divided by five — and screen
+ * length grows with the zoom without limit. On a 300-item project at six times
+ * the fitting zoom, the roads between territories are several thousand pixels
+ * long and almost entirely outside the window: measured at **53,000 tick
+ * segments a frame, essentially all of them off screen**, which took a repaint
+ * from 1ms to a median of 13ms with multi-second stalls behind it. Clipping the
+ * range first makes the cost of a hatch depend on how much of it you can see,
+ * which is the only thing it should ever have depended on.
+ *
+ * Returns null when the line misses the window entirely.
+ */
+export function visibleRange(
+  span: Span,
+  width: number,
+  height: number,
+  slack: number,
+): { from: number; to: number } | null {
+  let from = 0;
+  let to = span.length;
+
+  // The standard four half-plane tests. `p` is the rate at which the line
+  // approaches an edge and `q` how far outside it starts; `p === 0` is a line
+  // running parallel to that edge, which is either wholly inside it or wholly
+  // out and has no crossing to compute.
+  const clip = (p: number, q: number): boolean => {
+    if (p === 0) return q >= 0;
+    const r = q / p;
+    if (p < 0) {
+      if (r > to) return false;
+      if (r > from) from = r;
+    } else {
+      if (r < from) return false;
+      if (r < to) to = r;
+    }
+    return true;
+  };
+
+  if (!clip(-span.ux, span.x0 + slack)) return null;
+  if (!clip(span.ux, width + slack - span.x0)) return null;
+  if (!clip(-span.uy, span.y0 + slack)) return null;
+  if (!clip(span.uy, height + slack - span.y0)) return null;
+  if (to < from) return null;
+  return { from, to };
+}
+
+/**
+ * Where a hatch starts, snapped back to the pitch grid the whole line is on.
+ *
+ * The ticks have to stay at fixed multiples of the pitch measured from the
+ * line's own start, not from wherever the window happens to cut it — otherwise
+ * clipping would re-phase the ladder as the map is dragged and the texture
+ * would crawl under the hand. Snapping backwards also guarantees the first
+ * drawn tick is at or before the edge, so no gap opens at the window's rim.
+ */
+export function hatchStart(from: number, pitch: number): number {
+  return Math.max(0, Math.floor(from / pitch) * pitch);
+}
+
+/**
  * True when a rectangle touches the screen at all.
  *
  * Culling is done per primitive rather than by clipping, because the cheapest
