@@ -123,7 +123,7 @@ export function detectProject(
     return {
       kind: "unsupported",
       deep: false,
-      summary: `${shallowFramework.label}로 만든 프로젝트예요. 아직 이 종류는 자세히 읽지 못해요. 파일과 폴더, 서로 불러 쓰는 관계까지는 지도로 그려드릴 수 있지만, 그 연결들은 확실한 것이 아니라 짐작이에요.`,
+      summary: `${shallowFramework.label}로 만든 프로젝트예요. 아직 이 종류는 자세히 읽지 못해요. 파일과 폴더, 어떤 도구를 쓰는지, 서로 불러 쓰는 관계까지는 지도로 그려드릴 수 있어요. 그중 일부는 확실하고, 일부는 짐작이에요.`,
       signals,
     };
   }
@@ -180,7 +180,7 @@ export function detectProject(
     kind: "unsupported",
     deep: false,
     summary:
-      "아직 자세히 읽지 못하는 종류의 프로젝트예요. 파일과 폴더, 그리고 서로 불러 쓰는 관계까지는 지도로 그려드릴 수 있어요. 다만 그 연결들은 확실한 것이 아니라 짐작이에요.",
+      "아직 자세히 읽지 못하는 종류의 프로젝트예요. 파일과 폴더, 어떤 도구를 쓰는지, 그리고 서로 불러 쓰는 관계까지는 지도로 그려드릴 수 있어요. 그중 일부는 확실하고, 일부는 짐작이에요.",
     signals,
   };
 }

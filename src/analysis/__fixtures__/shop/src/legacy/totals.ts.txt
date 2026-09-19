@@ -1,0 +1,10 @@
+import { formatPrice } from "../lib/format";
+
+export function legacyTotal(items: number[]): string {
+<<<<<<< HEAD
+  const total = items.reduce((sum, cents) => sum + cents, 0);
+=======
+  const total = items.reduce((sum, cents) => sum + cents, 1);
+>>>>>>> feature/tax-rounding
+  return formatPrice(total);
+}

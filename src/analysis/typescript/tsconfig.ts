@@ -65,7 +65,7 @@ export function resolveAliasConfig(
     if (!existingPaths.has(name)) continue;
 
     const absolute = path.join(repoRoot, name);
-    let config = readRawConfig(absolute, readFile);
+    const config = readRawConfig(absolute, readFile);
     if (!config) continue;
 
     let options = compilerOptionsOf(config);

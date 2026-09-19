@@ -1,0 +1,1 @@
+not a real png. the analyzer never reads an asset, it only records that it exists.

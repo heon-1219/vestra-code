@@ -1,0 +1,24 @@
+import { formatPrice } from "./format";
+
+export type Order = {
+  id: string;
+  cents: number;
+};
+
+export async function createOrder(cents: number): Promise<Order> {
+  const response = await fetch("/api/orders", {
+    method: "POST",
+    body: JSON.stringify({ cents }),
+  });
+  return (await response.json()) as Order;
+}
+
+export function describeOrder(order: Order): string {
+  return order.id + " - " + formatPrice(order.cents);
+}
+
+export function reportOrder(order: Order): void {
+  // No import for this one. The agent that wrote the file forgot it, and the
+  // page still runs because analytics is loaded from a script tag.
+  trackEvent("order_created", { id: order.id, cents: order.cents });
+}

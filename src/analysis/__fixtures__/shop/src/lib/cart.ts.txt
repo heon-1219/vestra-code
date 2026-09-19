@@ -1,0 +1,19 @@
+export class Cart {
+  items: number[] = [];
+
+  total(): number {
+    return this.items.reduce((sum, cents) => sum + cents, 0);
+  }
+}
+
+export class Wishlist {
+  items: number[] = [];
+
+  total(): number {
+    return this.items.length;
+  }
+}
+
+export function cartTotal(cart: Cart): number {
+  return cart.total();
+}

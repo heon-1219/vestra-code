@@ -1,0 +1,15 @@
+import { PriceTag } from "@/components";
+import { formatPrice } from "@/lib/format";
+
+const FEATURED_CENTS = 129000;
+
+export default function HomePage() {
+  return (
+    <main>
+      <h1>Vestra Shop</h1>
+      <Badge label="new" />
+      <PriceTag cents={FEATURED_CENTS} />
+      <p>{formatPrice(FEATURED_CENTS)}</p>
+    </main>
+  );
+}

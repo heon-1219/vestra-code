@@ -123,7 +123,7 @@ export default function HeroGraphScene({
   const idleFramesRef = useRef(0);
   const wakeRef = useRef<(() => void) | null>(null);
 
-  const data = useMemo(buildGraph, []);
+  const data = useMemo(() => buildGraph(), []);
 
   const centers = useMemo(() => {
     const radius = 170;

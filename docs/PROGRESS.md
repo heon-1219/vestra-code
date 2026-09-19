@@ -3,7 +3,43 @@
 What works, what is mocked, what is next. Updated at every checkpoint.
 **Nothing in this file is described as working unless it has been run and checked.**
 
-## Status: Step 1 — built end to end. One click from David confirms it.
+## Status: Step 2's engine works end to end. Nothing in the UI can reach it yet.
+
+**164 tests pass** (11 files, including the database and live blocks). Verified against
+the real demo repo and the real Neon database, twice: 68 nodes, 121 edges, all certain,
+byte-identical ids on the second run, `created_at` unchanged (upserted, not
+re-inserted), sweep deleted nothing. Both endpoints verified over real HTTP with a
+signed session: 401 unauthenticated, 202 on your own project, **404 on someone else's**
+(not 403, which would confirm it exists), correct SSE headers, `Last-Event-ID: 22`
+replayed exactly `[23,24,25]`, and heartbeats at 0s/20s/40s/61s.
+
+### Known and open, in priority order
+
+1. **Nothing in the UI calls either endpoint.** `addProject` creates the project row and
+   stops. The whole pipeline is reachable only from a test or curl. Step 3 owns this,
+   but it means "Step 2 is done" is true of the engine and false of the product.
+2. **`fetches` edges still do not exist** (D56). They are the only edges joining the
+   demo app's client half to its server half, and Pass 2's grouping would be built on
+   two disconnected islands.
+3. **A `static_site` project is told it will be read deeply and is served by the shallow
+   analyzer**, which produces no symbols at all — solid boxes, empty inside. Needs
+   either D6's static-site analyzer or a change to what detection promises.
+4. **A re-export barrel produces no `imports` edge.** Symbol-level resolution through
+   the barrel is correct, so only the file-level graph is wrong — which is exactly what
+   D52 feeds to Pass 2.
+5. **Feature ids would hash the LLM's chosen name** (D55). Nothing writes them yet, so
+   this is free to fix until Pass 2 lands, and expensive after.
+6. **No ingest-progress events.** The download is the longest silent stretch of a run
+   and the browser currently sees nothing during it.
+7. **Nothing in the database prevents two concurrent runs** for one project. The guard
+   is per-process, which is airtight on one Railway instance and worthless on two.
+8. **D20's "a failed run drops its rows" is not implemented.** It self-heals on the next
+   successful sweep; between the two, the graph contains a partial run's work.
+9. `file.parsed`'s `total` is an upper bound (18 parsed of 22 offered), so a progress
+   bar driven by it stops short. The UI must finish on `run.completed`.
+10. The fixture sources are invisible to `tsconfig.json` only because of a trailing
+    `.txt`. Rename them and the product's own typecheck starts failing on a file that
+    is broken on purpose.
 
 ### Done and verified
 - Repo initialized, brief moved to `docs/`. Three commits pushed.

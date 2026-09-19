@@ -1,0 +1,8 @@
+import { useState } from "react";
+
+import { Cart } from "./cart";
+
+export function useCart(): Cart {
+  const [cart] = useState(() => new Cart());
+  return cart;
+}

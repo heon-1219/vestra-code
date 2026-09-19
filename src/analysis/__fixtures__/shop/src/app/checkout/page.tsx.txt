@@ -1,0 +1,22 @@
+import { CheckIcon } from "@heroicons/react/24/solid";
+import clsx from "clsx";
+
+import { PayButton, PriceTag } from "@/components";
+import { formatPrice } from "@/lib/format";
+import { describeOrder } from "@/lib/orders";
+
+const SHIPPING_CENTS = 3000;
+
+export default function CheckoutPage() {
+  const line = describeOrder({ id: "demo", cents: SHIPPING_CENTS });
+
+  return (
+    <section className={clsx("checkout")}>
+      <CheckIcon className="tick" />
+      <p>{line}</p>
+      <p>{formatPrice(SHIPPING_CENTS)}</p>
+      <PriceTag cents={SHIPPING_CENTS} />
+      <PayButton cents={SHIPPING_CENTS} />
+    </section>
+  );
+}

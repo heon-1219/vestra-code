@@ -1,0 +1,16 @@
+function boot() {
+  init();
+  render();
+  legacyPing();
+}
+
+function init() {
+  render();
+}
+
+function render() {
+  const root = document.querySelector("#app");
+  if (root) {
+    root.textContent = "ready";
+  }
+}

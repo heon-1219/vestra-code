@@ -1,0 +1,5 @@
+import { formatPrice } from "@/lib/format";
+
+export function PriceTag({ cents }: { cents: number }) {
+  return <span className="price-tag">{formatPrice(cents)}</span>;
+}

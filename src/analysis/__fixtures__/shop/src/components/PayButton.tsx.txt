@@ -1,0 +1,25 @@
+"use client";
+
+import { useState } from "react";
+
+import { createOrder } from "@/lib/orders";
+import { useCart } from "@/lib/useCart";
+
+import { PriceTag } from "./PriceTag";
+
+export function PayButton({ cents }: { cents: number }) {
+  const [busy, setBusy] = useState(false);
+  const cart = useCart();
+
+  async function pay() {
+    setBusy(true);
+    await createOrder(cents + cart.items.length);
+    setBusy(false);
+  }
+
+  return (
+    <button className="pay" disabled={busy} onClick={pay}>
+      {busy ? <Spinner /> : <PriceTag cents={cents} />}
+    </button>
+  );
+}

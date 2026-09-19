@@ -451,13 +451,32 @@ function collectCallAndRenderEdges(context: {
   declared: Set<string>;
   addEdge: (edge: AnalyzedEdge) => void;
 }): void {
-  const { source, repoPath, repoRoot, symbolsByName, addEdge } = context;
+  const { source, repoPath, repoRoot, symbolsByName, declared, addEdge } = context;
 
+  /**
+   * The nearest enclosing declaration WE MADE A NODE FOR — not merely the
+   * nearest declaration.
+   *
+   * The difference is the whole product's headline claim. Only top-level
+   * declarations become nodes, but in React most calls happen inside a click
+   * handler, an effect callback, or a `.map()` body. Stopping at the first
+   * declaration attributes the call to a nested function that has no node, and
+   * the guard in addEdge then discards the edge silently.
+   *
+   * Measured before this fix: `createOrder`, called from PayButton's click
+   * handler, had ZERO incoming call edges. "This is used in 4 places" would
+   * have confidently said 3 — a quiet undercount, in the one sentence the
+   * product is sold on.
+   *
+   * Walking past nested functions to the top-level owner is also the answer a
+   * person would give: it is PayButton that places the order, whether or not
+   * the call sits inside a closure.
+   */
   const enclosing = (node: Node): NodeRef | null => {
     let current: Node | undefined = node.getParent();
     while (current) {
       const ref = declarationRefOf(current, repoPath);
-      if (ref) return ref;
+      if (ref && declared.has(refKey(ref))) return ref;
       current = current.getParent();
     }
     return null;

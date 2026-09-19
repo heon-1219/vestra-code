@@ -1,0 +1,5 @@
+export type Payload = Record<string, string | number>;
+
+export function trackEvent(name: string, payload: Payload): void {
+  console.log("[analytics]", name, payload);
+}

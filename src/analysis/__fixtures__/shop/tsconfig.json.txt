@@ -1,0 +1,20 @@
+{
+  // Comments and a trailing comma are legal here and illegal in JSON, and a
+  // real repo has both.
+  "compilerOptions": {
+    // Every option below is hostile to Pass 1 on purpose. allowJs off puts
+    // zero files in the program, Node16 resolves ./Button to nothing, and
+    // target es5 is simply not how we want to read anybody's code. None of
+    // them may ever reach our compiler: only baseUrl and paths are lifted out.
+    "allowJs": false,
+    "moduleResolution": "node16",
+    "target": "es5",
+    "strict": true,
+    // No baseUrl on purpose. This is the shape measured on the demo repo,
+    // where a relative substitution resolves against the analyzer's own
+    // working directory instead of the repository.
+    "paths": {
+      "@/*": ["./src/*"],
+    },
+  },
+}
