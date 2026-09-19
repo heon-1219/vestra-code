@@ -1,7 +1,12 @@
 import Link from "next/link";
 
 import { Aurora } from "@/components/ambient/aurora";
+import { FeatureMark } from "@/components/landing/feature-mark";
 import { HeroGraph } from "@/components/landing/hero-graph";
+import { KeptAndNot } from "@/components/landing/kept-and-not";
+import { PainMark } from "@/components/landing/pain-mark";
+import { RepoToMap } from "@/components/landing/repo-to-map";
+import { WaysIn } from "@/components/landing/ways-in";
 
 /**
  * The landing page.
@@ -91,15 +96,19 @@ const FEATURES = [
 const PROMISES = [
   {
     /*
-     * The one item here that is not an unconditional refusal, and it names its
-     * condition rather than rounding it off. An uploaded folder has no origin
-     * to fetch back from, so keeping its files is the only way its map opens on
-     * a second computer — which means the flat version of this sentence is now
-     * false for half the product, and a false sentence about someone's own code
-     * is the worst thing this band could contain.
+     * The one item here that is not an unconditional refusal, and its condition
+     * is still named — by `KeptAndNot` immediately above, in this promise's own
+     * words rather than a paraphrase of them (D77). That is why the body stops
+     * after one sentence: the two that used to follow it are the table's two
+     * notes verbatim, a few lines up the same band, and a reader who meets them
+     * twice spends the second reading checking whether it says something new.
+     * The title stays scoped to GitHub, because an uploaded folder has no
+     * origin to fetch back from and the flat version of this claim is false for
+     * half the product — a false sentence about someone's own code is the worst
+     * thing this band could contain.
      */
     title: "GitHub 저장소의 코드는 보관하지 않습니다",
-    body: "지도와 파일 경로, 줄 번호만 남깁니다. 코드는 필요할 때 GitHub에서 가져와 읽고 곧바로 버립니다. 내 컴퓨터에서 올려주신 폴더는 다시 가져올 곳이 없어서, 다른 컴퓨터에서도 열어보실 수 있게 파일을 함께 보관합니다.",
+    body: "지도와 파일 경로, 줄 번호만 남깁니다.",
   },
   {
     title: "확인한 것과 짐작한 것을 섞지 않습니다",
@@ -228,11 +237,17 @@ export default function LandingPage() {
           <div className="mt-20 grid grid-cols-12 gap-x-2 gap-y-14 sm:gap-x-6 md:gap-x-8">
             {PAINS.map((pain, index) => (
               <div key={pain.title} className="rise col-span-12 md:col-span-4">
-                {/* Mono for the numeral, where mono is actually the right
+                {/* The colour is on the row, not on either half of it: the mark
+                    draws in `currentColor`, and a colour written twice is a
+                    colour that will eventually be written differently twice.
+                    Mono for the numeral, where mono is actually the right
                     family. It is not used for the Korean labels. */}
-                <span className="font-mono text-[13px] text-said-faint">
-                  {String(index + 1).padStart(2, "0")}
-                </span>
+                <div className="flex items-center gap-3 text-said-faint">
+                  <PainMark index={index} />
+                  <span className="font-mono text-[13px]">
+                    {String(index + 1).padStart(2, "0")}
+                  </span>
+                </div>
                 <h3 className="mt-4 text-[19px] font-semibold tracking-[-0.022em]">
                   {pain.title}
                 </h3>
@@ -259,6 +274,18 @@ export default function LandingPage() {
             GitHub 저장소를 고르거나 폴더를 올리면, 몇 분 뒤에 지도 한 장이
             나옵니다.
           </p>
+          {/*
+            The lede above is now the caption for the two drawings under it, in
+            its own order: what you hand over, then what comes back. `WaysIn`
+            sits directly beneath it because it is the sentence's own correction
+            — "고르거나 … 올리면" is two doors and there are three, and a visitor
+            whose project was never pushed anywhere is exactly the reader who
+            stops at that sentence. `RepoToMap` then does the part no paragraph
+            on this page can do for a reader who cannot read code: show that a
+            file list and a map are the same project.
+          */}
+          <WaysIn className="rise mt-14" />
+          <RepoToMap className="rise mt-20" />
           {/* Tight gutters. The cards are a single mosaic, not four separate
               objects with a corridor between them. */}
           <div className="mt-20 grid grid-cols-12 gap-2">
@@ -267,9 +294,13 @@ export default function LandingPage() {
                 key={feature.title}
                 className={`rise col-span-12 ${feature.span} hairline lift rounded-xl bg-ink-raised p-8 hover:-translate-y-0.5 hover:border-edge-lit md:p-10`}
               >
-                <span className="label-kr text-micro text-said-faint">
-                  {feature.eyebrow}
-                </span>
+                {/* Colour on the row for the same reason as the numbered band
+                    above: the mark is `currentColor`, so there is one place to
+                    change it and the two cannot drift apart. */}
+                <div className="flex items-center gap-3 text-said-faint">
+                  <FeatureMark name={feature.eyebrow} />
+                  <span className="label-kr text-micro">{feature.eyebrow}</span>
+                </div>
                 <h3 className="display-section mt-5 max-w-[24ch] text-card">
                   {feature.title}
                 </h3>
@@ -291,6 +322,14 @@ export default function LandingPage() {
             아직 보여드릴 사용자도, 숫자도 없습니다. 대신 이 제품이 지키기로 한
             것을 적어 둡니다.
           </p>
+          {/*
+            The first promise below is the only one whose answer depends on how
+            you connected, and a difference between two columns is read in a
+            glance where the same difference in a paragraph has to be read
+            twice. The table goes above the band so that promise arrives already
+            understood rather than having to explain itself.
+          */}
+          <KeptAndNot className="rise mt-16 max-w-[620px]" />
           {/* A ruled band rather than four boxes: this is a specification, and
               it should read like one. */}
           <div className="mt-20 grid grid-cols-12 gap-x-2 gap-y-12 sm:gap-x-6 md:gap-x-8">
