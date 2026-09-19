@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 
+import { AddProjectForm } from "@/components/app/add-project-form";
 import { db } from "@/db";
 import { projects } from "@/db/schema";
 import { requireSession } from "@/lib/session";
@@ -20,6 +21,10 @@ export default async function AppDashboard() {
     <div className="mx-auto max-w-[1180px] px-6 py-16">
       <h1 className="display-kr text-[30px]">내 프로젝트</h1>
 
+      <div className="mt-8 max-w-[680px]">
+        <AddProjectForm />
+      </div>
+
       {myProjects.length === 0 ? (
         <div className="mt-10 rounded-2xl border border-edge bg-ink-raised p-10">
           <h2 className="text-[19px] font-semibold tracking-[-0.02em]">
@@ -28,9 +33,6 @@ export default async function AppDashboard() {
           <p className="mt-3 max-w-[52ch] text-[15px] leading-[1.8] text-said-soft">
             GitHub 공개 저장소를 연결하면 코드를 읽어서 앱의 지도를 그립니다.
             소스 코드는 저장하지 않고, 지도와 파일 경로만 보관합니다.
-          </p>
-          <p className="mt-6 text-[14px] text-said-faint">
-            저장소 연결은 다음 단계에서 들어옵니다.
           </p>
         </div>
       ) : (
