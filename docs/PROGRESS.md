@@ -3,7 +3,7 @@
 What works, what is mocked, what is next. Updated at every checkpoint.
 **Nothing in this file is described as working unless it has been run and checked.**
 
-## Status: Step 1 — foundation built and verified, blocked on database access
+## Status: Step 1 — built end to end. One click from David confirms it.
 
 ### Done and verified
 - Repo initialized, brief moved to `docs/`. Three commits pushed.
@@ -16,20 +16,29 @@ What works, what is mocked, what is next. Updated at every checkpoint.
 - `src/db/schema/app.ts` — the graph model from section 6.1.
 - **Verified:** `tsc --noEmit` clean, and `drizzle-kit generate` produces valid SQL — 11 tables, 9 enums, 17 indexes. The schema is checked as far as it can be without a database.
 
+### Done and verified (Step 1)
+- **Database live.** Neon, Postgres 18.6, Singapore. Migration applied and checked against the running database: 11 tables, 9 enums, 30 indexes, 11 foreign keys. `select 'probably'::confidence` is rejected, so certain/inferred is enforced by Postgres.
+- **Landing page.** Korean-first, warm near-black, 3D force graph hero that untangles from one tangled mass into six coloured clusters as you scroll, driven by real scroll position. Lazy-loaded behind a viewport and reduced-motion check, so phones and reduced-motion visitors get a still picture and never download three.js. Headline is real text and renders before the canvas.
+- **Auth, verified by request rather than by assumption:**
+  - `GET /app` unauthenticated returns `307 -> /sign-in`.
+  - GitHub sign-in builds a valid `github.com/login/oauth/authorize` URL with the right client id, `redirect_uri=http://localhost:3000/api/auth/callback/github`, scope `read:user user:email`, and CSRF state.
+  - Google sign-in builds a valid `accounts.google.com` URL with the right client id, the matching callback, scope `email profile openid`, and state.
+- Protected `/app` shell with the signed-in user and sign out; empty-state dashboard in plain Korean.
+
 ### In progress
-- Step 1 remainder: protected `/app`, sign in and sign out, the landing page, first deployment to Railway.
+- Deployment to Railway (Singapore, to match the database region).
 
 ### Blocked on David
-- **Database access.** One command in his terminal: `npx neon@latest auth`. After that the project, database, connection string and migration are all mine to run. The Neon *skills* install failed — the skills CLI needs Node 22.20+ and this machine has 22.14 — but the Neon CLI itself works fine at this version and only needs an account login, which is a browser OAuth flow.
-- GitHub OAuth client id + secret, Google OAuth client id + secret. Not blocking schema work; blocking the moment sign-in is testable.
+- **One click.** Sign in at `http://localhost:3000/sign-in` with GitHub or Google. Everything up to the provider's own consent screen is verified; only the human half of the handshake is untested, and it is his account to use, not mine.
+- A ruling on O4 (which UI direction) before Step 3 builds the workspace.
 - Local callback URLs he is entering now, both verified against Better Auth's own docs source:
   - `http://localhost:3000/api/auth/callback/github`
   - `http://localhost:3000/api/auth/callback/google`
 - Production callbacks follow once the first deployment has a domain.
 
 ### Mocked or faked
-- Nothing in the product.
-- `.env.local` currently holds placeholder strings for `DATABASE_URL` and both OAuth pairs, so schema tooling can load the config. No connection is opened with them. They are replaced the moment Neon is reachable. `.env.local` is gitignored.
+- **The landing page hero graph is synthetic**, and deliberately so: it is an illustration of what an analysed app looks like, not a real analysis. It is six generated clusters with generated links. No real repository has been analysed yet — Pass 1 does not exist until Step 2. Nothing in the product presents it as real output.
+- Nothing else. All placeholders in `.env.local` have been replaced with real values.
 
 ### Not started
 - Step 2 (ingest + static analysis), Step 3 (live graph view), Step 4 (semantic layer, Q&A, prompt generation, export), Step 5 (polish), Step 6 (stretch).
