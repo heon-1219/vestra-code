@@ -17,6 +17,14 @@ import {
   type Grouping,
 } from "./map/grouping";
 import { GroupingControl } from "./map/grouping-control";
+import {
+  columnTemplate,
+  Divider,
+  PaneChips,
+  resizeColumns,
+  resizeHistory,
+  usePaneLayout,
+} from "./panes";
 import { PlacesPanel } from "./places-panel";
 import { RightPanel, type ConnectionLock, type LockMap } from "./panel/connections-panel";
 import { FilePreview, previewTargetFor, type PreviewTarget } from "./preview/file-preview";
@@ -229,6 +237,25 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
   const hasGraph = view.items.length > 0;
   const neverRead = !hasGraph && view.lastRun === null;
 
+  /*
+   * How the workspace is divided, and which pane has the screen.
+   *
+   * The body is measured at the moment of a drag rather than tracked: a drag
+   * lasts a second and the container cannot change size during one, so a
+   * ResizeObserver here would maintain a number for the entire session to be
+   * read twice. `getBoundingClientRect` at pointer-down is the same answer for
+   * none of the cost.
+   */
+  const { layout, setColumns, setHistory, toggleMaximized, reset } =
+    usePaneLayout();
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
+
+  const dragColumn = (index: 0 | 1) => (deltaPx: number) => {
+    const width = rowRef.current?.getBoundingClientRect().width ?? 0;
+    setColumns(resizeColumns(layout.columns, index, deltaPx, width));
+  };
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="flex shrink-0 items-center gap-4 border-b border-edge px-4 py-2.5">
@@ -252,6 +279,8 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
             </span>
           )}
         </p>
+        <PaneChips maximized={layout.maximized} onToggle={toggleMaximized} />
+
         {!running && hasGraph ? (
           <button
             type="button"
@@ -264,17 +293,51 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
         ) : null}
       </header>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(150px,15%)_minmax(0,1fr)_minmax(272px,25%)]">
-        <PlacesPanel
-          items={view.items}
-          selectedId={selectedId}
-          onSelect={onSelect}
-          onOpen={openItem}
-          beam={beam}
-          loading={running}
+      {/*
+        The body is the flex column that the row and the bottom band divide
+        between them, and it is what both dividers measure against.
+      */}
+      <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col">
+      <div
+        ref={rowRef}
+        className="grid min-h-0"
+        style={{
+          gridTemplateColumns: columnTemplate(layout),
+          // The row gives up its height entirely when the band is the pane
+          // filling the screen. `flex` rather than a class because both values
+          // are computed, and a class string built from state is a class
+          // Tailwind never generates.
+          flex: layout.maximized === "history" ? "0 0 0px" : "1 1 0px",
+        }}
+      >
+        {/*
+          Each pane is wrapped rather than placed directly in the grid. A pane
+          at zero width still has its contents — that is the whole point, it
+          keeps its scroll and its half-typed search — and without a wrapper
+          that clips, those contents would spill across the pane that took the
+          screen. The panels themselves are not touched: a pane should not have
+          to know it is in a resizable layout.
+        */}
+        <div className="flex min-h-0 min-w-0 overflow-hidden">
+          <PlacesPanel
+            items={view.items}
+            selectedId={selectedId}
+            onSelect={onSelect}
+            onOpen={openItem}
+            beam={beam}
+            loading={running}
+          />
+        </div>
+
+        <Divider
+          orientation="vertical"
+          label="파일과 지도 사이 너비"
+          valueNow={layout.columns[0] * 100}
+          onDelta={dragColumn(0)}
+          onReset={reset}
         />
 
-        <section className="flex min-h-0 min-w-0 flex-col">
+        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden">
           <div className="flex shrink-0 items-center gap-3 border-b border-edge px-4 py-2">
             {/*
               The beam. Uncontrolled on purpose: React never writes a value back
@@ -391,6 +454,15 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
           </div>
         </section>
 
+        <Divider
+          orientation="vertical"
+          label="지도와 연결 사이 너비"
+          valueNow={(layout.columns[0] + layout.columns[1]) * 100}
+          onDelta={dragColumn(1)}
+          onReset={reset}
+        />
+
+        <div className="flex min-h-0 min-w-0 overflow-hidden">
         <RightPanel
           // Always the real view, even when it is empty: an empty graph is an
           // answer the panel knows how to say, and `null` would show "loading"
@@ -407,6 +479,49 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
           // same five steps twice reads as two things happening.
           showRunSteps={false}
         />
+        </div>
+      </div>
+
+      {/*
+        The band along the bottom, and the divider that gives it room.
+        Hidden entirely while another pane has the screen: a strip that stays
+        visible under a maximised pane is the maximised pane not actually
+        filling anything.
+      */}
+      {layout.maximized === null || layout.maximized === "history" ? (
+        <Divider
+          orientation="horizontal"
+          label="변경 기록 높이"
+          valueNow={(1 - layout.history) * 100}
+          onDelta={(deltaPx) => {
+            const height = bodyRef.current?.getBoundingClientRect().height ?? 0;
+            setHistory(resizeHistory(layout.history, deltaPx, height));
+          }}
+          onReset={reset}
+        />
+      ) : null}
+
+      <div
+        className="flex items-center gap-3 overflow-hidden border-t border-edge px-4 py-1.5 text-[11px] text-said-faint"
+        style={{
+          flex:
+            layout.maximized === "history"
+              ? "1 1 0px"
+              : layout.maximized === null
+                ? `0 0 ${layout.history * 100}%`
+                : "0 0 0px",
+        }}
+      >
+        <span>변경 기록</span>
+        <span aria-hidden className="flex items-center gap-1.5 opacity-40">
+          <span className="h-1.5 w-1.5 rounded-full bg-said-faint" />
+          <span className="h-px w-5 bg-edge-lit" />
+          <span className="h-1.5 w-1.5 rounded-full bg-said-faint" />
+          <span className="h-px w-5 bg-edge-lit" />
+          <span className="h-1.5 w-1.5 rounded-full bg-said-faint" />
+        </span>
+        <span>아직 준비 중인 자리예요</span>
+      </div>
       </div>
 
       {preview ? (
@@ -423,22 +538,6 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
         />
       ) : null}
 
-      {/*
-        Section 4: the change timeline is out of scope for the MVP and this
-        strip is its visual placeholder. It says so — an inert row of dots with
-        no explanation would read as a broken control.
-      */}
-      <div className="flex shrink-0 items-center gap-3 border-t border-edge px-4 py-1.5 text-[11px] text-said-faint">
-        <span>변경 기록</span>
-        <span aria-hidden className="flex items-center gap-1.5 opacity-40">
-          <span className="h-1.5 w-1.5 rounded-full bg-said-faint" />
-          <span className="h-px w-5 bg-edge-lit" />
-          <span className="h-1.5 w-1.5 rounded-full bg-said-faint" />
-          <span className="h-px w-5 bg-edge-lit" />
-          <span className="h-1.5 w-1.5 rounded-full bg-said-faint" />
-        </span>
-        <span>아직 준비 중인 자리예요</span>
-      </div>
     </div>
   );
 }

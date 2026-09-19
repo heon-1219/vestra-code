@@ -423,15 +423,42 @@ function Refused({ message, onGithub }: { message: string; onGithub: string | nu
 
 function ImageBody({ url, size }: { url: string; size: number | null }) {
   const [natural, setNatural] = useState<{ width: number; height: number } | null>(null);
+  /*
+   * Fitted, or at the size it actually is.
+   *
+   * Fitting is the right first answer — it is the whole picture, immediately,
+   * which is what someone clicking a file in a map wants. It is the wrong only
+   * answer: a screenshot fitted into a popup is a picture of text you cannot
+   * read, and the reason to open a screenshot is to read it. At actual size the
+   * frame below scrolls in both directions.
+   */
+  const [actual, setActual] = useState(false);
+
+  /** Only worth offering when it would change anything. */
+  const overflows =
+    natural !== null &&
+    (natural.width > 900 || natural.height > 520);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
+      <div
+        className={`flex min-h-0 flex-1 overflow-auto p-4 ${
+          // Centred while it fits; pinned to the top-left once it does not.
+          // Centring an image larger than its frame puts the middle on screen
+          // and both edges out of reach of a scrollbar that starts in the
+          // middle — you scroll away from the corner you were looking for.
+          actual ? "items-start justify-start" : "items-center justify-center"
+        }`}
+      >
         {/*
           A plain <img>, deliberately. It is the one place a browser refuses to
           run an SVG's script, and it is where every picture here is shown.
-          `object-contain` inside a box that owns the space is what stops a
-          4000px photo from pushing the popup off the screen.
+
+          The fit ceiling is in viewport units rather than `max-h-full`. A
+          percentage resolves against the parent's height, the parent chain ends
+          in a popup sized to its own content, and a percentage of an automatic
+          height is not a constraint at all — so a tall photograph would push
+          the frame instead of fitting inside it.
 
           eslint-disable-next-line @next/next/no-img-element — this is an object
           URL for bytes we hold for the life of the popup, which the image
@@ -447,13 +474,29 @@ function ImageBody({ url, size }: { url: string; size: number | null }) {
               height: event.currentTarget.naturalHeight,
             })
           }
-          className="max-h-full max-w-full object-contain"
+          className={
+            actual
+              ? "max-w-none shrink-0"
+              : "max-h-[min(70vh,40rem)] max-w-full object-contain"
+          }
         />
       </div>
-      <p className="shrink-0 px-4 pb-3 text-[11px] text-said-faint">
-        {natural ? `${natural.width}×${natural.height}` : "그림"}
-        {size !== null ? ` · ${formatBytes(size)}` : ""}
-      </p>
+      <div className="flex shrink-0 items-center justify-between gap-3 px-4 pb-3">
+        <p className="text-[11px] text-said-faint">
+          {natural ? `${natural.width}×${natural.height}` : "그림"}
+          {size !== null ? ` · ${formatBytes(size)}` : ""}
+        </p>
+        {overflows ? (
+          <button
+            type="button"
+            onClick={() => setActual((on) => !on)}
+            aria-pressed={actual}
+            className="rounded-md border border-edge px-2 py-1 text-[11px] text-said-faint transition-colors hover:border-edge-lit hover:text-said-soft"
+          >
+            {actual ? "화면에 맞추기" : "원래 크기로 보기"}
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
