@@ -19,6 +19,26 @@ describe("classifyFile", () => {
     expect(classifyFile("fonts/Pretendard.woff2", 400_000)).toBe("asset");
   });
 
+  it("puts a spreadsheet on the map instead of pretending it is not there", () => {
+    // `skip` is not a neutral answer: a skipped file is not a node, so the
+    // preview endpoint cannot serve it and the browser drops it before an
+    // upload ever leaves the machine. The viewer for these exists, so the map
+    // has to admit they do.
+    expect(classifyFile("data/2026-sales.xlsx", 900_000)).toBe("asset");
+    expect(classifyFile("export/rows.csv", 4_000_000)).toBe("asset");
+    expect(classifyFile("export/rows.tsv", 20_000)).toBe("asset");
+    // Kinds we cannot draw are still nodes, so the viewer can refuse them by
+    // name rather than the file appearing not to exist.
+    expect(classifyFile("old/book.xls", 50_000)).toBe("asset");
+    expect(classifyFile("old/book.ods", 50_000)).toBe("asset");
+  });
+
+  it("does not hand a data file to the analyzer as source", () => {
+    // A .csv is text, and it is not source. Parsing one looking for imports is
+    // the most expensive file in the repository bought for nothing.
+    expect(classifyFile("export/rows.csv", 40_000_000)).not.toBe("text");
+  });
+
   it("skips vendored and generated directories at any depth", () => {
     expect(classifyFile("node_modules/react/index.js", 100)).toBe("skip");
     expect(classifyFile("packages/ui/node_modules/x/a.ts", 100)).toBe("skip");

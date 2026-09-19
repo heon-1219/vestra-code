@@ -13,6 +13,7 @@ import {
   type PreviewRefusal,
   type PreviewShape,
 } from "./preview-kinds";
+import { delimiterFor, SpreadsheetBody, type SpreadsheetSource } from "./spreadsheet";
 
 /**
  * Opening a file and looking at it.
@@ -83,6 +84,7 @@ type ViewState =
   | { state: "loading" }
   | { state: "code"; text: string; size: number | null }
   | { state: "image"; url: string; size: number | null }
+  | { state: "sheet"; source: SpreadsheetSource; size: number | null }
   | { state: "pdf"; url: string }
   | { state: "refused"; reason: PreviewRefusal | "spreadsheet"; message: string };
 
@@ -112,12 +114,12 @@ export function FilePreview({
   /**
    * The answers that need no network, worked out while rendering.
    *
-   * A spreadsheet, a file type we have no viewer for, and the PDF — which is an
-   * address handed to the browser rather than bytes we fetched. None of these
-   * waits on anything, so none of them should flash "받아오는 중" first: a popup
-   * that says it is loading and then says it never could have loaded is the
-   * product looking like it tried and failed, when in fact it knew the answer
-   * before it opened.
+   * A table in a format we cannot read, a file type we have no viewer for, and
+   * the PDF — which is an address handed to the browser rather than bytes we
+   * fetched. None of these waits on anything, so none of them should flash
+   * "받아오는 중" first: a popup that says it is loading and then says it never
+   * could have loaded is the product looking like it tried and failed, when in
+   * fact it knew the answer before it opened.
    *
    * An uploaded folder used to be on this list, refused here without a request.
    * It is not any more: uploads keep their files now, so the answer is no longer
@@ -125,7 +127,13 @@ export function FilePreview({
    * file being too large to have kept says nothing about the next one.
    */
   const immediate = useMemo<ViewState | null>(() => {
-    if (shape.kind === "spreadsheet") {
+    /*
+     * A table we can name and cannot open — `.xls`, `.xlsb`, `.ods`,
+     * `.numbers`, `.xlsm`. `.xlsx`, `.csv` and `.tsv` no longer come through
+     * here: they have a content type now, so they are fetched and drawn like
+     * anything else, and the sentence below would be a lie about them.
+     */
+    if (shape.kind === "spreadsheet" && shape.contentType === null) {
       return {
         state: "refused",
         reason: "spreadsheet",
@@ -183,6 +191,35 @@ export function FilePreview({
           return;
         }
 
+        if (shape.kind === "spreadsheet") {
+          /*
+           * Two shapes under one word. A `.csv` arrived as `text/plain` and is
+           * already readable; a workbook is a zip and has to stay bytes until
+           * the reader unpacks it. Which one this is comes from the path rather
+           * than from the response, because the response is ours and the
+           * decision was already made in `previewShapeFor` — reading it back
+           * off a header would be two places that can disagree.
+           */
+          const delimiter = delimiterFor(target.path);
+          if (delimiter === null) {
+            const bytes = await response.arrayBuffer();
+            if (controller.signal.aborted) return;
+            settle({
+              state: "sheet",
+              source: { kind: "workbook", bytes },
+              size: bytes.byteLength,
+            });
+            return;
+          }
+          const delimited = await response.text();
+          settle({
+            state: "sheet",
+            source: { kind: "delimited", text: delimited, delimiter },
+            size: byteLength(delimited),
+          });
+          return;
+        }
+
         const text = await response.text();
         settle({ state: "code", text, size: byteLength(text) });
       } catch {
@@ -195,7 +232,7 @@ export function FilePreview({
       // The bytes leave with the popup. Nothing about this file outlives it.
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [immediate, fileUrl, shape.kind]);
+  }, [immediate, fileUrl, shape.kind, target.path]);
 
   const view: ViewState =
     immediate ?? (fetched?.url === fileUrl ? fetched.value : { state: "loading" });
@@ -367,6 +404,10 @@ function Body({
 
   if (view.state === "image") {
     return <ImageBody url={view.url} size={view.size} />;
+  }
+
+  if (view.state === "sheet") {
+    return <SpreadsheetBody source={view.source} size={view.size} shape={shape} />;
   }
 
   if (view.state === "pdf") {

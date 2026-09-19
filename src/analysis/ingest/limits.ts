@@ -96,6 +96,31 @@ const ASSET_EXTENSIONS = new Set([
   "mp4", "webm", "mov", "avi", "mp3", "wav", "ogg",
   "woff", "woff2", "ttf", "otf", "eot",
   "pdf", "zip", "gz", "tar", "rar", "7z",
+  /*
+   * Spreadsheets, on the same footing as the PDF above: recorded, never
+   * parsed, and openable.
+   *
+   * They were `skip`, which is a harsher answer than it looks. A skipped file
+   * is not a node, so it is not on the map, so the preview endpoint's "is this
+   * a file of this project" check answers no — and a viewer for it can never be
+   * reached however good it is. On an uploaded folder it is worse: the browser
+   * runs this same function before sending anything, so the file never left the
+   * user's machine at all, and their folder appeared on screen with a hole in
+   * it where their data was.
+   *
+   * `csv` and `tsv` are here rather than in TEXT_EXTENSIONS on purpose. They
+   * are text, but they are not source: handing one to the analyzer means
+   * parsing a data file looking for imports, and a 40 MB export would be the
+   * single most expensive file in a repository for nothing.
+   *
+   * The formats we cannot draw — `xls`, `xlsb`, `ods`, `numbers`, `xlsm` — are
+   * here too, and that is deliberate. They become nodes and the viewer refuses
+   * them by name with a sentence about what it is. A file the map silently
+   * pretends is not in your folder is worse than one that says it cannot open
+   * yet.
+   */
+  "xlsx", "csv", "tsv",
+  "xls", "xlsb", "ods", "numbers", "xlsm",
 ]);
 
 export type FileClass = "text" | "asset" | "skip";

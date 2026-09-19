@@ -13,9 +13,9 @@
  *      from someone's repository, served as `text/html` from our own origin,
  *      is their code running on our domain with their session attached. Every
  *      text file goes out as `text/plain`, whatever it is.
- *   2. **A kind with no content type is a kind we never fetch.** A spreadsheet
- *      needs a parser we do not have, so the honest answer is to say so before
- *      moving a single byte, not to stream 4 MB and then draw nothing.
+ *   2. **A kind with no content type is a kind we never fetch.** An `.xls` or
+ *      an `.ods` needs a reader we do not have, so the honest answer is to say
+ *      so before moving a single byte, not to stream 4 MB and then draw nothing.
  *   3. **Every kind carries its own ceiling**, because the reasons differ: a
  *      code file that is too big to read is a different judgement from a photo
  *      that is too big to send.
@@ -58,12 +58,24 @@ export type PreviewShape = {
  * before it draws anything, so this ceiling is a ceiling on someone staring at
  * a blank rectangle. A 20 MB PDF is already a long wait.
  *
+ * `sheet` is 4 MB, and it is the smallest of the three that we do fetch,
+ * because a table is read by a machine before it is read by a person. An
+ * `.xlsx` is zipped XML that routinely unpacks to ten times its own size, and a
+ * 4 MB `.csv` is several hundred thousand cells; either way the browser parses
+ * the whole thing before a single row appears. So this is the same judgement as
+ * the PDF ceiling — how long someone waits at a popup that has not drawn yet —
+ * on a smaller number, because here the waiting is our work and not the
+ * browser's. It is also, by the rule in `lib/preview/store`, the most one
+ * spreadsheet in an uploaded folder may take out of that project's storage
+ * budget, which is a second reason not to be generous.
+ *
  * A kind we cannot draw gets 0: we refuse before fetching, not after.
  */
 export const PREVIEW_MAX_BYTES = {
   code: 512 * 1024,
   image: 8 * 1024 * 1024,
   pdf: 20 * 1024 * 1024,
+  sheet: 4 * 1024 * 1024,
   none: 0,
 } as const;
 
@@ -71,11 +83,13 @@ export const PREVIEW_MAX_BYTES = {
  * Text we show as text. The value is the badge in the corner of the viewer, so
  * it is a word a person recognises rather than a file extension.
  *
- * `.csv` is here rather than under spreadsheets on purpose. It is text, and
- * showing text as text costs nothing and cannot be wrong. Drawing it as a table
- * would need quote-aware parsing — a comma inside a quoted field is the case
- * every naive split gets wrong — and a table with the columns silently shifted
- * is worse than the file itself.
+ * `.csv` used to be here, shown as text, because drawing it as a table needs
+ * quote-aware parsing — a comma inside a quoted field is the case every naive
+ * `split(",")` gets wrong — and a table with the columns silently shifted is
+ * worse than the file itself. That reasoning was right about the risk and wrong
+ * about the cost: the parser is forty lines, the cases that break it are
+ * enumerable, and they are now tested by name in `spreadsheet.test.ts`. A `.csv`
+ * is a table, so it is shown as one.
  */
 const CODE_LANGUAGES: Record<string, string> = {
   ts: "TypeScript",
@@ -118,7 +132,6 @@ const CODE_LANGUAGES: Record<string, string> = {
   swift: "Swift",
   sh: "셸",
   bash: "셸",
-  csv: "표(쉼표로 나뉜 글)",
 };
 
 /**
@@ -143,8 +156,49 @@ const IMAGE_TYPES: Record<string, string> = {
   svg: "image/svg+xml",
 };
 
-/** Files whose insides are a table we cannot read without a parser we do not have. */
-const SPREADSHEET_EXTENSIONS = new Set(["xlsx", "xls", "xlsm", "xlsb", "ods", "numbers"]);
+/**
+ * A table written as text, and the badge for it.
+ *
+ * The separator is the only difference between the two, and the viewer works it
+ * out from the extension. They keep `text/plain` like every other text file
+ * (rule 1) — what makes them a table is how the viewer draws them, not how they
+ * travel.
+ */
+const DELIMITED_LANGUAGES: Record<string, string> = {
+  csv: "쉼표로 나뉜 글",
+  tsv: "탭으로 나뉜 글",
+};
+
+/**
+ * The one workbook format we can actually open, and the type we answer with.
+ *
+ * It is the file's own type, which rule 1 forbids for text and permits here for
+ * the reason rule 1 exists: the danger in answering `text/html` is that the
+ * browser *runs* it on our origin. An OOXML package is a zip a browser will
+ * never execute — it downloads it — so naming it honestly costs nothing and
+ * buys the fallback we want anyway. Someone whose browser declines to hand it
+ * to our viewer gets a file they can open in Excel instead of a page of
+ * mojibake, and `nosniff` on the response stops it being read as anything else.
+ */
+const WORKBOOK_TYPES: Record<string, string> = {
+  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+};
+
+/**
+ * Tables we recognise and still cannot read.
+ *
+ * `.xls` and `.xlsb` are binary formats that predate or sidestep OOXML and
+ * share no reader with it; `.ods` and `.numbers` are different packages again.
+ * Adding any of them is another parser, not another line here.
+ *
+ * `.xlsm` is the odd one out: it is byte-for-byte the same zip as an `.xlsx`
+ * and our reader would open it without noticing. It is refused anyway, because
+ * the macro is the whole difference between the two formats, and an endpoint
+ * that hands a macro-carrying workbook to a browser `inline` is offering to
+ * open it in Excel. The download link does that too — but it says so, and we
+ * would not.
+ */
+const UNREADABLE_SPREADSHEETS = new Set(["xls", "xlsm", "xlsb", "ods", "numbers"]);
 
 /**
  * Never previewed, whatever their extension says.
@@ -219,7 +273,33 @@ export function previewShapeFor(path: string): PreviewShape {
     };
   }
 
-  if (SPREADSHEET_EXTENSIONS.has(extension)) {
+  const workbook = WORKBOOK_TYPES[extension];
+  if (workbook) {
+    return {
+      kind: "spreadsheet",
+      contentType: workbook,
+      maxBytes: PREVIEW_MAX_BYTES.sheet,
+      word: "표",
+      language: "엑셀",
+    };
+  }
+
+  const delimited = DELIMITED_LANGUAGES[extension];
+  if (delimited) {
+    return {
+      kind: "spreadsheet",
+      // Text, so `text/plain` like all the rest of it. See rule 1.
+      contentType: "text/plain; charset=utf-8",
+      maxBytes: PREVIEW_MAX_BYTES.sheet,
+      word: "표",
+      language: delimited,
+    };
+  }
+
+  if (UNREADABLE_SPREADSHEETS.has(extension)) {
+    // A table we can name and cannot open. `spreadsheet` with no content type
+    // is that exact pair, and it is what the viewer branches on to say the
+    // narrower sentence instead of "글도 그림도 아니라서".
     return {
       kind: "spreadsheet",
       contentType: null,
@@ -367,8 +447,14 @@ export const PREVIEW_MESSAGES = {
    */
   upload:
     "이 파일은 따로 보관하지 못했어요. 용량이 크거나 아직 열어볼 수 없는 종류예요. 폴더를 다시 올리시면 같이 보관할게요.",
+  /**
+   * Said only about the table formats we cannot read — `.xls`, `.xlsb`, `.ods`,
+   * `.numbers`, `.xlsm`. It names the two we can, because "표 파일은 열 수
+   * 없어요" next to an `.xlsx` that opens fine would read as the product being
+   * broken rather than as a limit.
+   */
   spreadsheet:
-    "표 파일은 아직 열어볼 수 없어요. 읽는 방법을 아직 준비하지 못했어요. 대신 GitHub에서 받아보실 수 있어요.",
+    "이 표 파일은 아직 열어볼 수 없어요. 지금은 엑셀 파일(.xlsx)과 쉼표·탭으로 나뉜 표(.csv, .tsv)만 펼쳐서 보여드릴 수 있어요. 이 파일은 받아서 열어보셔야 해요.",
   unknown:
     "이 파일은 아직 열어볼 수 없어요. 글도 그림도 아니라서 보여드릴 방법을 아직 준비하지 못했어요. GitHub에서 열어보실 수 있어요.",
   notFound:
