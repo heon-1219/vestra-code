@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 
 import "./globals.css";
+import { SiteFooter } from "@/components/site-footer";
 
 export const metadata: Metadata = {
   title: "Vestra Code — 내 프로젝트의 지도",
@@ -38,6 +39,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       </head>
       <body className="min-h-full bg-ink text-said flex flex-col">
         {children}
+        {/*
+          `mt-auto` on the footer plus this flex column is what keeps it at the
+          bottom of a short page without pinning it over a long one — the
+          sign-in page is half a screen tall and a footer sitting in the middle
+          of it reads as the page having failed to load the rest.
+        */}
+        <SiteFooter />
       </body>
     </html>
   );
