@@ -321,19 +321,13 @@
  * top of the centring, and the layer lands half its own width to the left.
  * Measured: the crown sat 535px off the midline until this was removed.
  *
- * Periods stay long and mutually prime (29s / 41s / 53s) so the three never
- * fall into step. A visible loop is what turns atmosphere into a screensaver.
+ * The two periods are long and mutually prime (31s / 53s) so they never fall
+ * into step. A visible loop is what turns atmosphere into a screensaver.
  */
-@keyframes aurora-breathe {
+@keyframes aurora-crown {
   0%,
   100% { transform: scale(1); opacity: 1; }
   50%  { transform: scale(1.06); opacity: 0.86; }
-}
-
-@keyframes aurora-halo {
-  0%,
-  100% { transform: scale(1); }
-  50%  { transform: scale(1.04); }
 }
 
 /* Not centred with a transform, so no translate here — adding one would push
@@ -344,13 +338,9 @@
   50%  { transform: scale(1.07); opacity: 0.82; }
 }
 
-.aurora-breathe {
-  animation: aurora-breathe 29s ease-in-out infinite;
+.aurora-crown {
+  animation: aurora-crown 31s ease-in-out infinite;
   will-change: transform, opacity;
-}
-.aurora-halo {
-  animation: aurora-halo 41s ease-in-out infinite;
-  will-change: transform;
 }
 .aurora-deep {
   animation: aurora-deep 53s ease-in-out infinite;
@@ -364,8 +354,7 @@
  * transform along with the animation.
  */
 @media (prefers-reduced-motion: reduce) {
-  .aurora-breathe,
-  .aurora-halo,
+  .aurora-crown,
   .aurora-deep {
     animation: none;
     /* No transform here either — the centring lives on the `translate`

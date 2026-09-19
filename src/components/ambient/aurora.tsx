@@ -9,18 +9,18 @@
  * content, and stays far below the contrast at which it could be mistaken for
  * something to act on.
  *
- * **It holds still and it is balanced.** An earlier version swept from one
- * corner and each layer drifted on its own period, which read as restless —
- * the eye kept following the bright part to wherever it had wandered. Now the
- * crown is centred on the horizontal midline and everything only *breathes*:
- * the animations scale and fade, and none of them translates, because
- * translating is exactly what moves a centre off centre.
+ * **Two lights on a diagonal, and they hold still.** One upper left, one lower
+ * right — the direction a page is already read, so the composition carries the
+ * eye across rather than pinning it to one corner or spreading evenly and
+ * saying nothing. A centred version was tried and read as a spotlight behind
+ * the headline; the diagonal leaves the middle of the page calm, which is
+ * where the words are.
  *
- * One glow sits low and to the right against it. A page is read top-left to
- * bottom-right, and a composition weighted entirely along the top edge leaves
- * the eye finishing on nothing — the same diagonal answer the reference
- * photograph gives, with its curtain overhead and its light again on the
- * horizon.
+ * Both glows are anchored to their corners and never move. The animations
+ * scale and fade and nothing translates, because translating is what turns a
+ * fixed light into a wandering one — an earlier version drifted on three
+ * separate periods and read as restless, with the eye following the bright
+ * part to wherever it had gone.
  *
  * `fixed`, not `absolute`. A sky that scrolls away after the first screen is a
  * decoration on the header; one that stays is weather the page is standing in.
@@ -68,48 +68,33 @@ export function Aurora({
       />
 
       {/*
-        The crown. Centred on the horizontal midline and anchored above the
-        fold, which is where an aurora actually sits when you are standing under
-        one — overhead and ahead, not off to one side.
+        Upper left, and the brighter of the two. It carries the near-white core
+        the reference photograph is built around — one place only, because two
+        bright cores read as decoration rather than as a sky.
       */}
       <div
-        className={`aurora-breathe absolute left-1/2 -translate-x-1/2 -top-[45%] h-[130%] w-[150%] ${
-          full ? "opacity-95" : "opacity-40"
+        className={`aurora-crown absolute -top-[42%] -left-[26%] h-[120%] w-[105%] ${
+          full ? "opacity-95" : "opacity-38"
         }`}
         style={{
           background:
-            "radial-gradient(closest-side at 50% 50%, rgba(214,186,255,0.42) 0%, rgba(162,98,248,0.46) 26%, rgba(116,56,204,0.32) 48%, rgba(72,32,136,0.14) 68%, transparent 84%)",
-        }}
-      />
-
-      {/* A wider, slower halo on the same centre, so the edge of the crown does
-          not end in a visible ring. */}
-      <div
-        className={`aurora-halo absolute left-1/2 -translate-x-1/2 -top-[70%] h-[175%] w-[210%] ${
-          full ? "opacity-70" : "opacity-25"
-        }`}
-        style={{
-          background:
-            "radial-gradient(closest-side at 50% 50%, rgba(138,86,232,0.30) 0%, rgba(92,54,178,0.18) 40%, rgba(60,36,124,0.08) 66%, transparent 82%)",
+            "radial-gradient(closest-side at 50% 50%, rgba(214,186,255,0.44) 0%, rgba(162,98,248,0.46) 24%, rgba(116,56,204,0.30) 46%, rgba(72,32,136,0.13) 68%, transparent 84%)",
         }}
       />
 
       {/*
-        The counterweight, low and to the right.
-        
-        The crown alone puts every bright thing along one edge, and a page is
-        read top-left to bottom-right — so the eye finishes on nothing. This
-        answers it diagonally, the way the reference photograph has its glow
-        overhead and its light again on the horizon. Colder and much dimmer than
-        the crown, so it balances the composition without competing for it.
+        Lower right: the answer to it. Colder and dimmer, so it balances the
+        diagonal without competing for attention — the reference has its
+        curtain overhead and its light again on the horizon, and this is that
+        second light.
       */}
       <div
-        className={`aurora-deep absolute -right-[18%] -bottom-[28%] h-[105%] w-[95%] ${
-          full ? "opacity-70" : "opacity-24"
+        className={`aurora-deep absolute -right-[24%] -bottom-[34%] h-[115%] w-[100%] ${
+          full ? "opacity-80" : "opacity-26"
         }`}
         style={{
           background:
-            "radial-gradient(closest-side at 50% 50%, rgba(128,92,238,0.30) 0%, rgba(80,54,180,0.18) 40%, rgba(56,34,118,0.07) 66%, transparent 82%)",
+            "radial-gradient(closest-side at 50% 50%, rgba(140,102,244,0.34) 0%, rgba(86,58,190,0.20) 38%, rgba(56,34,118,0.08) 64%, transparent 82%)",
         }}
       />
 
