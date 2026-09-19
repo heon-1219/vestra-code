@@ -3,7 +3,6 @@ import Link from "next/link";
 import { Aurora } from "@/components/ambient/aurora";
 import { FeatureMark } from "@/components/landing/feature-mark";
 import { HeroGraph } from "@/components/landing/hero-graph";
-import { KeptAndNot } from "@/components/landing/kept-and-not";
 import { PainMark } from "@/components/landing/pain-mark";
 import { RepoToMap } from "@/components/landing/repo-to-map";
 import { WaysIn } from "@/components/landing/ways-in";
@@ -96,19 +95,24 @@ const FEATURES = [
 const PROMISES = [
   {
     /*
-     * The one item here that is not an unconditional refusal, and its condition
-     * is still named — by `KeptAndNot` immediately above, in this promise's own
-     * words rather than a paraphrase of them (D77). That is why the body stops
-     * after one sentence: the two that used to follow it are the table's two
-     * notes verbatim, a few lines up the same band, and a reader who meets them
-     * twice spends the second reading checking whether it says something new.
+     * The one item here that is not an unconditional refusal, so it is the one
+     * that has to carry its own condition — and after today it is the only
+     * place that carries it at all.
+     *
+     * A comparison table beside this band said the same two things in these
+     * exact words, so this body was cut to its first sentence to stop a reader
+     * meeting them twice within one eyeful. The table has since been removed,
+     * and the cut was the half of that pairing that would have quietly
+     * survived it: the page would have gone on claiming we keep nothing while
+     * uploads keep their files (D77). Restored on purpose.
+     *
      * The title stays scoped to GitHub, because an uploaded folder has no
      * origin to fetch back from and the flat version of this claim is false for
      * half the product — a false sentence about someone's own code is the worst
      * thing this band could contain.
      */
     title: "GitHub 저장소의 코드는 보관하지 않습니다",
-    body: "지도와 파일 경로, 줄 번호만 남깁니다.",
+    body: "지도와 파일 경로, 줄 번호만 남깁니다. 코드는 필요할 때 GitHub에서 가져와 읽고 곧바로 버립니다. 내 컴퓨터에서 올려주신 폴더는 다시 가져올 곳이 없어서, 다른 컴퓨터에서도 열어보실 수 있게 파일을 함께 보관합니다.",
   },
   {
     title: "확인한 것과 짐작한 것을 섞지 않습니다",
@@ -310,31 +314,6 @@ export default function LandingPage() {
               </article>
             ))}
           </div>
-        </div>
-      </section>
-
-      {/*
-        The one claim on this page whose answer depends on how you connected,
-        given its own section and centred.
-        
-        It was a block inside the band below, which put a three-column table
-        under a left-aligned heading and a lede — three left edges and a wide
-        figure competing down the same margin. Centred and alone, the table is
-        read as the comparison it is rather than as an illustration attached to
-        the paragraph above it.
-
-        Still ABOVE the promises rather than after them: the first of those
-        promises is the only conditional one, and a difference between two
-        columns is taken in at a glance where the same difference in a
-        paragraph has to be read twice. It arrives already understood.
-
-        No `bg-ink-sunk` here, unlike the band below. Sharing the background
-        would have merged the two back into one section, which is the thing
-        being undone.
-      */}
-      <section className="relative">
-        <div className="mx-auto max-w-[1200px] px-6 pt-28 pb-4 md:px-10 md:pt-40">
-          <KeptAndNot className="rise mx-auto max-w-[640px]" />
         </div>
       </section>
 
