@@ -308,57 +308,68 @@
 }
 
 /**
- * Aurora motion.
+ * Aurora motion: it breathes, it does not wander.
  *
- * Only `transform` and `opacity` animate, so the compositor owns every frame
- * and the main thread — which on this page is also running a force simulation
- * — is never asked to lay anything out. The periods are deliberately long and
- * mutually prime (37s / 43s / 61s) so the three layers never fall into step;
- * a visible loop is what turns atmosphere into a screensaver.
+ * Every layer is centred on the same point and every keyframe scales or fades
+ * about that point — nothing translates. Translating is precisely what moves a
+ * centre off centre, and the earlier drifting version read as restless because
+ * the eye kept following the bright part to wherever it had gone.
+ *
+ * The keyframes scale and fade and do NOTHING else. Tailwind v4 centres with
+ * the independent `translate` property rather than with `transform`, and those
+ * two COMPOSE — so a `translate(-50%, 0)` written in here as well is applied on
+ * top of the centring, and the layer lands half its own width to the left.
+ * Measured: the crown sat 535px off the midline until this was removed.
+ *
+ * Periods stay long and mutually prime (29s / 41s / 53s) so the three never
+ * fall into step. A visible loop is what turns atmosphere into a screensaver.
  */
-@keyframes aurora-drift {
-  0%   { transform: translate3d(0, 0, 0) scale(1); }
-  50%  { transform: translate3d(3%, -2%, 0) scale(1.08); }
-  100% { transform: translate3d(0, 0, 0) scale(1); }
+@keyframes aurora-breathe {
+  0%,
+  100% { transform: scale(1); opacity: 1; }
+  50%  { transform: scale(1.06); opacity: 0.86; }
 }
 
-@keyframes aurora-fall {
-  0%   { transform: translate3d(0, 0, 0) scaleY(1); }
-  50%  { transform: translate3d(-2%, 3%, 0) scaleY(1.12); }
-  100% { transform: translate3d(0, 0, 0) scaleY(1); }
+@keyframes aurora-halo {
+  0%,
+  100% { transform: scale(1); }
+  50%  { transform: scale(1.04); }
 }
 
-@keyframes aurora-slow {
-  0%   { transform: translate3d(0, 0, 0); }
-  50%  { transform: translate3d(4%, -3%, 0); }
-  100% { transform: translate3d(0, 0, 0); }
+/* Not centred with a transform, so no translate here — adding one would push
+   it off the corner it is meant to anchor. */
+@keyframes aurora-deep {
+  0%,
+  100% { transform: scale(1); opacity: 1; }
+  50%  { transform: scale(1.07); opacity: 0.82; }
 }
 
-.aurora-drift {
-  animation: aurora-drift 37s ease-in-out infinite;
+.aurora-breathe {
+  animation: aurora-breathe 29s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+.aurora-halo {
+  animation: aurora-halo 41s ease-in-out infinite;
   will-change: transform;
 }
-.aurora-fall {
-  animation: aurora-fall 43s ease-in-out infinite;
-  will-change: transform;
-}
-.aurora-slow {
-  animation: aurora-slow 61s ease-in-out infinite;
-  will-change: transform;
+.aurora-deep {
+  animation: aurora-deep 53s ease-in-out infinite;
+  will-change: transform, opacity;
 }
 
 /*
  * Reduced motion keeps the sky and stops the weather. The gradients are the
- * point; their drifting is not, and WCAG treats a change that does not alter
- * perceived position or size as something other than motion. The global
- * reduced-motion rule above already collapses every duration, so this only has
- * to stop `will-change` from holding three compositor layers alive for nothing.
+ * point; their breathing is not. The layers still need their centring
+ * transform, so this pins them at the resting frame rather than removing the
+ * transform along with the animation.
  */
 @media (prefers-reduced-motion: reduce) {
-  .aurora-drift,
-  .aurora-fall,
-  .aurora-slow {
+  .aurora-breathe,
+  .aurora-halo,
+  .aurora-deep {
     animation: none;
+    /* No transform here either — the centring lives on the `translate`
+       property and resetting `transform` must not disturb it. */
     will-change: auto;
   }
 }
