@@ -35,13 +35,18 @@ describe("detectProject — the deep classes", () => {
     expect(result.deep).toBe(true);
   });
 
-  it("recognises a hand-written static site", () => {
+  it("recognises a hand-written static site, and claims only what it delivers", () => {
     const result = detectProject(
       ["index.html", "about.html", "projects/tessera.html", "styles.css", "assets/me.jpg"],
       [],
     );
     expect(result.kind).toBe("static_site");
-    expect(result.deep).toBe(true);
+    // Served by the shallow analyzer until D6's static-site analyzer exists,
+    // which emits no symbols — so it must not promise to read inside the CSS.
+    // Measured on the founder's own portfolio: 58 files, 57 links, 0 style rules.
+    expect(result.deep).toBe(false);
+    expect(result.summary).not.toContain("스타일이 어디에 쓰이는지");
+    expect(result.summary).toContain("아직");
   });
 });
 

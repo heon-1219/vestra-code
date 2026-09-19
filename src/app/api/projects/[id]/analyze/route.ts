@@ -67,10 +67,28 @@ export async function POST(
   // the token can only be read while the request's cookies are still in scope.
   const githubToken = await getGithubToken(request.headers);
 
+  // An uploaded folder cannot be re-analysed from here: there is no origin to
+  // fetch from, and section 3 means we did not keep a copy. The honest answer
+  // is to ask for the folder again rather than to fail obscurely.
+  if (project.source === "upload") {
+    return Response.json(
+      {
+        message:
+          "올려주신 폴더는 다시 분석하려면 폴더를 한 번 더 선택해 주세요. 코드를 보관하지 않아서 다시 읽을 방법이 없어요.",
+      },
+      { status: 400 },
+    );
+  }
+
+  if (!project.repoOwner || !project.repoName || !project.defaultBranch) {
+    return Response.json({ message: NOT_FOUND }, { status: 404 });
+  }
+
   const outcome = await startAnalysis({
     db,
     project: {
       id: project.id,
+      source: "github",
       repoOwner: project.repoOwner,
       repoName: project.repoName,
       defaultBranch: project.defaultBranch,

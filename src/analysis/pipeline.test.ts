@@ -173,6 +173,7 @@ live("analysis pipeline against the demo repo", () => {
     try {
       const project = {
         id: projectId,
+        source: "github" as const,
         repoOwner: "heon-1219",
         repoName: "coding-interview-prep",
         defaultBranch: "master",

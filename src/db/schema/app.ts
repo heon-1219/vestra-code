@@ -103,6 +103,18 @@ export const projectKindEnum = pgEnum("project_kind", [
 
 export const chatRoleEnum = pgEnum("chat_role", ["user", "assistant"]);
 
+/**
+ * Where a project's files came from.
+ *
+ * This is not cosmetic. A GitHub project can have its source re-fetched on
+ * demand, which is what makes section 3's promise work — we keep the graph and
+ * fetch a line range only when someone asks to see it. An uploaded folder has
+ * no such origin: once the analysis is done and the temp directory is gone,
+ * there is nowhere to fetch from. The Q&A agent's `read_source` therefore
+ * cannot work for uploads, and must say so rather than fail.
+ */
+export const projectSourceEnum = pgEnum("project_source", ["github", "upload"]);
+
 // --- Tables ----------------------------------------------------------------
 
 export const projects = pgTable(
@@ -113,10 +125,16 @@ export const projects = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
 
-    repoOwner: text("repo_owner").notNull(),
-    repoName: text("repo_name").notNull(),
-    repoUrl: text("repo_url").notNull(),
-    defaultBranch: text("default_branch").notNull(),
+    /**
+     * Null for an uploaded folder, which has no owner, no remote and no branch.
+     * Postgres treats NULLs as distinct in a unique index, so several uploads
+     * by one user do not collide on `projects_user_repo_idx`.
+     */
+    source: projectSourceEnum("source").notNull().default("github"),
+    repoOwner: text("repo_owner"),
+    repoName: text("repo_name"),
+    repoUrl: text("repo_url"),
+    defaultBranch: text("default_branch"),
 
     /** What the user sees. Defaults to the repo name, and they can rename it. */
     displayName: text("display_name").notNull(),

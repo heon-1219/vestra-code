@@ -155,11 +155,23 @@ export function detectProject(
   if (htmlFiles.length > 0 && !looksBundled) {
     signals.push(`HTML 파일 ${htmlFiles.length}개`);
     if (has((path) => /\.css$/i.test(path))) signals.push("CSS 파일");
+    /**
+     * `deep: false`, and the summary says only what we actually deliver.
+     *
+     * This promised "스타일이 어디에 쓰이는지 읽을 수 있어요" while being served
+     * by the shallow analyzer, which emits no symbols at all. Measured on the
+     * founder's own portfolio: 58 file nodes, 57 link edges, **zero** style
+     * rules. Half the sentence was true and half was a claim about the user's
+     * own site that we could not back — exactly what section 3 forbids.
+     *
+     * When D6's static-site analyzer lands and CSS rules become real nodes,
+     * this goes back to `deep: true` with the fuller sentence.
+     */
     return {
       kind: "static_site",
-      deep: true,
+      deep: false,
       summary:
-        "HTML로 만든 사이트예요. 페이지끼리의 연결과 스타일이 어디에 쓰이는지 읽을 수 있어요.",
+        "HTML로 만든 사이트예요. 페이지끼리 어떻게 이어져 있는지, 어떤 파일이 어디에서 불려 쓰이는지 지도로 그려드릴 수 있어요. 스타일 안까지 읽는 건 아직이에요.",
       signals,
     };
   }

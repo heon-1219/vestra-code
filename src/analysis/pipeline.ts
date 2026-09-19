@@ -5,7 +5,8 @@ import type { Db } from "@/db";
 import { analysisRuns } from "@/db/schema";
 
 import type { EventSink } from "./events";
-import { ingestRepo, LIMIT_MESSAGES } from "./ingest";
+import { ingestRepo, LIMIT_MESSAGES, type IngestOutcome } from "./ingest";
+import { ingestUpload, type UploadPayload } from "./ingest/upload";
 import { persistGraph, promoteRun } from "./persist";
 import {
   createRun,
@@ -29,13 +30,24 @@ import { createTypescriptAnalyzer } from "./typescript/analyzer";
  */
 
 /** Everything the pipeline needs to know about a project. Not the whole row. */
-export type AnalysisProject = {
-  id: string;
-  repoOwner: string;
-  repoName: string;
-  defaultBranch: string;
-  kind: ProjectKind;
-};
+/**
+ * A project the pipeline can run on, discriminated by where its files come from.
+ *
+ * A union rather than optional fields, because the two cases differ in a way
+ * that matters downstream: a GitHub project can have its source re-fetched on
+ * demand, which is what section 3's promise rests on, and an uploaded folder
+ * cannot. Making that a type-level distinction means no code path can forget.
+ */
+export type AnalysisProject =
+  | {
+      id: string;
+      source: "github";
+      repoOwner: string;
+      repoName: string;
+      defaultBranch: string;
+      kind: ProjectKind;
+    }
+  | { id: string; source: "upload"; kind: ProjectKind };
 
 export type StartAnalysisResult =
   | { ok: true; runId: string; started: boolean }
@@ -44,6 +56,15 @@ export type StartAnalysisResult =
 export type RunAnalysisInput = {
   db: Db;
   project: AnalysisProject;
+  /**
+   * Required when `project.source` is "upload", and meaningless otherwise.
+   *
+   * Held in memory for the life of the run rather than persisted: section 3
+   * promises we do not keep the user's source, and an upload is the one case
+   * where there is no origin to re-fetch from, so keeping it would be the only
+   * copy in existence.
+   */
+  upload?: UploadPayload;
   runId: string;
   /** The signed-in user's GitHub token, resolved before the request ended. */
   githubToken: string | null;
@@ -130,6 +151,8 @@ export function startAnalysis(input: {
   db: Db;
   project: AnalysisProject;
   githubToken: string | null;
+  /** Required when the project's source is "upload". */
+  upload?: UploadPayload;
 }): Promise<StartAnalysisResult> {
   const pending = starting.get(input.project.id);
   if (pending) return pending;
@@ -145,8 +168,9 @@ async function start(input: {
   db: Db;
   project: AnalysisProject;
   githubToken: string | null;
+  upload?: UploadPayload;
 }): Promise<StartAnalysisResult> {
-  const { db, project, githubToken } = input;
+  const { db, project, githubToken, upload } = input;
 
   if (!selectAnalyzer(project.kind)) {
     return { ok: false, message: UNSUPPORTED_MESSAGE };
@@ -166,7 +190,7 @@ async function start(input: {
   // it has work — no queue, no worker, no `after()` with a request-bound
   // duration cap. The cost is that a process restart mid-run abandons the run;
   // `reapStaleRun` is what notices and closes it out.
-  void runAnalysis({ db, project, runId, githubToken }).catch((error: unknown) => {
+  void runAnalysis({ db, project, runId, githubToken, upload }).catch((error: unknown) => {
     // `runAnalysis` handles its own failures, so reaching here means the failure
     // path itself failed. On Node 22 an unhandled rejection ends the process,
     // which would take every other user's run down with it.
@@ -180,7 +204,7 @@ async function start(input: {
  * Ingest, analyze, persist, sweep. The order matters at every step.
  */
 export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
-  const { db, project, runId, githubToken } = input;
+  const { db, project, runId, githubToken, upload } = input;
 
   const store: RunStore = input.sink
     ? { emit: input.sink, flush: () => Promise.resolve() }
@@ -203,12 +227,15 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
     // and the commit we record against it are the same thing by construction. A
     // push landing mid-run would otherwise date the graph to a commit it never
     // saw.
-    const commitSha = await resolveCommitSha(
-      project.repoOwner,
-      project.repoName,
-      project.defaultBranch,
-      githubToken,
-    );
+    const commitSha =
+      project.source === "github"
+        ? await resolveCommitSha(
+            project.repoOwner,
+            project.repoName,
+            project.defaultBranch,
+            githubToken,
+          )
+        : null;
     if (commitSha) {
       await db
         .update(analysisRuns)
@@ -216,18 +243,28 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
         .where(eq(analysisRuns.id, runId));
     }
 
-    const outcome = await ingestRepo(
-      project.repoOwner,
-      project.repoName,
-      commitSha ?? project.defaultBranch,
-      githubToken,
-      // To the log, not to the browser. There is no ingest-progress event in
-      // the contract, and reusing `file.parsed` for it would put "저장소를 받는
-      // 중" in the user's list of files as if it were one. The download is the
-      // longest silent stretch of a run, so this is a real gap in the UI — it
-      // wants an event of its own, not a misused one.
-      (message) => console.log("[pipeline] ingest", runId, message),
-    );
+    let outcome: IngestOutcome;
+    if (project.source === "upload") {
+      if (!upload) {
+        throw new AnalysisFailure(
+          "올려주신 파일을 찾지 못했어요. 폴더를 다시 선택해 주세요.",
+        );
+      }
+      outcome = { ok: true, value: await ingestUpload(upload) };
+    } else {
+      outcome = await ingestRepo(
+        project.repoOwner,
+        project.repoName,
+        commitSha ?? project.defaultBranch,
+        githubToken,
+        // To the log, not to the browser. There is no ingest-progress event in
+        // the contract, and reusing `file.parsed` for it would put "저장소를 받는
+        // 중" in the user's list of files as if it were one. The download is the
+        // longest silent stretch of a run, so this is a real gap in the UI — it
+        // wants an event of its own, not a misused one.
+        (message) => console.log("[pipeline] ingest", runId, message),
+      );
+    }
     if (!outcome.ok) throw new AnalysisFailure(outcome.message);
 
     const { root, files, skipped, limitsHit } = outcome.value;

@@ -4,17 +4,19 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { AddProjectForm } from "./add-project-form";
+import { FolderUpload } from "./folder-upload";
 import { RepoPicker } from "./repo-picker";
 
-type Tab = "pick" | "paste";
+type Tab = "pick" | "paste" | "upload";
 
 /**
- * Two ways in, with picking first.
+ * Three ways in, in the order most people will use them.
  *
- * Pasting a URL asks the user to go and find one; picking from a list asks them
- * to recognise a name they already know. The paste field stays because it is
- * the only way to reach a repository that is not theirs, or one past the first
- * hundred — but it is the fallback, not the front door.
+ * Picking from a list asks someone to recognise a name they already know;
+ * pasting a URL asks them to go and find one. Uploading a folder is for the
+ * project that is not on GitHub at all — which for this product's user is
+ * common, since an app prompted into existence on a laptop often never gets
+ * pushed anywhere.
  */
 export function AddProject() {
   const [tab, setTab] = useState<Tab>("pick");
@@ -37,11 +39,16 @@ export function AddProject() {
         <TabButton active={tab === "paste"} onClick={() => setTab("paste")}>
           주소 붙여넣기
         </TabButton>
+        <TabButton active={tab === "upload"} onClick={() => setTab("upload")}>
+          폴더 올리기
+        </TabButton>
       </div>
 
       <div className="pt-4">
         {tab === "pick" ? (
           <RepoPicker onConnected={handleConnected} />
+        ) : tab === "upload" ? (
+          <FolderUpload onConnected={handleConnected} />
         ) : (
           <AddProjectForm />
         )}
