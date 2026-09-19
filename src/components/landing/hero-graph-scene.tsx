@@ -404,7 +404,25 @@ export default function HeroGraphScene({
       const pitch =
         pointerRef.current.y * 0.14 + (alive ? Math.sin(t * 0.071) * 0.035 : 0);
       const breath = alive ? Math.sin(t * 0.049) * 10 : 0;
+      /*
+       * `alive` first, and it is not an optimisation — it is the fix for a
+       * visible judder.
+       *
+       * The thresholds below exist so that a pointer resting still does not
+       * redraw the scene sixty times a second. They are fine for input, which
+       * either moves or does not, and wrong for a drift, which moves
+       * continuously and slowly: at 0.026 rad/s a frame advances the yaw by
+       * 0.00043 rad, which is under the 0.0015 gate, so the camera sat still
+       * for three or four frames and then jumped the accumulated amount. A jump
+       * every ~58ms is not slow motion, it is vibration — and because it is the
+       * camera, every node and every name vibrated together, which is exactly
+       * what it looked like.
+       *
+       * With the drift on, something has always changed, so the gate has
+       * nothing left to protect and is skipped.
+       */
       if (
+        alive ||
         didWork ||
         Math.abs(yaw - shownYaw) > 0.0015 ||
         Math.abs(pitch - shownPitch) > 0.0015
