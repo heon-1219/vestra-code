@@ -221,6 +221,27 @@ describe("layoutMap", () => {
     expect(hub && leaf && hub.r > leaf.r).toBe(true);
   });
 
+  it("packs the territories it is handed, not only the folders", () => {
+    // The folder reading is the default and not the only answer; `grouping.ts`
+    // supplies the others. Everything below the assignment is indifferent to
+    // which one named the places.
+    const layout = layoutMap(shop, (item) =>
+      item.kind === "package"
+        ? { id: "outside", name: "밖에서 가져온 것", folder: "package.json" }
+        : { id: "inside", name: "내가 만든 것", folder: "내 프로젝트" },
+    );
+
+    expect(layout.districts.map((d) => d.name)).toEqual(["내가 만든 것", "밖에서 가져온 것"]);
+    expect(layout.items).toHaveLength(shop.length);
+    for (const placed of layout.items) {
+      const district = layout.byDistrictId.get(placed.districtId);
+      expect(district).toBeDefined();
+      if (!district) continue;
+      const distance = Math.hypot(placed.x - district.x, placed.y - district.y);
+      expect(distance + placed.r).toBeLessThanOrEqual(district.r);
+    }
+  });
+
   it("survives an empty project without throwing", () => {
     const layout = layoutMap([]);
     expect(layout.districts).toEqual([]);

@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { Aurora } from "@/components/ambient/aurora";
 import { HeroGraph } from "@/components/landing/hero-graph";
 
 /**
@@ -115,6 +116,10 @@ const ACTION =
 export default function LandingPage() {
   return (
     <main className="relative flex flex-col">
+      {/* One sky for the whole document, fixed so it does not scroll away
+          after the first screen. */}
+      <Aurora />
+
       {/*
         Absolute rather than fixed, so the header leaves with the hero. A
         persistent transparent bar over a page of large Korean headings puts a
@@ -199,7 +204,7 @@ export default function LandingPage() {
 
       {/* Sections are divided by a change of surface and a great deal of empty
           space, not by a rule across the page. */}
-      <section className="relative bg-ink-sunk">
+      <section className="relative bg-ink-sunk/70">
         <div className="mx-auto max-w-[1200px] px-6 py-28 md:px-10 md:py-40">
           <h2 className="rise display-section max-w-[680px] text-section">
             바이브 코딩이 무너지는 건 언제나 같은 세 지점입니다.
@@ -269,7 +274,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      <section className="relative bg-ink-sunk">
+      <section className="relative bg-ink-sunk/70">
         <div className="mx-auto max-w-[1200px] px-6 py-28 md:px-10 md:py-40">
           <h2 className="rise display-section max-w-[680px] text-section">
             우리가 하지 않는 것.

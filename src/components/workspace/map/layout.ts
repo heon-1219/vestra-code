@@ -17,12 +17,18 @@ import type { GraphItem } from "@/lib/graph/view";
  * spiral gives non-overlap **by construction** rather than by hope, renders
  * identically every time, and costs nothing at rest.
  *
- * **Districts come from the top-level folder, because Pass 2 does not exist.**
- * When it lands, features become the districts and this file's `districtOf`
- * changes; everything below it keeps working. The folder is the honest
- * stand-in, which is why every district carries the folder it came from and
- * shows it under the name — the Korean name is a reading of the folder, never
- * a claim about what the code does.
+ * **What counts as a district is handed in, not decided here.** `layoutMap`
+ * takes the function that answers "which territory is this item in", and
+ * `grouping.ts` holds the answers — folder, feature, kind, role, how much a
+ * thing is used. The default is the folder, which is where this started and
+ * the one answer that needs nothing but a path. Everything below the
+ * assignment is indifferent to which grouping produced it: territories are
+ * packed, items are packed inside them, and the picture is the same shape
+ * whatever named the places.
+ *
+ * Every district carries the line shown under its name — for the folder
+ * grouping that is the folder it was read from — so the Korean name is never a
+ * bare claim about what the code does.
  */
 
 /** A district before it has a position. */
@@ -303,7 +309,15 @@ function canonicalOrder(a: GraphItem, b: GraphItem): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
-export function layoutMap(items: readonly GraphItem[]): MapLayout {
+/**
+ * @param districtFor Which territory each item belongs to. Defaults to the
+ * folder reading above; `grouping.ts` supplies the others. It must be total —
+ * an item it has no answer for would be an item that vanished off the map.
+ */
+export function layoutMap(
+  items: readonly GraphItem[],
+  districtFor: (item: GraphItem) => DistrictDescriptor = districtOf,
+): MapLayout {
   const sorted = [...items].sort(canonicalOrder);
 
   const groups = new Map<
@@ -311,7 +325,7 @@ export function layoutMap(items: readonly GraphItem[]): MapLayout {
     { info: DistrictDescriptor; folders: Set<string>; members: GraphItem[] }
   >();
   for (const item of sorted) {
-    const info = districtOf(item);
+    const info = districtFor(item);
     const existing = groups.get(info.id);
     if (existing) {
       existing.members.push(item);

@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { Aurora } from "@/components/ambient/aurora";
 import { SignOutButton } from "@/components/auth/sign-out-button";
 import { requireSession } from "@/lib/session";
 
@@ -24,7 +25,8 @@ export default async function AppLayout({ children }: LayoutProps<"/app">) {
      * that grows: the canvas would chase the document height. The dashboard
      * simply scrolls inside the same box.
      */
-    <div className="flex h-dvh flex-col">
+    <div className="relative flex h-dvh flex-col">
+      <Aurora intensity="quiet" />
       <header className="border-b border-edge">
         <div className="mx-auto flex max-w-[1180px] items-center justify-between px-6 py-4">
           <Link

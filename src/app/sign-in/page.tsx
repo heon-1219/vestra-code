@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 
+import { Aurora } from "@/components/ambient/aurora";
 import { SignInButtons } from "@/components/auth/sign-in-buttons";
 import { getSession } from "@/lib/session";
 
@@ -13,7 +14,8 @@ export default async function SignInPage() {
   }
 
   return (
-    <main className="flex min-h-screen flex-col">
+    <main className="relative flex min-h-screen flex-col">
+      <Aurora />
       <div className="mx-auto w-full max-w-[1180px] px-6 py-5">
         <Link
           href="/"

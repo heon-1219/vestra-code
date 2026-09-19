@@ -306,3 +306,59 @@
     scroll-behavior: auto !important;
   }
 }
+
+/**
+ * Aurora motion.
+ *
+ * Only `transform` and `opacity` animate, so the compositor owns every frame
+ * and the main thread — which on this page is also running a force simulation
+ * — is never asked to lay anything out. The periods are deliberately long and
+ * mutually prime (37s / 43s / 61s) so the three layers never fall into step;
+ * a visible loop is what turns atmosphere into a screensaver.
+ */
+@keyframes aurora-drift {
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  50%  { transform: translate3d(3%, -2%, 0) scale(1.08); }
+  100% { transform: translate3d(0, 0, 0) scale(1); }
+}
+
+@keyframes aurora-fall {
+  0%   { transform: translate3d(0, 0, 0) scaleY(1); }
+  50%  { transform: translate3d(-2%, 3%, 0) scaleY(1.12); }
+  100% { transform: translate3d(0, 0, 0) scaleY(1); }
+}
+
+@keyframes aurora-slow {
+  0%   { transform: translate3d(0, 0, 0); }
+  50%  { transform: translate3d(4%, -3%, 0); }
+  100% { transform: translate3d(0, 0, 0); }
+}
+
+.aurora-drift {
+  animation: aurora-drift 37s ease-in-out infinite;
+  will-change: transform;
+}
+.aurora-fall {
+  animation: aurora-fall 43s ease-in-out infinite;
+  will-change: transform;
+}
+.aurora-slow {
+  animation: aurora-slow 61s ease-in-out infinite;
+  will-change: transform;
+}
+
+/*
+ * Reduced motion keeps the sky and stops the weather. The gradients are the
+ * point; their drifting is not, and WCAG treats a change that does not alter
+ * perceived position or size as something other than motion. The global
+ * reduced-motion rule above already collapses every duration, so this only has
+ * to stop `will-change` from holding three compositor layers alive for nothing.
+ */
+@media (prefers-reduced-motion: reduce) {
+  .aurora-drift,
+  .aurora-fall,
+  .aurora-slow {
+    animation: none;
+    will-change: auto;
+  }
+}
