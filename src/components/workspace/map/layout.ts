@@ -51,7 +51,16 @@ export type PlacedDistrict = DistrictDescriptor & {
   r: number;
   /** How many items live here. Shown under the name. */
   count: number;
-  /** Index into the renderer's cluster hues. Assigned by size, largest first. */
+  /**
+   * Index into the renderer's cluster hues.
+   *
+   * Chosen so that no territory sits next to another wearing the same colour —
+   * see `pickHue`. It used to be the size rank modulo six, which is fine for
+   * six places and wrong for seven: the seventh territory is the seventh
+   * largest, which the packing puts in the outer ring where the first one's
+   * neighbours are, and two same-coloured blobs touching is the one thing
+   * colour-as-grouping cannot survive.
+   */
   hue: number;
 };
 
@@ -78,8 +87,15 @@ export const DISTRICT_HUE_COUNT = 6;
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
-/** World units between packed items. */
-const ITEM_SPACING = 13;
+/**
+ * World units between packed items.
+ *
+ * Exported because the renderer needs it to answer "is there room to write a
+ * name beside this dot yet": the pitch between two items on screen is this
+ * number times the zoom, and a name that does not fit between two dots is a
+ * name lying on top of its neighbour.
+ */
+export const ITEM_SPACING = 13;
 const ITEM_R_MIN = 3.4;
 const ITEM_R_MAX = 9;
 
@@ -346,7 +362,7 @@ export function layoutMap(
   const districts: PlacedDistrict[] = [];
   const placedItems: PlacedItem[] = [];
 
-  for (const [index, group] of ordered.entries()) {
+  for (const group of ordered) {
     const r = districtRadius(group.members.length);
     const spot = findSpot(districts, r);
     const district: PlacedDistrict = {
@@ -356,7 +372,7 @@ export function layoutMap(
       y: spot.y,
       r,
       count: group.members.length,
-      hue: index % DISTRICT_HUE_COUNT,
+      hue: pickHue(districts, spot.x, spot.y),
     };
     districts.push(district);
 
@@ -425,6 +441,35 @@ function findSpot(
   let far = 0;
   for (const other of placed) far = Math.max(far, other.x + other.r);
   return { x: far + DISTRICT_GAP + r, y: 0 };
+}
+
+/**
+ * The colour this territory wears, given where it landed.
+ *
+ * The hue with the most room around it: for each of the six, how far away the
+ * nearest territory already wearing it is, and the winner is the largest of
+ * those distances. Ties go to the lowest index, so a fresh map still reads
+ * c1, c2, c3… in size order and the first six are always all different.
+ *
+ * Greedy and deterministic, like everything else here. It is O(districts × 6)
+ * per placement on a list that is tens long, which is nothing next to the
+ * spiral scan it runs beside.
+ */
+function pickHue(placed: readonly PlacedDistrict[], x: number, y: number): number {
+  let best = 0;
+  let bestRoom = -1;
+  for (let hue = 0; hue < DISTRICT_HUE_COUNT; hue++) {
+    let room = Infinity;
+    for (const other of placed) {
+      if (other.hue !== hue) continue;
+      room = Math.min(room, Math.hypot(other.x - x, other.y - y));
+    }
+    if (room > bestRoom) {
+      bestRoom = room;
+      best = hue;
+    }
+  }
+  return best;
 }
 
 /**

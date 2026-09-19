@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { GraphItem } from "@/lib/graph/view";
 
-import { districtOf, layoutMap } from "./layout";
+import { districtOf, layoutMap, DISTRICT_HUE_COUNT } from "./layout";
 
 function item(partial: Partial<GraphItem> & { id: string }): GraphItem {
   return {
@@ -142,6 +142,45 @@ describe("layoutMap", () => {
         expect(gap).toBeGreaterThan(0);
       }
     }
+  });
+
+  /**
+   * Colour is the only thing telling two territories apart once the map is
+   * zoomed out far enough that the names have gone, so two neighbours wearing
+   * the same one is two places reading as one. The old rule — the size rank
+   * modulo six — broke on the seventh territory, which the packing puts in the
+   * ring where the first one's neighbours already are.
+   */
+  it("never puts the same colour on a territory's nearest neighbour", () => {
+    const many = files(
+      ...Array.from({ length: 40 }, (_, i) => `src/components/C${i}.tsx`),
+      ...Array.from({ length: 20 }, (_, i) => `src/lib/l${i}.ts`),
+      ...Array.from({ length: 18 }, (_, i) => `folder${i}/only.ts`),
+      "package.json",
+    );
+    const layout = layoutMap(many);
+    expect(layout.districts.length).toBeGreaterThan(DISTRICT_HUE_COUNT);
+
+    for (const district of layout.districts) {
+      let nearest = null;
+      let best = Infinity;
+      for (const other of layout.districts) {
+        if (other.id === district.id) continue;
+        const gap = Math.hypot(other.x - district.x, other.y - district.y) - other.r;
+        if (gap < best) {
+          best = gap;
+          nearest = other;
+        }
+      }
+      expect(nearest).not.toBeNull();
+      expect(nearest?.hue).not.toBe(district.hue);
+    }
+  });
+
+  it("spends all six colours before it reuses one", () => {
+    const layout = layoutMap(shop);
+    const used = layout.districts.slice(0, DISTRICT_HUE_COUNT).map((d) => d.hue);
+    expect(new Set(used).size).toBe(used.length);
   });
 
   it("keeps every item inside its own district", () => {
