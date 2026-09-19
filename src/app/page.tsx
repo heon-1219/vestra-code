@@ -313,6 +313,31 @@ export default function LandingPage() {
         </div>
       </section>
 
+      {/*
+        The one claim on this page whose answer depends on how you connected,
+        given its own section and centred.
+        
+        It was a block inside the band below, which put a three-column table
+        under a left-aligned heading and a lede — three left edges and a wide
+        figure competing down the same margin. Centred and alone, the table is
+        read as the comparison it is rather than as an illustration attached to
+        the paragraph above it.
+
+        Still ABOVE the promises rather than after them: the first of those
+        promises is the only conditional one, and a difference between two
+        columns is taken in at a glance where the same difference in a
+        paragraph has to be read twice. It arrives already understood.
+
+        No `bg-ink-sunk` here, unlike the band below. Sharing the background
+        would have merged the two back into one section, which is the thing
+        being undone.
+      */}
+      <section className="relative">
+        <div className="mx-auto max-w-[1200px] px-6 pt-28 pb-4 md:px-10 md:pt-40">
+          <KeptAndNot className="rise mx-auto max-w-[640px]" />
+        </div>
+      </section>
+
       <section className="relative bg-ink-sunk/70">
         <div className="mx-auto max-w-[1200px] px-6 py-28 md:px-10 md:py-40">
           <h2 className="rise display-section max-w-[680px] text-section">
@@ -322,14 +347,6 @@ export default function LandingPage() {
             아직 보여드릴 사용자도, 숫자도 없습니다. 대신 이 제품이 지키기로 한
             것을 적어 둡니다.
           </p>
-          {/*
-            The first promise below is the only one whose answer depends on how
-            you connected, and a difference between two columns is read in a
-            glance where the same difference in a paragraph has to be read
-            twice. The table goes above the band so that promise arrives already
-            understood rather than having to explain itself.
-          */}
-          <KeptAndNot className="rise mt-16 max-w-[620px]" />
           {/* A ruled band rather than four boxes: this is a specification, and
               it should read like one. */}
           <div className="mt-20 grid grid-cols-12 gap-x-2 gap-y-12 sm:gap-x-6 md:gap-x-8">

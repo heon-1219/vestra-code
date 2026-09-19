@@ -60,8 +60,18 @@ export function KeptAndNot({ className = "" }: { className?: string }) {
         With fixed columns the cells wrap instead, and Korean wraps on word
         boundaries, so nothing is cut off.
       */}
+      {/*
+        Centred as a block, with the row labels still left-aligned.
+        
+        Centring every cell too was the other option and it is worse: the first
+        column is the question being asked of each row, and a column of
+        questions ragged on both edges is one a reader has to hunt down rather
+        than run down. The answers are centred under their own headings, which
+        is what makes the one row where the two columns disagree visible
+        without reading any of the words.
+      */}
       <table className="w-full table-fixed border-collapse text-left">
-        <caption className="mb-7 max-w-[54ch] text-left text-copy text-said-soft">
+        <caption className="mx-auto mb-7 max-w-[54ch] text-center text-copy text-said-soft">
           무엇이 남는지는 어떻게 연결했는지에 따라 다릅니다. 둘 중 어느 쪽인지
           언제나 먼저 말씀드립니다.
         </caption>
@@ -78,10 +88,10 @@ export function KeptAndNot({ className = "" }: { className?: string }) {
                   is. */}
               <span className="sr-only">남는 것</span>
             </th>
-            <th scope="col" className="pb-3 pr-3 text-micro font-medium text-said-faint">
+            <th scope="col" className="pb-3 text-center text-micro font-medium text-said-faint">
               {REPO}
             </th>
-            <th scope="col" className="pb-3 text-micro font-medium text-said-faint">
+            <th scope="col" className="pb-3 text-center text-micro font-medium text-said-faint">
               {UPLOAD}
             </th>
           </tr>
@@ -107,7 +117,7 @@ export function KeptAndNot({ className = "" }: { className?: string }) {
         to be taken on trust and this band's whole point is that it should not
         have to be. Both sentences are the page's own, word for word.
       */}
-      <dl className="mt-8 grid grid-cols-1 gap-x-2 gap-y-4 sm:grid-cols-2 sm:gap-x-6 md:gap-x-8">
+      <dl className="mt-8 grid grid-cols-1 gap-x-2 gap-y-4 text-center sm:grid-cols-2 sm:gap-x-6 md:gap-x-8">
         <div>
           <dt className="text-micro font-medium text-said-faint">{REPO}</dt>
           <dd className="mt-1.5 text-copy text-said-soft">
@@ -133,8 +143,8 @@ export function KeptAndNot({ className = "" }: { className?: string }) {
  */
 function Answer({ kept }: { kept: boolean }) {
   return (
-    <td className={`rule-t py-4 pr-3 align-top ${kept ? "text-said" : "text-said-faint"}`}>
-      <span className="flex flex-col gap-2 text-copy sm:flex-row sm:items-center sm:gap-2.5">
+    <td className={`rule-t py-4 align-top ${kept ? "text-said" : "text-said-faint"}`}>
+      <span className="flex flex-col items-center gap-2 text-copy sm:flex-row sm:justify-center sm:gap-2.5">
         <KeepMark kept={kept} />
         {kept ? "남습니다" : "남지 않습니다"}
       </span>
