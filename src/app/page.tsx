@@ -90,8 +90,16 @@ const FEATURES = [
  */
 const PROMISES = [
   {
-    title: "소스 코드를 보관하지 않습니다",
-    body: "지도와 파일 경로, 줄 번호만 남깁니다. 코드는 필요할 때 가져와 읽고 곧바로 버립니다.",
+    /*
+     * The one item here that is not an unconditional refusal, and it names its
+     * condition rather than rounding it off. An uploaded folder has no origin
+     * to fetch back from, so keeping its files is the only way its map opens on
+     * a second computer — which means the flat version of this sentence is now
+     * false for half the product, and a false sentence about someone's own code
+     * is the worst thing this band could contain.
+     */
+    title: "GitHub 저장소의 코드는 보관하지 않습니다",
+    body: "지도와 파일 경로, 줄 번호만 남깁니다. 코드는 필요할 때 GitHub에서 가져와 읽고 곧바로 버립니다. 내 컴퓨터에서 올려주신 폴더는 다시 가져올 곳이 없어서, 다른 컴퓨터에서도 열어보실 수 있게 파일을 함께 보관합니다.",
   },
   {
     title: "확인한 것과 짐작한 것을 섞지 않습니다",
@@ -326,8 +334,13 @@ export default function LandingPage() {
           <span className="block text-[clamp(1.75rem,3.6vw,2.5rem)] font-semibold tracking-[-0.03em] text-said-faint">
             Vestra Code
           </span>
+          {/* The short version of the band above, and it has to carry the same
+              split: a one-line "보관하지 않습니다" here would be the last thing a
+              reader sees and the one sentence they would remember, which makes
+              it the worst place to leave the simpler, no-longer-true version. */}
           <p className="mt-6 max-w-[420px] text-micro text-said-faint">
-            소스 코드는 보관하지 않습니다. 지도와 파일 경로만 남습니다.
+            GitHub 저장소의 코드는 보관하지 않고, 지도와 파일 경로만 남깁니다.
+            올려주신 폴더는 나중에 열어보실 수 있게 파일까지 보관합니다.
           </p>
         </div>
       </footer>

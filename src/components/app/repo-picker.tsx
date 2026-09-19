@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 
 import { addProject, listMyRepos, type MyReposState } from "@/app/app/actions";
 
+import { LanguageMark } from "./language-mark";
+
 /** "3일 전". Absolute dates mean nothing when you are looking for the one you touched last. */
 function agoInKorean(iso: string | null): string {
   if (!iso) return "";
@@ -97,8 +99,11 @@ export function RepoPicker({
 
   if (state.status === "no_github") {
     return (
+      // The paste field is a sibling tab, not something below this paragraph —
+      // pointing "아래에" at it sent people looking for a field that is not on
+      // screen. It is named instead.
       <p className="py-6 text-[14px] leading-[1.75] text-said-soft">
-        GitHub 계정이 연결돼 있지 않아요. 아래에 저장소 주소를 직접 붙여넣거나,
+        GitHub 계정이 연결돼 있지 않아요. “붙여넣기”에 저장소 주소를 직접 넣거나,
         로그아웃 후 GitHub으로 다시 로그인하시면 목록에서 고를 수 있어요.
       </p>
     );
@@ -113,17 +118,23 @@ export function RepoPicker({
   }
 
   return (
-    <div>
+    /*
+     * A column that fills whatever height it is given, so the list inside it is
+     * the ONE thing on this side of the dashboard that scrolls. It used to have
+     * a fixed 340px list inside a card inside a scrolling column, which put two
+     * bars side by side — the outer one with almost nothing to move.
+     */
+    <div className="flex h-full min-h-0 flex-col">
       <input
         type="search"
         value={query}
         onChange={(event) => setQuery(event.target.value)}
         placeholder="저장소 이름으로 찾기"
         aria-label="저장소 검색"
-        className="w-full rounded-xl border border-edge bg-ink px-4 py-2.5 text-[14px] placeholder:text-said-faint focus:border-edge-lit"
+        className="w-full shrink-0 rounded-xl border border-edge bg-ink px-4 py-2.5 text-[14px] placeholder:text-said-faint focus:border-edge-lit"
       />
 
-      <ul className="mt-3 max-h-[340px] divide-y divide-edge overflow-y-auto rounded-xl border border-edge">
+      <ul className="mt-3 min-h-[160px] flex-1 divide-y divide-edge overflow-y-auto rounded-xl border border-edge">
         {filtered.length === 0 ? (
           <li className="px-4 py-8 text-center text-[14px] text-said-faint">
             {query ? "찾는 저장소가 없어요." : "공개 저장소가 없어요."}
@@ -143,9 +154,12 @@ export function RepoPicker({
                     {repo.description || repo.fullName}
                   </p>
                 </div>
-                <div className="hidden shrink-0 text-right text-[12px] text-said-faint sm:block">
-                  {repo.language ? <div>{repo.language}</div> : null}
-                  <div>{agoInKorean(repo.pushedAt)}</div>
+                {/* One line rather than two, now that the language is a mark:
+                    stacked, it made every row two lines tall in a column that
+                    is the narrowest thing on the page. */}
+                <div className="hidden shrink-0 items-center gap-1.5 text-[12px] text-said-faint sm:flex">
+                  <LanguageMark language={repo.language} />
+                  <span>{agoInKorean(repo.pushedAt)}</span>
                 </div>
                 <button
                   type="button"
@@ -162,7 +176,7 @@ export function RepoPicker({
       </ul>
 
       {error ? (
-        <p role="alert" className="mt-3 text-[14px] text-c4">
+        <p role="alert" className="mt-3 shrink-0 text-[14px] text-c4">
           {error}
         </p>
       ) : null}
@@ -173,15 +187,15 @@ export function RepoPicker({
         assume the product is broken.
       */}
       {state.privateCount > 0 ? (
-        <p className="mt-3 text-[13px] leading-[1.7] text-said-faint">
+        <p className="mt-3 shrink-0 text-[13px] leading-[1.7] text-said-faint">
           비공개 저장소 {state.privateCount}개는 목록에 없어요. 지금은 공개
           저장소만 읽을 수 있어요.
         </p>
       ) : null}
       {state.more ? (
-        <p className="mt-1 text-[13px] text-said-faint">
-          최근에 작업한 100개만 보여드리고 있어요. 없으면 아래에 주소를 직접
-          붙여넣어 주세요.
+        <p className="mt-1 shrink-0 text-[13px] text-said-faint">
+          최근에 작업한 100개만 보여드리고 있어요. 없으면 “붙여넣기”에 주소를
+          직접 넣어 주세요.
         </p>
       ) : null}
     </div>

@@ -46,10 +46,23 @@ export default async function AppDashboard() {
           narrow window the grid collapses to one column and the two stack in
           the order they are written, which puts the picker first, where someone
           with no projects yet needs it.
+
+          Its own heading exists so the two columns start on the same line. Both
+          sides now open with a 13px label and put their content at `mt-3`, so
+          the card's top edge and the first project card's top edge are the same
+          edge — which is what stops the page reading as two things dropped side
+          by side at different heights.
+
+          No scroller here. The card holds one, over the repository list, and a
+          second one around the card put a bar down the column's edge with a few
+          pixels of travel and nothing worth scrolling to.
         */}
-        <div className="min-h-0 overflow-y-auto lg:pr-1">
-          <AddProject />
-        </div>
+        <section className="flex min-h-0 flex-col">
+          <h2 className="shrink-0 text-[13px] text-said-faint">새 프로젝트</h2>
+          <div className="mt-3 flex min-h-0 flex-1 flex-col">
+            <AddProject />
+          </div>
+        </section>
 
         <section className="flex min-h-0 flex-col">
           <h2 className="flex shrink-0 items-baseline gap-2 text-[13px] text-said-faint">

@@ -31,20 +31,40 @@ export function AddProject() {
   }
 
   return (
-    <div className="rounded-2xl border border-edge bg-ink-raised p-6">
-      <div className="flex gap-1 border-b border-edge pb-3">
+    /*
+     * A column that takes the height it is given rather than the height of its
+     * contents, so the repo list inside can be the only scroller on this side.
+     */
+    <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-edge bg-ink-raised p-6">
+      {/*
+        Three labels short enough to sit on one line each at this column's
+        narrowest, which is 300px minus the card's padding. Two-line tabs read
+        as a broken layout, and the fix is the shorter word rather than a wider
+        column — the column is narrow on purpose (the list beside it is what
+        this page is for).
+      */}
+      <div className="flex shrink-0 gap-1 border-b border-edge pb-3">
         <TabButton active={tab === "pick"} onClick={() => setTab("pick")}>
-          내 저장소에서 고르기
+          GitHub에서
         </TabButton>
         <TabButton active={tab === "paste"} onClick={() => setTab("paste")}>
-          주소 붙여넣기
+          붙여넣기
         </TabButton>
         <TabButton active={tab === "upload"} onClick={() => setTab("upload")}>
-          폴더 올리기
+          업로드
         </TabButton>
       </div>
 
-      <div className="pt-4">
+      {/*
+        The repo tab runs its own scroller over the list alone, so this holds it
+        rather than scrolling it a second time. The other two are short forms
+        that grow with what you pick, and scroll here on a short window.
+      */}
+      <div
+        className={`min-h-0 flex-1 pt-4 ${
+          tab === "pick" ? "overflow-hidden" : "overflow-y-auto"
+        }`}
+      >
         {tab === "pick" ? (
           <RepoPicker onConnected={handleConnected} />
         ) : tab === "upload" ? (
@@ -55,7 +75,10 @@ export function AddProject() {
       </div>
 
       {notice ? (
-        <p role="status" className="mt-4 text-[14px] leading-[1.75] text-said-soft">
+        <p
+          role="status"
+          className="mt-4 shrink-0 text-[14px] leading-[1.75] text-said-soft"
+        >
           {notice}
         </p>
       ) : null}
@@ -73,11 +96,14 @@ function TabButton({
   children: React.ReactNode;
 }) {
   return (
+    // `whitespace-nowrap` is the guarantee rather than the hope: a tab that
+    // wraps is the exact thing this row's type size and padding are set to
+    // avoid, and a label two lines tall reads as a broken layout.
     <button
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`rounded-lg px-3 py-1.5 text-[14px] font-medium transition-colors ${
+      className={`rounded-lg px-2.5 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors ${
         active
           ? "bg-ink text-said"
           : "text-said-faint hover:text-said-soft"
