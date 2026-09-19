@@ -45,7 +45,12 @@ export function lockOf(locks: LockMap, id: string): ConnectionLock {
   return locks[id] ?? DEFAULT_LOCK;
 }
 
-/** How far away, in words rather than in a number of hops. */
+/**
+ * How far away, in words rather than in a count.
+ *
+ * The number is what the user sets; this is what it MEANS, and both are on
+ * screen at once. "2" tells someone who does not think in hops nothing at all.
+ */
 const DISTANCE_WORDS: Record<number, string> = {
   1: "바로 옆",
   2: "한 다리 건너",
@@ -53,7 +58,10 @@ const DISTANCE_WORDS: Record<number, string> = {
 };
 
 export function distanceWord(hops: number): string {
-  return DISTANCE_WORDS[hops] ?? DISTANCE_WORDS[3];
+  const known = DISTANCE_WORDS[hops];
+  if (known) return known;
+  // Past the named few it stays regular: n steps away is (n-1) 다리 건너.
+  return hops > 1 ? `${hops - 1}다리 건너` : DISTANCE_WORDS[1];
 }
 
 /** The name a person reads: the plain one if Pass 2 has written it yet. */

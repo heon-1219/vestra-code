@@ -78,7 +78,16 @@ export type Neighbourhood = {
 };
 
 export const MIN_HOPS = 1;
-export const MAX_HOPS = 3;
+/**
+ * Six, not three.
+ *
+ * The control is now a number someone types, so the ceiling is no longer set by
+ * how many buttons fit. It is still a ceiling: on a connected graph the reach
+ * doubles at every step, and past five or six you have selected the whole
+ * project, which answers nothing. The result cap and its "N개는 줄였어요" line
+ * are what actually protect the panel; this just stops a typo asking for 900.
+ */
+export const MAX_HOPS = 6;
 export const DEFAULT_HOPS = 1;
 
 /**

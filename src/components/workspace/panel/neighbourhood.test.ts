@@ -11,7 +11,14 @@ import type {
 } from "@/lib/graph/view";
 
 import { RightPanel, type RightPanelProps } from "./connections-panel";
-import { buildNeighbourhood, isAlone, type NeighbourhoodInput } from "./neighbourhood";
+import {
+  DEFAULT_HOPS,
+  MAX_HOPS,
+  MIN_HOPS,
+  buildNeighbourhood,
+  isAlone,
+  type NeighbourhoodInput,
+} from "./neighbourhood";
 import type { RunProgress } from "./states";
 
 /**
@@ -114,10 +121,14 @@ describe("buildNeighbourhood", () => {
       expect(buildNeighbourhood(view, "a", { hops: 3 })?.uses).toHaveLength(3);
     });
 
-    it("clamps a depth outside 1 to 3 rather than walking the whole graph", () => {
-      expect(buildNeighbourhood(view, "a", { hops: 99 })?.hops).toBe(3);
-      expect(buildNeighbourhood(view, "a", { hops: 0 })?.hops).toBe(1);
-      expect(buildNeighbourhood(view, "a", { hops: Number.NaN })?.hops).toBe(1);
+    it("clamps a depth outside the range rather than walking the whole graph", () => {
+      // Against the constants, not a literal. The ceiling moved from 3 to 6
+      // when the control became a number someone types, and a hardcoded 3 here
+      // would have failed for the wrong reason — it was testing the old UI, not
+      // the clamp.
+      expect(buildNeighbourhood(view, "a", { hops: 99 })?.hops).toBe(MAX_HOPS);
+      expect(buildNeighbourhood(view, "a", { hops: 0 })?.hops).toBe(MIN_HOPS);
+      expect(buildNeighbourhood(view, "a", { hops: Number.NaN })?.hops).toBe(DEFAULT_HOPS);
     });
 
     it("does not turn around mid-walk", () => {

@@ -24,6 +24,7 @@ import {
   DEFAULT_LIMIT,
   isAlone,
   MAX_HOPS,
+  MIN_HOPS,
   type Neighbour,
   type Neighbourhood,
 } from "./neighbourhood";
@@ -315,39 +316,93 @@ function TabButton({
 }
 
 /**
- * Three labelled choices, not a slider.
+ * How far to look, as a number the user types.
  *
- * A slider's value is a number the user has to interpret — "2" means nothing
- * to someone who does not think in hops — and at rest it shows neither the
- * range nor what the positions mean. It also asks for a drag, which is the
- * most precision this panel demands of anyone. With exactly three stops the
- * affordance costs more than it buys: three buttons show every option and its
- * meaning at once, answer in one click, and are a radio group to a screen
- * reader without any extra work.
+ * It was three buttons — 바로 옆 / 한 다리 건너 / 두 다리 건너 — which showed
+ * every option and its meaning at once, and that was its virtue. The cost was
+ * that the range WAS the control: asking for four steps meant adding a fourth
+ * button, so the ceiling was set by what fits on a row rather than by anything
+ * about the graph.
+ *
+ * A field keeps the meaning visible by printing the words BESIDE the number
+ * rather than instead of it, and the steppers keep the common case a single
+ * click. "2" on its own tells someone who does not think in steps nothing;
+ * "2" next to "한 다리 건너" tells them both.
  */
 function HopControl({ hops, onChange }: { hops: number; onChange: (hops: number) => void }) {
+  // The field is uncontrolled between commits so a half-typed value is not
+  // fought with on every keystroke — someone clearing the box to type "12"
+  // passes through empty, and snapping that to 1 mid-keystroke is maddening.
+  const [draft, setDraft] = useState(String(hops));
+
+  // Re-synced during render, not in an effect. An effect would paint one frame
+  // showing the old number, and the React compiler rules reject setState there
+  // for exactly that reason. This is the documented way to adjust state when a
+  // prop changes, and it does not remount the input, so a focused field stays
+  // focused.
+  const [lastHops, setLastHops] = useState(hops);
+  if (hops !== lastHops) {
+    setLastHops(hops);
+    setDraft(String(hops));
+  }
+
+  const commit = (raw: string) => {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isNaN(parsed)) {
+      setDraft(String(hops));
+      return;
+    }
+    const next = Math.min(Math.max(parsed, MIN_HOPS), MAX_HOPS);
+    setDraft(String(next));
+    onChange(next);
+  };
+
+  const step = (delta: number) => {
+    const next = Math.min(Math.max(hops + delta, MIN_HOPS), MAX_HOPS);
+    if (next !== hops) onChange(next);
+  };
+
   return (
-    <div
-      role="radiogroup"
-      aria-label="얼마나 멀리까지 볼지"
-      className="mt-3 flex items-center gap-1"
-    >
-      {Array.from({ length: MAX_HOPS }, (_, index) => index + 1).map((value) => (
+    <div className="mt-3 flex items-center gap-2">
+      <span className="text-[12px] text-said-faint">얼마나 멀리까지</span>
+
+      <div className="flex items-center rounded-md border border-edge-lit">
         <button
-          key={value}
           type="button"
-          role="radio"
-          aria-checked={hops === value}
-          onClick={() => onChange(value)}
-          className={`rounded-md border px-2.5 py-1 text-[12px] transition-colors ${
-            hops === value
-              ? "border-lamp-dim bg-lamp/10 text-lamp"
-              : "border-edge-lit text-said-faint hover:text-said-soft"
-          }`}
+          onClick={() => step(-1)}
+          disabled={hops <= MIN_HOPS}
+          aria-label="한 단계 가깝게"
+          className="px-2 py-1 text-[13px] text-said-faint transition-colors hover:text-said disabled:opacity-40"
         >
-          {distanceWord(value)}
+          −
         </button>
-      ))}
+        <input
+          type="number"
+          inputMode="numeric"
+          min={MIN_HOPS}
+          max={MAX_HOPS}
+          value={draft}
+          aria-label={`얼마나 멀리까지 볼지, ${MIN_HOPS}에서 ${MAX_HOPS} 사이`}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={(event) => commit(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") commit(event.currentTarget.value);
+          }}
+          className="w-9 bg-transparent py-1 text-center text-[13px] tabular-nums outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+        />
+        <button
+          type="button"
+          onClick={() => step(1)}
+          disabled={hops >= MAX_HOPS}
+          aria-label="한 단계 멀리"
+          className="px-2 py-1 text-[13px] text-said-faint transition-colors hover:text-said disabled:opacity-40"
+        >
+          +
+        </button>
+      </div>
+
+      {/* The number and what it means, together. */}
+      <span className="text-[12px] text-said-soft">{distanceWord(hops)}</span>
     </div>
   );
 }
