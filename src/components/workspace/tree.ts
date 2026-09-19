@@ -122,22 +122,22 @@ export function defaultOpenFolders(
   roots: readonly TreeNode[],
   budget: number = DEFAULT_OPEN_ROWS,
 ): Set<string> {
-  const open = new Set<string>();
-  let rows = roots.length;
-  let level = roots.filter(isFolder);
-
-  while (level.length > 0) {
-    const next: FolderNode[] = [];
-    for (const folder of level) {
-      if (rows + folder.children.length > budget) continue;
-      open.add(folder.key);
-      rows += folder.children.length;
-      next.push(...folder.children.filter(isFolder));
-    }
-    level = next;
-  }
-
-  return open;
+  // Nothing is open to begin with.
+  //
+  // The first version opened folders breadth-first while the rows they added
+  // still fit a budget, on the reasoning that a small project should look the
+  // way it always had. That reasoning was about the old flat list, not about
+  // what a tree is for: the founder's instruction was "그냥 다 보여주지 말고",
+  // and a tree that arrives already unfolded is a list with extra indentation.
+  // Shut, the panel opens as one row per folder — the shape of the project,
+  // which is the thing you are looking at this panel to see.
+  //
+  // The budget is kept in the signature rather than deleted because the search
+  // and the selection still compute what to reveal, and a caller that wants a
+  // partially open tree has somewhere to ask for one.
+  void roots;
+  void budget;
+  return new Set<string>();
 }
 
 /**

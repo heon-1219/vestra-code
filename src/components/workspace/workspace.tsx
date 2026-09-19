@@ -235,7 +235,6 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
 
   const running = runId !== null;
   const hasGraph = view.items.length > 0;
-  const neverRead = !hasGraph && view.lastRun === null;
 
   /*
    * How the workspace is divided, and which pane has the screen.
@@ -262,20 +261,29 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
         >
           ← 내 프로젝트
         </Link>
+        {/*
+          Where the project came from belongs under its name, not across the
+          header. On the right it was a second thing competing with the pane
+          control for the same corner, and the two say nothing to each other —
+          one is a fact about the project, the other is a control for the
+          screen. Under the title it reads as the subtitle it always was.
+        */}
         <div className="min-w-0 flex-1">
           <h1 className="truncate text-[15px] font-semibold tracking-[-0.02em]">
             {project.displayName}
           </h1>
+          <p className="truncate text-[11px] text-said-faint">
+            {project.source === "upload" ? (
+              "내 컴퓨터에서 올린 폴더"
+            ) : (
+              <span className="font-mono">
+                {project.repoOwner}/{project.repoName}
+              </span>
+            )}
+          </p>
         </div>
-        <p className="hidden shrink-0 text-[12px] text-said-faint sm:block">
-          {project.source === "upload" ? (
-            "내 컴퓨터에서 올린 폴더"
-          ) : (
-            <span className="font-mono">
-              {project.repoOwner}/{project.repoName}
-            </span>
-          )}
-        </p>
+
+        {/* The right side is the pane control, and only that. */}
         <PaneChips maximized={layout.maximized} onToggle={toggleMaximized} />
 
         {!running && hasGraph ? (
@@ -314,7 +322,19 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
           screen. The panels themselves are not touched: a pane should not have
           to know it is in a resizable layout.
         */}
-        <div className="flex min-h-0 min-w-0 overflow-hidden">
+        {/*
+          `grid`, not `flex`, and that one word is the whole fix.
+
+          A flex row stretches its children on the cross axis only, so the panel
+          inside kept its content width and the rest of the column was simply
+          empty — drag a divider wider and you got a gap rather than a wider
+          panel. A single grid item stretches on BOTH axes by default, so the
+          panel is always exactly the width the divider gave it. Doing it here
+          rather than by adding `w-full` inside each panel keeps the panels
+          unaware that they are in a resizable layout, which is what lets them
+          be edited independently.
+        */}
+        <div className="grid min-h-0 min-w-0 overflow-hidden">
           <PlacesPanel
             items={view.items}
             selectedId={selectedId}
@@ -388,9 +408,12 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
                 source={project.source}
                 progress={progress}
                 onArrive={() => setRunId(null)}
-                // An uploaded folder has nothing to fetch again (D66), so it is
-                // offered no retry rather than one that cannot work.
-                onRetry={project.source === "github" ? start : undefined}
+                // Offered for an uploaded folder too, now that one can be read
+                // again from the copy we kept. The browser cannot tell whether
+                // this particular project has that copy — it is a row count —
+                // so the attempt is offered and the server answers with a
+                // sentence when there is nothing to read.
+                onRetry={start}
               />
             ) : hasGraph ? (
               <DistrictMap
@@ -405,7 +428,6 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
               />
             ) : (
               <EmptyCentre
-                neverRead={neverRead}
                 failed={view.lastRun?.status === "failed"}
                 error={view.lastRun?.error ?? null}
                 source={project.source}
@@ -458,7 +480,19 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
           onReset={reset}
         />
 
-        <div className="flex min-h-0 min-w-0 overflow-hidden">
+        {/*
+          `grid`, not `flex`, and that one word is the whole fix.
+
+          A flex row stretches its children on the cross axis only, so the panel
+          inside kept its content width and the rest of the column was simply
+          empty — drag a divider wider and you got a gap rather than a wider
+          panel. A single grid item stretches on BOTH axes by default, so the
+          panel is always exactly the width the divider gave it. Doing it here
+          rather than by adding `w-full` inside each panel keeps the panels
+          unaware that they are in a resizable layout, which is what lets them
+          be edited independently.
+        */}
+        <div className="grid min-h-0 min-w-0 overflow-hidden">
         <RightPanel
           // Always the real view, even when it is empty: an empty graph is an
           // answer the panel knows how to say, and `null` would show "loading"
@@ -469,7 +503,7 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
           locks={locks}
           onLockChange={onLockChange}
           onSelect={onSelect}
-          onRetry={project.source === "github" ? start : undefined}
+          onRetry={start}
           onOpen={openItem}
           // The centre is already showing the checklist while a run goes; the
           // same five steps twice reads as two things happening.
@@ -538,14 +572,12 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
 }
 
 function EmptyCentre({
-  neverRead,
   failed,
   error,
   source,
   starting,
   onStart,
 }: {
-  neverRead: boolean;
   failed: boolean;
   error: string | null;
   source: "github" | "upload";
@@ -562,24 +594,26 @@ function EmptyCentre({
           {failed && error
             ? error
             : source === "upload"
-              ? "코드를 한 번 읽어서 앱의 지도를 그릴게요. 올려주신 파일은 나중에 열어보실 수 있게 함께 보관해요."
+              ? "코드를 한 번 읽어서 앱의 지도를 그릴게요. 올려주신 파일은 함께 보관해서, 나중에 열어보거나 다시 읽을 때 폴더를 또 고르지 않으셔도 돼요."
               : "코드를 한 번 읽어서 앱의 지도를 그릴게요. 파일과 그 사이의 연결만 저장하고, 코드 자체는 보관하지 않아요."}
         </p>
 
-        {source === "upload" && !neverRead ? (
-          <p className="mt-4 text-[13px] leading-[1.75] text-said-faint">
-            올려주신 폴더를 다시 읽으려면 폴더를 한 번 더 골라주셔야 해요.
-          </p>
-        ) : (
-          <button
-            type="button"
-            onClick={onStart}
-            disabled={starting}
-            className="mt-6 rounded-lg bg-paper px-5 py-2.5 text-[14px] font-semibold text-ink transition-colors hover:bg-lamp disabled:opacity-55"
-          >
-            {starting ? "시작하는 중…" : failed ? "다시 해보기" : "지도 그리기"}
-          </button>
-        )}
+        {/*
+          Offered whatever the project's source is. An uploaded folder used to
+          be a dead end here — the sentence in this slot asked the person to go
+          and find the folder again — and it no longer is, because the files we
+          kept are enough to read it. A project uploaded before we kept anything
+          still cannot be, and the server says so in a sentence when it happens
+          rather than the button quietly disappearing for reasons only we know.
+        */}
+        <button
+          type="button"
+          onClick={onStart}
+          disabled={starting}
+          className="mt-6 rounded-lg bg-paper px-5 py-2.5 text-[14px] font-semibold text-ink transition-colors hover:bg-lamp disabled:opacity-55"
+        >
+          {starting ? "시작하는 중…" : failed ? "다시 해보기" : "지도 그리기"}
+        </button>
       </div>
     </div>
   );

@@ -309,14 +309,33 @@ export function PlacesPanel({
                             aria-expanded={row.open}
                             title={row.path}
                             style={{ paddingInlineStart: indentOf(row.depth) }}
-                            className="flex w-full min-w-0 items-baseline gap-1 py-1 pr-2 text-left text-said-soft transition-colors hover:text-said"
+                            className="flex w-full min-w-0 items-center gap-1 py-1 pr-2 text-left text-said-soft transition-colors hover:text-said"
                           >
-                            <span
+                            {/*
+                              One chevron that rotates, not two glyphs that
+                              swap. A shape that turns is the same object in a
+                              different state, which is what an open folder is;
+                              swapping ▸ for ▾ is two characters at two optical
+                              weights, and at 10px the pair never quite sit on
+                              the same baseline. Drawn rather than typed for the
+                              same reason — a font's arrow glyph is whatever
+                              that font decided, and this one is 1.5px at every
+                              size.
+                            */}
+                            <svg
                               aria-hidden="true"
-                              className="inline-block w-3 shrink-0 text-center text-[10px] text-said-faint"
+                              viewBox="0 0 12 12"
+                              className={`h-3 w-3 shrink-0 self-center text-said-faint transition-transform duration-150 ${
+                                row.open ? "rotate-90" : ""
+                              }`}
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.5"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
                             >
-                              {row.open ? "▾" : "▸"}
-                            </span>
+                              <path d="M4.5 2.5 L8 6 L4.5 9.5" />
+                            </svg>
                             <span className="truncate text-[13px]">{row.name}</span>
                             <span className="shrink-0 font-mono text-[11px] text-said-faint">
                               {row.count}

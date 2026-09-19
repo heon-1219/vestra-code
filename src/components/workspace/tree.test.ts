@@ -146,45 +146,53 @@ describe("buildTree", () => {
 });
 
 describe("defaultOpenFolders", () => {
-  it("opens a small project whole", () => {
-    const roots = buildTree([
+  it("starts with every folder shut, whatever the project's size", () => {
+    const small = buildTree([
       entry("a", "src/lib/a.ts"),
       entry("b", "src/lib/b.ts"),
       entry("c", "src/components/C.tsx"),
+    ]);
+    const large = buildTree(
+      Array.from({ length: DEFAULT_OPEN_ROWS + 20 }, (_, index) =>
+        entry(`img${index}`, `public/img-${index}.png`),
+      ),
+    );
+
+    // Both, and deliberately both: an earlier version opened a small project
+    // whole on the reasoning that it had nothing worth folding away, which made
+    // the panel's first look depend on the project rather than on one rule a
+    // person could learn.
+    expect(defaultOpenFolders(small).size).toBe(0);
+    expect(defaultOpenFolders(large).size).toBe(0);
+  });
+
+  it("shows one row per top-level folder, and no files inside them", () => {
+    const roots = buildTree([
+      entry("a", "src/lib/a.ts"),
+      entry("b", "src/lib/b.ts"),
+      entry("c", "public/logo.png"),
+      entry("d", "README.md"),
     ]);
 
     const open = defaultOpenFolders(roots);
     const rows = flattenTree(roots, (key) => open.has(key));
 
-    // A project this size has nothing worth folding away, so the panel opens
-    // exactly as the flat list it replaces did.
-    expect(rows.filter((row) => row.kind === "item").map((row) => row.id).sort()).toEqual([
-      "a",
-      "b",
-      "c",
-    ]);
+    // Two folders and the one file that lives at the top. The files inside the
+    // folders are one click away, not on screen.
+    expect(rows.map((row) => row.kind)).toEqual(["folder", "folder", "item"]);
+    expect(rows.filter((row) => row.kind === "item").map((row) => row.id)).toEqual(["d"]);
   });
 
-  it("leaves a folder shut once it would not fit, and still opens its small neighbour", () => {
-    const many = Array.from({ length: DEFAULT_OPEN_ROWS + 5 }, (_, index) =>
-      entry(`img${index}`, `public/img-${index}.png`),
-    );
-    const roots = buildTree([...many, entry("a", "src/lib/a.ts"), entry("b", "src/lib/b.ts")]);
-
-    const open = defaultOpenFolders(roots);
-
-    expect(open.has("public")).toBe(false);
-    expect(open.has("src/lib")).toBe(true);
-  });
-
-  it("does not open a deep chain as a column of nested rows", () => {
+  it("still compacts a deep chain into one row", () => {
     const deep = "a/b/c/d/e/f/g/h/i/j/k/l/m/n/o/thing.ts";
     const roots = buildTree([entry("thing", deep)]);
 
     const rows = flattenTree(roots, (key) => defaultOpenFolders(roots).has(key));
 
-    // One row for the whole chain, one for the file it leads to.
-    expect(rows).toHaveLength(2);
+    // Compaction is a property of the tree, not of what happens to be open, so
+    // it has to survive everything being shut: one row for the whole chain.
+    expect(rows).toHaveLength(1);
+    expect(rows[0].kind).toBe("folder");
   });
 });
 
