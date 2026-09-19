@@ -94,3 +94,19 @@ measured it: 20/20 alias imports resolved, 30 certain call edges, 12 renders, an
 - **D38. Detect an unparseable file with `getSyntacticDiagnostics`, not try/catch.** A merge-conflict file does not throw — the parser recovers and yields usable statements (measured: one surviving function declaration, three diagnostics of code 1185). A try/catch never fires, so the file would be silently half-analysed.
 - **D39. Environment hazard, worth knowing before it wastes a day.** A stray `node_modules` directory sits above the system temp directory on the founder's machine, so `react` and `@types/react` resolve locally and will not on Railway — 223 call sites classified differently and a fivefold slowdown. The graph came out identical only because of the declaration-file exclusion and D33's guard; remove either and development and production diverge silently.
 - **D40. The id separator is now written as an escape sequence.** `src/analysis/ids.ts` contained a **raw NUL byte** in its source, which made the file read as binary to grep and diff. It was functionally correct — the space-collision test passes against the real module, so the reported collision did not reproduce — but a literal control byte in source is exactly what gets mangled in transit, and if it ever were, `assets/me sitting 3.jpg` in the founder's own portfolio is a real colliding path.
+
+## Step 2 parser, as built and measured (2026-09-19)
+
+- **D41. An import is a package when it resolves OUTSIDE the repository, not when it fails to resolve.** D39 predicted this and it happened on the first live run: a stray `node_modules` above the system temp directory makes `react` resolve to a real file on the founder's machine, so it was treated as an in-repo import and then dropped for pointing outside the repo — while on the server, with no such directory, the same import resolves to nothing and correctly becomes a package. `react` was silently missing from the graph on one machine and present on the other. Deciding on repository membership rather than on resolution success makes both environments agree.
+- **D42. Node and edge identity keys are JSON, not delimiter-joined strings.** Any separator must be a character that cannot occur in a path or a name, which in practice means a control character — and a literal control character in source is exactly what gets rewritten in transit. This codebase has now had the same escape become a raw NUL byte in one file and a plain space in another. Either would make `assets/me sitting 3.jpg` collide with a different node, silently overwriting one and repointing its edges. JSON encodes the boundary structurally. The persisted hash was changed to match while no graph existed to migrate.
+
+### Measured on `heon-1219/coding-interview-prep`
+
+22 files, 38 symbols, 4 API endpoints, 1 route, 3 packages. 119 edges: 43 contains,
+20 imports, 29 calls, 16 uses_package, 11 renders. **119 certain, 0 inferred.** No
+files skipped, no dangling edges, no self-loops. All eleven `@/...` alias imports
+resolved, which is D15 and D30 doing their job — without them every one of those
+would have produced nothing and the graph would have been confidently disconnected.
+
+The headline demo moment fires: **`kv` is called from 6 places**, then `settingsKey`
+from 4 and `stateKey` from 3.

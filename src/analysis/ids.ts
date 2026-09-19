@@ -61,13 +61,23 @@ export function normalizePath(filePath: string): string {
 /**
  * 128 bits of SHA-256, hex. Long enough that collisions are not a practical
  * concern at any repo size, short enough to read in a URL and a log line.
+ *
+ * The parts are JSON-encoded rather than joined with a separator. Any separator
+ * has to be a character that cannot appear in a path or a name, which means a
+ * control character — and a literal control character in source is exactly what
+ * gets silently rewritten in transit. This file has already had its separator
+ * turn into a raw NUL byte once, and the same escape elsewhere in this codebase
+ * became a plain space. Either would make `assets/me sitting 3.jpg` collide with
+ * a different node, and a collision here silently overwrites one and repoints
+ * its edges. JSON encodes the boundary structurally, so there is nothing left to
+ * mangle. Changing this scheme changes every id, so it is being done now, while
+ * no graph has been persisted.
  */
 function digest(parts: readonly string[]): string {
-  const hash = createHash("sha256");
-  // A separator that cannot appear in any component, so ("a","bc") and
-  // ("ab","c") cannot hash to the same value.
-  hash.update(parts.join("\u0000"));
-  return hash.digest("hex").slice(0, 32);
+  return createHash("sha256")
+    .update(JSON.stringify(parts))
+    .digest("hex")
+    .slice(0, 32);
 }
 
 export function nodeId(projectId: string, ref: NodeRef): string {

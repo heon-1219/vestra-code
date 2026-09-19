@@ -97,9 +97,15 @@ export type Analyzer = {
    * Pure over its inputs: files in, nodes and edges out, progress on the
    * emitter. No HTTP, no database, no id hashing. This is what lets the
    * fixture tests run the real analyzer against an in-memory tree.
+   *
+   * `root` is the absolute directory the repo-relative paths are relative to.
+   * It is passed rather than derived, because deriving it means slicing an
+   * absolute path (native separators) by a repo-relative one (POSIX), which
+   * silently produces the wrong answer on Windows.
    */
   analyze: (
     files: SourceFile[],
+    root: string,
     emit: AnalysisEmitter,
   ) => Promise<{ nodes: AnalyzedNode[]; edges: AnalyzedEdge[] }>;
 };
