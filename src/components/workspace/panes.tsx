@@ -266,8 +266,17 @@ export function Divider({
   label: string;
   /** Percent of the container taken by the pane before the divider, for AT. */
   valueNow: number;
-  /** Movement in pixels along the divider's axis. */
-  onDelta: (pixels: number) => void;
+  /**
+   * Movement in pixels along the divider's axis, and the size of the box being
+   * divided — measured here rather than by the caller.
+   *
+   * A divider is always a child of the thing it divides, so its own parent is
+   * the container, and an event handler is the only correct moment to measure
+   * one: reading a ref from a function built during render is what React 19's
+   * `react-hooks/refs` rule forbids, and it is right to, because the element
+   * that ref points at may not be the one on screen by the time it is read.
+   */
+  onDelta: (pixels: number, containerPx: number) => void;
   onReset: () => void;
 }) {
   const vertical = orientation === "vertical";
@@ -295,7 +304,7 @@ export function Divider({
         const delta = position - last.current;
         if (delta === 0) return;
         last.current = position;
-        onDelta(delta);
+        onDelta(delta, containerOf(event.currentTarget, vertical));
       }}
       onPointerUp={(event) => {
         if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -310,10 +319,10 @@ export function Divider({
         const forward = vertical ? "ArrowRight" : "ArrowDown";
         if (event.key === back) {
           event.preventDefault();
-          onDelta(-step);
+          onDelta(-step, containerOf(event.currentTarget, vertical));
         } else if (event.key === forward) {
           event.preventDefault();
-          onDelta(step);
+          onDelta(step, containerOf(event.currentTarget, vertical));
         } else if (event.key === "Home" || event.key === "Enter") {
           event.preventDefault();
           onReset();
@@ -337,6 +346,19 @@ export function Divider({
       />
     </div>
   );
+}
+
+/**
+ * The size of the box a divider sits in, along the axis it moves on.
+ *
+ * Zero if there is no parent, which `resizeColumns` treats as "not measured
+ * yet" and answers by changing nothing — a drag that begins before layout must
+ * not divide by zero and hand back NaN widths.
+ */
+function containerOf(element: HTMLElement, vertical: boolean): number {
+  const box = element.parentElement?.getBoundingClientRect();
+  if (!box) return 0;
+  return vertical ? box.width : box.height;
 }
 
 /**

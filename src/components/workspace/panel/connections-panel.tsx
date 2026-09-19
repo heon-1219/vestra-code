@@ -28,6 +28,8 @@ import {
   type Neighbour,
   type Neighbourhood,
 } from "./neighbourhood";
+import { DEFAULT_PANEL_MODE, MODE_WORDS, type PanelMode } from "./mode";
+import { ModeSelect } from "./mode-select";
 import { previewTargetFor } from "../preview/file-preview";
 import {
   AnalysisRunningState,
@@ -44,6 +46,7 @@ import {
 export type { ConnectionLock, LockMap } from "./connection-row";
 export { DEFAULT_LOCK, lockOf } from "./connection-row";
 export type { PanelAnswer, PanelCitation, PanelPrompt, RunProgress } from "./states";
+export type { PanelMode } from "./mode";
 
 /**
  * The right panel: what happens when someone points at a part of their app.
@@ -74,9 +77,13 @@ export type RightPanelProps = {
   onRetry?: () => void;
   /** Open the selected item's file. Undefined hides the offer entirely. */
   onOpen?: (id: string) => void;
-  /** Step 4 wires these two. Until then the buttons say so rather than lie. */
+  /**
+   * One per mode. Step 4 wires them; until a mode has one, that mode's own
+   * sentence says it cannot do its job yet rather than the button pretending.
+   */
   onAsk?: (text: string) => void;
   onMakePrompt?: (text: string) => void;
+  onExplain?: (text: string) => void;
   answer?: PanelAnswer | null;
   prompt?: PanelPrompt | null;
   /** How many connections one direction may show before the panel says it capped. */
@@ -100,16 +107,20 @@ export function RightPanel({
   onOpen,
   onAsk,
   onMakePrompt,
+  onExplain,
   answer = null,
   prompt = null,
   limit = DEFAULT_LIMIT,
   showRunSteps = true,
 }: RightPanelProps) {
-  // Tab and depth live here rather than inside the connections view, so that
-  // clicking a second item does not throw away the way the user was looking at
-  // the first one.
+  // Tab, depth and mode live here rather than inside the connections view or
+  // the request box, so that clicking a second item does not throw away the way
+  // the user was looking at the first one. Mode belongs in that list for the
+  // same reason the other two do: someone who came to the panel to have things
+  // explained is still there after they click the next thing to be explained.
   const [tab, setTab] = useState<PanelTab>("list");
   const [hops, setHops] = useState<number>(DEFAULT_HOPS);
+  const [mode, setMode] = useState<PanelMode>(DEFAULT_PANEL_MODE);
   const requestRef = useRef<RequestBoxHandle>(null);
 
   const selected = view?.items.find((item) => item.id === selectedId) ?? null;
@@ -143,7 +154,17 @@ export function RightPanel({
       <NothingSelectedState
         view={view}
         onSelect={onSelect}
-        onSuggestion={onAsk ? (text) => requestRef.current?.fill(text) : undefined}
+        // A suggestion is a question, so taking one puts the box in 물어보기.
+        // Dropping the text in while the box was set to 설명하기 would leave it
+        // sitting under a button that has no use for it.
+        onSuggestion={
+          onAsk
+            ? (text) => {
+                setMode("ask");
+                requestRef.current?.fill(text);
+              }
+            : undefined
+        }
       />
     );
   }
@@ -173,8 +194,11 @@ export function RightPanel({
         ref={requestRef}
         selected={selected}
         disabled={running || !view}
+        mode={mode}
+        onModeChange={setMode}
         onAsk={onAsk}
         onMakePrompt={onMakePrompt}
+        onExplain={onExplain}
       />
     </aside>
   );
@@ -785,14 +809,20 @@ function RequestBox({
   ref,
   selected,
   disabled,
+  mode,
+  onModeChange,
   onAsk,
   onMakePrompt,
+  onExplain,
 }: {
   ref: React.RefObject<RequestBoxHandle | null>;
   selected: GraphItem | null;
   disabled: boolean;
+  mode: PanelMode;
+  onModeChange: (mode: PanelMode) => void;
   onAsk?: (text: string) => void;
   onMakePrompt?: (text: string) => void;
+  onExplain?: (text: string) => void;
 }) {
   const boxRef = useRef<HTMLTextAreaElement>(null);
   const [hasText, setHasText] = useState(false);
@@ -811,16 +841,37 @@ function RequestBox({
     return boxRef.current?.value.trim() ?? "";
   }
 
-  function send(handler?: (text: string) => void) {
-    const text = read();
-    if (!handler || text.length === 0) return;
-    handler(text);
-  }
+  const words = MODE_WORDS[mode];
 
-  const ready = Boolean(onAsk || onMakePrompt);
+  // The chosen mode decides what the one button does. This is the whole point
+  // of the change: a handler per mode still exists, but the user picks which
+  // one they are in rather than reading a row of buttons and guessing.
+  const act: ((text: string) => void) | undefined = {
+    ask: onAsk,
+    prompt: onMakePrompt,
+    explain: onExplain,
+  }[mode];
+
+  // 설명하기 works on the thing already chosen, so it must not sit greyed out
+  // waiting for text it never promised to read.
+  const enough = words.needs === "text" ? hasText : selected !== null;
+
+  function fire() {
+    const text = read();
+    if (!act) return;
+    if (words.needs === "text" && text.length === 0) return;
+    act(text);
+  }
 
   return (
     <div className="shrink-0 border-t border-edge bg-ink-raised px-4 py-3">
+      {/*
+        Above the box, because the mode changes what there is to type — a
+        question, a change you want made, or nothing at all. Choosing after
+        typing would be choosing after the decision it governs.
+      */}
+      <ModeSelect value={mode} onChange={onModeChange} className="mb-2" />
+
       <textarea
         ref={boxRef}
         rows={2}
@@ -837,9 +888,12 @@ function RequestBox({
           if (event.nativeEvent.isComposing) return;
           if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
             event.preventDefault();
-            send(onAsk ?? onMakePrompt);
+            fire();
           }
         }}
+        // Left naming only questions and changes, which is what the box is for
+        // in the two modes that read it. 설명하기 does not, and saying so here
+        // would be advertising the box as useless in a third of its states.
         placeholder={
           selected
             ? `${displayName(selected)}에 대해 묻거나, 바꾸고 싶은 걸 적어 주세요`
@@ -849,30 +903,29 @@ function RequestBox({
         className="w-full resize-none rounded-xl border border-edge-lit bg-ink px-3 py-2.5 text-[14px] leading-[1.7] text-said placeholder:text-said-faint focus:border-lamp-dim focus:outline-none disabled:opacity-55"
       />
 
-      <div className="mt-2 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => send(onAsk)}
-          disabled={disabled || !onAsk || !hasText}
-          className="rounded-lg border border-edge-lit px-3 py-1.5 text-[13px] font-medium text-said-soft transition-colors hover:text-said disabled:opacity-45"
-        >
-          물어보기
-        </button>
-        <button
-          type="button"
-          onClick={() => send(onMakePrompt)}
-          disabled={disabled || !onMakePrompt || !hasText}
-          className="rounded-lg bg-paper px-3 py-1.5 text-[13px] font-semibold text-ink transition-colors hover:bg-lamp disabled:opacity-45"
-        >
-          프롬프트 만들기
-        </button>
-      </div>
+      {/*
+        One button, named by the mode rather than by a neutral 보내기, so what is
+        about to happen is readable before it happens and not only after.
+      */}
+      <button
+        type="button"
+        onClick={fire}
+        disabled={disabled || !act || !enough}
+        className="mt-2 rounded-lg bg-paper px-3 py-1.5 text-[13px] font-semibold text-ink transition-colors hover:bg-lamp disabled:opacity-45"
+      >
+        {words.name}
+      </button>
 
-      {!ready ? (
-        <p className="mt-2 text-[12px] leading-[1.7] text-said-faint">
-          묻고 답하기와 프롬프트 만들기는 아직 준비 중이에요.
-        </p>
-      ) : null}
+      {/*
+        The one line that has to be true. While this mode has nothing behind it,
+        it says what this mode will do and that it cannot yet; once it is wired,
+        the same sentence without the apology. Never a shared "준비 중" — the
+        person reading it has just chosen one of three things, and a sentence
+        about the other two is not an answer to them.
+      */}
+      <p className="mt-2 text-[12px] leading-[1.7] text-said-faint">
+        {act ? words.promise : words.notYet}
+      </p>
     </div>
   );
 }

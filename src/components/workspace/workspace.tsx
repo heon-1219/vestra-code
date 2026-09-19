@@ -240,21 +240,18 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
   /*
    * How the workspace is divided, and which pane has the screen.
    *
-   * The body is measured at the moment of a drag rather than tracked: a drag
-   * lasts a second and the container cannot change size during one, so a
-   * ResizeObserver here would maintain a number for the entire session to be
-   * read twice. `getBoundingClientRect` at pointer-down is the same answer for
-   * none of the cost.
+   * The container is measured inside the drag, by the divider, from its own
+   * parent — the shell holds no ref for it. A drag lasts a second and the
+   * container cannot change size during one, so a ResizeObserver here would
+   * maintain a number all session to be read twice; and a ref read from a
+   * function built during render is what React 19 rejects outright.
    */
   const { layout, setColumns, setHistory, toggleMaximized, reset } =
     usePaneLayout();
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const rowRef = useRef<HTMLDivElement>(null);
 
-  const dragColumn = (index: 0 | 1) => (deltaPx: number) => {
-    const width = rowRef.current?.getBoundingClientRect().width ?? 0;
-    setColumns(resizeColumns(layout.columns, index, deltaPx, width));
-  };
+  const dragColumn =
+    (index: 0 | 1) => (deltaPx: number, containerPx: number) =>
+      setColumns(resizeColumns(layout.columns, index, deltaPx, containerPx));
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -297,9 +294,8 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
         The body is the flex column that the row and the bottom band divide
         between them, and it is what both dividers measure against.
       */}
-      <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
       <div
-        ref={rowRef}
         className="grid min-h-0"
         style={{
           gridTemplateColumns: columnTemplate(layout),
@@ -493,10 +489,9 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
           orientation="horizontal"
           label="변경 기록 높이"
           valueNow={(1 - layout.history) * 100}
-          onDelta={(deltaPx) => {
-            const height = bodyRef.current?.getBoundingClientRect().height ?? 0;
-            setHistory(resizeHistory(layout.history, deltaPx, height));
-          }}
+          onDelta={(deltaPx, containerPx) =>
+            setHistory(resizeHistory(layout.history, deltaPx, containerPx))
+          }
           onReset={reset}
         />
       ) : null}

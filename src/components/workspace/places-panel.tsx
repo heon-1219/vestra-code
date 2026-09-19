@@ -7,6 +7,13 @@ import { KIND_WORDS, type GraphItem } from "@/lib/graph/view";
 import { districtOf } from "./map/layout";
 import type { BeamResult } from "./map/beam";
 import { previewTargetFor } from "./preview/file-preview";
+import {
+  buildTree,
+  defaultOpenFolders,
+  flattenTree,
+  foldersHolding,
+  type TreeNode,
+} from "./tree";
 
 /**
  * The left panel: what is in this project, listed.
@@ -20,6 +27,16 @@ import { previewTargetFor } from "./preview/file-preview";
  * The grouping is the map's own — `districtOf` — on purpose. A list whose
  * headings are the territories on the map means the two halves of the screen
  * are two views of one thing, and clicking either one selects the same item.
+ *
+ * **Inside each district the files are a folder tree** ("파일 -> 폴더는 접을 수
+ * 있게, 그냥 다 보여주지 말고. VS Code 처럼."). The district heading stays above it
+ * rather than being replaced by the tree's own top folders, because the
+ * headings are the map's territories and dropping them would leave the two
+ * halves of the screen grouped by different things. The two hierarchies do not
+ * fight in practice: a district is a folder reading already, so its tree
+ * usually starts one compacted row below its heading — 화면 조각 over
+ * `src/components` — and never a second, unrelated way of cutting the project.
+ * `tree.ts` holds all of the folding logic; this file only draws it.
  */
 
 export type PlacesPanelProps = {
@@ -50,7 +67,42 @@ type Tab = "features" | "files";
  */
 const LISTED_KINDS = new Set(["file", "route", "api_endpoint"]);
 
-type Group = { id: string; name: string; items: GraphItem[]; labels: Map<string, string> };
+/**
+ * How far one level of folder shifts its rows, and where the shifting stops.
+ *
+ * The pane drags down to 170px, so indentation is the one thing here that can
+ * spend the panel's whole width on nothing: past six levels every name at that
+ * width would be an ellipsis. Compaction in `tree.ts` keeps real projects well
+ * inside the cap, and a project that reaches it loses the last steps of depth
+ * rather than the names.
+ */
+const INDENT_STEP = 10;
+const INDENT_BASE = 8;
+const INDENT_MAX_DEPTH = 6;
+
+/**
+ * The chevron's gutter, which a file row keeps empty.
+ *
+ * Without it a file and the folder beside it start at different places and the
+ * column reads as ragged rather than as a tree — the chevron would be pushing
+ * its own row's name out by a width nothing else has. `w-3` plus the row's
+ * `gap-1`.
+ */
+const CHEVRON_GUTTER = 16;
+
+function indentOf(depth: number): number {
+  return INDENT_BASE + Math.min(depth, INDENT_MAX_DEPTH) * INDENT_STEP;
+}
+
+type Group = {
+  id: string;
+  name: string;
+  items: GraphItem[];
+  byId: Map<string, GraphItem>;
+  roots: TreeNode[];
+  /** Folders open before anyone has clicked. Decided in `tree.ts`. */
+  defaultOpen: Set<string>;
+};
 
 function groupsOf(items: readonly GraphItem[]): Group[] {
   const groups = new Map<string, Group>();
@@ -65,12 +117,19 @@ function groupsOf(items: readonly GraphItem[]): Group[] {
         id: district.id,
         name: district.name,
         items: [item],
-        labels: new Map(),
+        byId: new Map(),
+        roots: [],
+        defaultOpen: new Set(),
       });
   }
 
   for (const group of groups.values()) {
-    group.labels = labelsFor(group.items);
+    for (const item of group.items) group.byId.set(item.id, item);
+    // The district id namespaces every folder key. Two districts can hold the
+    // same folder path — `src` is an ancestor of both 공용 기능 and 데이터 — and
+    // sharing a key would fold one district's row by clicking the other's.
+    group.roots = buildTree(group.items, group.id);
+    group.defaultOpen = defaultOpenFolders(group.roots);
   }
 
   // Largest first: the district with the most in it is the one someone is most
@@ -80,42 +139,21 @@ function groupsOf(items: readonly GraphItem[]): Group[] {
   );
 }
 
-/** The last path segment. The full path is the title attribute. */
+/**
+ * What one row is called.
+ *
+ * The last segment of the path, and nothing more. It used to carry the folder
+ * in front of it wherever a name repeated inside a district — the founder's
+ * portfolio has nine project pages, every one of them `index.html`, and nine
+ * identical rows name nothing. The tree answers that better than the prefix
+ * did: the folder telling them apart is now its own row above them, so the
+ * short name is unambiguous in the place it is read.
+ */
 function basename(item: GraphItem): string {
   if (item.label) return item.label;
   if (!item.path) return item.name;
   const cut = item.path.lastIndexOf("/");
   return cut === -1 ? item.path : item.path.slice(cut + 1);
-}
-
-/**
- * What each row is called, decided for the whole group at once.
- *
- * A basename on its own is not always a name. The founder's portfolio has nine
- * project pages, every one of them `index.html`, and nine identical rows in a
- * narrow column name nothing — you cannot tell which one you are about to
- * click. Where a name repeats inside a district, the folder that distinguishes
- * them is put in front of it; where it does not, the short name stands alone.
- */
-function labelsFor(items: readonly GraphItem[]): Map<string, string> {
-  const counts = new Map<string, number>();
-  for (const item of items) {
-    const base = basename(item);
-    counts.set(base, (counts.get(base) ?? 0) + 1);
-  }
-
-  const labels = new Map<string, string>();
-  for (const item of items) {
-    const base = basename(item);
-    if ((counts.get(base) ?? 0) < 2 || !item.path) {
-      labels.set(item.id, base);
-      continue;
-    }
-    const parts = item.path.split("/");
-    const parent = parts.length > 1 ? parts[parts.length - 2] : null;
-    labels.set(item.id, parent ? `${parent}/${base}` : base);
-  }
-  return labels;
 }
 
 export function PlacesPanel({
@@ -128,8 +166,42 @@ export function PlacesPanel({
 }: PlacesPanelProps) {
   const [tab, setTab] = useState<Tab>("files");
 
+  /**
+   * Only the folders a person has actually clicked, and which way they clicked
+   * them. Everything else falls through to the default, so re-reading a
+   * project (new ids, new folders) does not resurrect a stale open/closed map,
+   * and clearing a search cannot lose a fold the user chose while it was on.
+   */
+  const [folded, setFolded] = useState<ReadonlyMap<string, boolean>>(() => new Map());
+
   const groups = useMemo(() => groupsOf(items), [items]);
   const hasFeatures = items.some((item) => item.kind === "feature");
+
+  /**
+   * What has to be on screen whatever is folded: whatever the beam lit, and
+   * whatever is selected. Search reveals rather than filters — the rows it
+   * opens stay open only while it is active, which is what lets the user's own
+   * folds come back untouched when the input is cleared.
+   */
+  const revealIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (selectedId !== null) ids.add(selectedId);
+    if (beam.active) for (const id of beam.matched) ids.add(id);
+    return ids;
+  }, [beam, selectedId]);
+
+  const sections = useMemo(
+    () =>
+      groups.map((group) => {
+        const revealed = foldersHolding(group.roots, revealIds);
+        const rows = flattenTree(
+          group.roots,
+          (key) => revealed.has(key) || (folded.get(key) ?? group.defaultOpen.has(key)),
+        );
+        return { group, rows, revealed };
+      }),
+    [groups, revealIds, folded],
+  );
 
   const litCount = useMemo(() => {
     if (!beam.active) return 0;
@@ -139,6 +211,14 @@ export function PlacesPanel({
     }
     return count;
   }, [beam, groups]);
+
+  const toggle = (key: string, open: boolean) => {
+    setFolded((previous) => {
+      const next = new Map(previous);
+      next.set(key, !open);
+      return next;
+    });
+  };
 
   return (
     <nav
@@ -179,19 +259,85 @@ export function PlacesPanel({
               </p>
             ) : null}
 
-            {groups.map((group) => (
+            {sections.map(({ group, rows, revealed }) => (
               <section key={group.id} className="mb-3">
                 <h3 className="px-2 pb-1 text-[11px] font-semibold tracking-[0.02em] text-said-faint">
                   {group.name}{" "}
                   <span className="font-mono font-normal">{group.items.length}</span>
                 </h3>
+                {/*
+                  One flat list with `aria-level` rather than a nested
+                  `role="tree"`. A tree role promises arrow-key navigation,
+                  typeahead and a single tab stop, and a tree that announces
+                  itself as one without them strands a keyboard user worse than
+                  plain rows would — these are ordinary buttons, reached by Tab,
+                  in the order they are read. `aria-level` says how deep a row
+                  sits without claiming anything we have not built.
+                */}
                 <ul>
-                  {group.items.map((item) => {
+                  {rows.map((row) => {
+                    if (row.kind === "folder") {
+                      // A folder holding nothing the beam lit dims exactly as
+                      // an unmatched file does, so a search reads the same way
+                      // whether what it missed is one row or thirty.
+                      const dim = beam.active && !revealed.has(row.key);
+                      return (
+                        <li
+                          key={row.key}
+                          aria-level={row.depth + 1}
+                          className={`rounded-md transition-colors hover:bg-edge ${
+                            dim ? "opacity-35" : ""
+                          }`}
+                        >
+                          {/*
+                            The whole row is the control, and the chevron is
+                            what it looks like — one tab stop per folder rather
+                            than two, and the same target a mouse expects from
+                            an explorer. `aria-expanded` is on the button that
+                            actually does the folding.
+
+                            Clicking it while the beam is revealing this folder
+                            records the choice and does not appear to do
+                            anything: the reveal still wins, because a search
+                            that reports "3개를 찾았어요" over hidden rows is the
+                            worse failure. The fold takes effect when the
+                            search is cleared.
+                          */}
+                          <button
+                            type="button"
+                            onClick={() => toggle(row.key, row.open)}
+                            aria-expanded={row.open}
+                            title={row.path}
+                            style={{ paddingInlineStart: indentOf(row.depth) }}
+                            className="flex w-full min-w-0 items-baseline gap-1 py-1 pr-2 text-left text-said-soft transition-colors hover:text-said"
+                          >
+                            <span
+                              aria-hidden="true"
+                              className="inline-block w-3 shrink-0 text-center text-[10px] text-said-faint"
+                            >
+                              {row.open ? "▾" : "▸"}
+                            </span>
+                            <span className="truncate text-[13px]">{row.name}</span>
+                            <span className="shrink-0 font-mono text-[11px] text-said-faint">
+                              {row.count}
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    }
+
+                    const item = group.byId.get(row.id);
+                    // Unreachable: the tree is built from this group's own
+                    // items. Kept because a row quietly missing from a list of
+                    // someone's own files is the one failure this panel exists
+                    // to make impossible.
+                    if (!item) return null;
+
                     // Dimmed, never hidden. A list that empties out as you type
                     // tells someone their project lost the file they were
                     // looking at; the map next to it follows the same rule.
                     const dim = beam.active && !beam.matched.has(item.id);
-                    const name = group.labels.get(item.id) ?? item.name;
+                    const name = basename(item);
                     // A server address has no file of its own to open, and a
                     // row that offers what it cannot do is worse than a row
                     // that offers nothing.
@@ -199,6 +345,7 @@ export function PlacesPanel({
                     return (
                       <li
                         key={item.id}
+                        aria-level={row.depth + 1}
                         className={`group flex items-center rounded-md transition-colors ${
                           item.id === selectedId ? "bg-edge-lit" : "hover:bg-edge"
                         } ${dim ? "opacity-35" : ""}`}
@@ -208,7 +355,8 @@ export function PlacesPanel({
                           onClick={() => onSelect(item.id)}
                           title={item.path ?? item.name}
                           aria-current={item.id === selectedId ? "true" : undefined}
-                          className={`flex min-w-0 flex-1 items-baseline gap-1.5 px-2 py-1 text-left ${
+                          style={{ paddingInlineStart: indentOf(row.depth) + CHEVRON_GUTTER }}
+                          className={`flex min-w-0 flex-1 items-baseline gap-1.5 py-1 pr-2 text-left ${
                             item.id === selectedId ? "text-said" : "text-said-soft"
                           }`}
                         >
