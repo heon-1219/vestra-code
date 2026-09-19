@@ -153,6 +153,28 @@ describe("nodeId", () => {
     );
   });
 
+  it("is not confused by spaces in a path", () => {
+    // The separator must be a character that cannot occur in a path or a name.
+    // The founder's portfolio contains "me sitting 3.jpg", so a space-separated
+    // hash is not a theoretical problem — it is a collision on a real file, and
+    // a collision silently overwrites one node and repoints its edges.
+    const a = nodeId(project, {
+      type: "file",
+      filePath: "assets/me sitting 3.jpg",
+    });
+    const b = nodeId(project, {
+      type: "file",
+      filePath: "assets/me",
+      name: "sitting 3.jpg",
+    });
+    const c = nodeId(project, {
+      type: "file",
+      filePath: "assets/me sitting",
+      name: "3.jpg",
+    });
+    expect(new Set([a, b, c]).size).toBe(3);
+  });
+
   it("produces a 32-character hex id", () => {
     const id = nodeId(project, { type: "route", filePath: "app/page.tsx" });
     expect(id).toMatch(/^[0-9a-f]{32}$/);
