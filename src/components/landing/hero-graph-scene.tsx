@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph3D, { type ForceGraphMethods } from "react-force-graph-3d";
 import * as THREE from "three";
 
@@ -122,6 +122,42 @@ export default function HeroGraphScene({
   const engineReadyRef = useRef(false);
   const idleFramesRef = useRef(0);
   const wakeRef = useRef<(() => void) | null>(null);
+
+  /**
+   * The canvas is sized from the WRAPPER, never left to size itself.
+   *
+   * Without an explicit width the renderer falls back to the window, and
+   * `window.innerWidth` includes the vertical scrollbar while the content box
+   * does not. The canvas then lands wider than the space it sits in and
+   * produces a horizontal scrollbar — measured here at 1280px CSS inside a
+   * 1238px viewport.
+   *
+   * A ResizeObserver rather than a resize listener, because the wrapper also
+   * changes width when the vertical scrollbar itself appears or disappears,
+   * and that fires no window resize event at all.
+   */
+  const [size, setSize] = useState<{ width: number; height: number } | null>(
+    null,
+  );
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const measure = () => {
+      const rect = el.getBoundingClientRect();
+      const width = Math.floor(rect.width);
+      const height = Math.floor(rect.height);
+      setSize((previous) =>
+        previous && previous.width === width && previous.height === height
+          ? previous
+          : { width, height },
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const data = useMemo(() => buildGraph(), []);
 
@@ -312,9 +348,12 @@ export default function HeroGraphScene({
   }, []);
 
   return (
-    <div ref={wrapRef} className="h-full w-full" aria-hidden="true">
+    <div ref={wrapRef} className="h-full w-full overflow-hidden" aria-hidden="true">
+      {size === null ? null : (
       <ForceGraph3D<HeroNode, HeroLink>
         ref={fgRef}
+        width={size.width}
+        height={size.height}
         graphData={data}
         backgroundColor="rgba(0,0,0,0)"
         showNavInfo={false}
@@ -329,6 +368,7 @@ export default function HeroGraphScene({
         cooldownTime={6000}
         onEngineTick={handleEngineTick}
       />
+      )}
     </div>
   );
 }

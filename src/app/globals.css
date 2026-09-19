@@ -67,6 +67,16 @@
   html {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    /*
+     * A guard, not the fix. The canvas is sized from its container so it cannot
+     * overflow in the first place, but a full-bleed landing page has many ways
+     * to gain a stray pixel — a 7vw headline, a wide absolute layer, a future
+     * decoration — and a horizontal scrollbar is never the right answer on this
+     * page. `clip` rather than `hidden`: `hidden` on html silently turns the
+     * element into a scroll container, which breaks `position: sticky` in the
+     * hero.
+     */
+    overflow-x: clip;
   }
 
   body {
