@@ -296,15 +296,25 @@ export default function HeroGraphScene({
   }, [centers]);
 
   /**
-   * One loop drives everything scroll changes: the cluster force, the node
-   * colours, and a small parallax from the pointer. Reading refs here rather
-   * than re-rendering means scrolling never re-renders React.
+   * One loop drives everything: the cluster force, the node colours, a small
+   * parallax from the pointer, and the scene's own slow drift. Reading refs
+   * here rather than re-rendering means none of it ever re-renders React.
    *
-   * It stops when there is nothing to do — hero off screen, tab hidden, or
-   * neither progress nor pointer moved. A permanently running rAF next to a
-   * simulation that never cools is what turns a landing page into a
-   * fan-spinner, and Step 1's done-when is that this stays smooth on a
-   * mid-range laptop.
+   * **The drift is why this no longer parks itself.** The loop used to stop
+   * after ninety idle frames, so the graph held perfectly still until the page
+   * scrolled or the pointer moved — which read as a screenshot that reacts to
+   * scrolling rather than as a living thing. It now turns continuously: a
+   * revolution takes about two and a half minutes, and the distance breathes on
+   * a period that shares no factor with it, so the scene never repeats a pose.
+   *
+   * What it does NOT do is keep the simulation hot. The force layout is the
+   * expensive half — reheating it every frame is what turns a landing page into
+   * a fan-spinner — so the nodes hold the shape they settled into and the
+   * camera is what moves. Parallax does the rest: every node's position on
+   * screen changes every frame, which is the thing the eye reads as alive.
+   *
+   * It still stops dead when the hero is off screen or the tab is hidden, and
+   * it never starts when the reader has asked for reduced motion.
    */
   useEffect(() => {
     let raf = 0;
@@ -316,6 +326,23 @@ export default function HeroGraphScene({
     const target = new THREE.Color();
     const projected = new THREE.Vector3();
     let placeLabels = true;
+
+    /*
+     * Someone who has asked their system for less motion gets the old
+     * behaviour: everything still responds, nothing moves on its own.
+     */
+    const alive = !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const started = performance.now();
+    /**
+     * Radians per second. A full turn in about four minutes.
+     *
+     * Slower than the first version, which turned in two and a half. The pass
+     * that made this run continuously also made every one of its numbers into
+     * something a reader sees for as long as they are on the page, rather than
+     * for the second they spend scrolling — and at that exposure the difference
+     * between "drifting" and "being moved" is most of the effect.
+     */
+    const DRIFT_RATE = 0.026;
 
     const stop = () => {
       if (raf) cancelAnimationFrame(raf);
@@ -366,8 +393,17 @@ export default function HeroGraphScene({
         didWork = true;
       }
 
-      const yaw = pointerRef.current.x * 0.22;
-      const pitch = pointerRef.current.y * 0.14;
+      /*
+       * Three motions on periods that share no factor, so the composite never
+       * comes back around: the turn, a slow nod, and the breath in and out.
+       * Small amplitudes — this is a background, and a camera that swings is a
+       * camera the reader has to wait for before they can read the headline.
+       */
+      const t = (performance.now() - started) / 1000;
+      const yaw = pointerRef.current.x * 0.22 + (alive ? t * DRIFT_RATE : 0);
+      const pitch =
+        pointerRef.current.y * 0.14 + (alive ? Math.sin(t * 0.071) * 0.035 : 0);
+      const breath = alive ? Math.sin(t * 0.049) * 10 : 0;
       if (
         didWork ||
         Math.abs(yaw - shownYaw) > 0.0015 ||
@@ -381,7 +417,7 @@ export default function HeroGraphScene({
         // every frame.
         const camera = fg?.camera();
         if (camera) {
-          const distance = BASE_DISTANCE - eased * 90;
+          const distance = BASE_DISTANCE - eased * 90 + breath;
           camera.position.set(
             Math.sin(yaw) * distance,
             Math.sin(pitch) * distance * 0.5,
@@ -418,7 +454,19 @@ export default function HeroGraphScene({
             // Behind the camera projects to a mirrored point; hide rather than
             // draw a name in the wrong place.
             const behind = projected.z > 1;
-            el.style.transform = `translate3d(${Math.round(x)}px, ${Math.round(y)}px, 0) translate(-50%, -50%)`;
+            /*
+             * Subpixel, not rounded.
+             *
+             * Rounding was there to keep the text crisp, and it was right while
+             * the labels only moved during a scroll. With the scene drifting on
+             * its own they move about sixteen pixels a second — which in whole
+             * pixels is a visible step every sixty milliseconds, and a word
+             * stepping at that rate does not read as travelling, it reads as
+             * vibrating. `will-change: transform` (set on the element) puts each
+             * label on its own compositor layer, so the glyphs are rasterised
+             * once and the GPU moves the layer, and the motion is continuous.
+             */
+            el.style.transform = `translate3d(${x.toFixed(2)}px, ${y.toFixed(2)}px, 0) translate(-50%, -50%)`;
             el.style.opacity = behind ? "0" : String(strength * 0.9);
           }
         }
@@ -426,8 +474,12 @@ export default function HeroGraphScene({
 
       idleFramesRef.current = didWork ? 0 : idleFramesRef.current + 1;
 
-      // Keep rendering a tail of frames so the layout visibly settles.
-      if (idleFramesRef.current > 90) {
+      // Keep rendering a tail of frames so the layout visibly settles. With the
+      // drift on there is always something to do, so this is the reduced-motion
+      // path — and the guard is written against `alive` rather than left to the
+      // frame counter never reaching 90, because a condition that happens to be
+      // unreachable is not the same as one that says what it means.
+      if (!alive && idleFramesRef.current > 90) {
         stop();
         return;
       }
@@ -530,7 +582,7 @@ export default function HeroGraphScene({
             ref={(el) => {
               labelsRef.current[index] = el;
             }}
-            className="absolute top-0 left-0 text-[13px] font-semibold tracking-[0.14em] whitespace-nowrap opacity-0 transition-opacity duration-500"
+            className="absolute top-0 left-0 text-[13px] font-semibold tracking-[0.14em] whitespace-nowrap opacity-0 transition-opacity duration-500 [will-change:transform]"
             style={{ color: CLUSTER_COLORS[index] }}
           >
             {label}

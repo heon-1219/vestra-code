@@ -202,3 +202,54 @@ export async function listMyRepos(): Promise<MyReposState> {
     more: result.value.more,
   };
 }
+
+export type DeleteProjectState =
+  | { status: "idle" }
+  | { status: "error"; message: string };
+
+/**
+ * Removing a project, and everything that was only ever about it.
+ *
+ * One `delete`. The map, the runs, the run events, the chat, the generated
+ * prompts and — for an uploaded folder — the stored files all leave with it,
+ * because every one of them is declared `on delete cascade` against this row.
+ * Deleting them here by hand would be six statements that have to be kept in
+ * step with the schema forever, and the first table someone adds without
+ * remembering this function is the one that gets orphaned.
+ *
+ * The ownership test is in the `where`, not in an `if` above it. A project that
+ * is not this user's simply does not match, so there is no window between
+ * checking and deleting, and no branch that could be written in the wrong
+ * order. A delete that matches nothing reports success for the same reason the
+ * preview endpoint answers 404 for somebody else's project: the difference
+ * between "not yours" and "not there" is a fact about another person's account.
+ *
+ * Irreversible, and for an upload it is the only copy we hold. The confirmation
+ * lives in the UI, where the person can read what they are about to lose.
+ */
+export async function deleteProject(
+  projectId: string,
+): Promise<DeleteProjectState> {
+  const session = await requireSession();
+
+  if (typeof projectId !== "string" || projectId.length === 0) {
+    return { status: "error", message: "지울 프로젝트를 찾지 못했어요." };
+  }
+
+  try {
+    await db
+      .delete(projects)
+      .where(
+        and(eq(projects.id, projectId), eq(projects.userId, session.user.id)),
+      );
+  } catch (error) {
+    console.error("[projects] delete failed", projectId, error);
+    return {
+      status: "error",
+      message: "지우지 못했어요. 잠시 후 다시 시도해 주세요.",
+    };
+  }
+
+  revalidatePath("/app");
+  return { status: "idle" };
+}

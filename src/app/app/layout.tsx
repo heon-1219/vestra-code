@@ -1,6 +1,7 @@
 import Link from "next/link";
 
 import { Aurora } from "@/components/ambient/aurora";
+import { UserAvatar } from "@/components/app/user-avatar";
 import { SignOutButton } from "@/components/auth/sign-out-button";
 import { requireSession } from "@/lib/session";
 
@@ -36,8 +37,16 @@ export default async function AppLayout({ children }: LayoutProps<"/app">) {
             Vestra Code
           </Link>
           <div className="flex items-center gap-5">
-            <span className="text-[14px] text-said-faint">
-              {session.user.name || session.user.email}
+            {/* Picture and name are one object, so they get one gap between
+                them and the sign-out button keeps the row's larger gap. */}
+            <span className="flex items-center gap-2.5">
+              <UserAvatar
+                image={session.user.image}
+                name={session.user.name || session.user.email}
+              />
+              <span className="text-[14px] text-said-faint">
+                {session.user.name || session.user.email}
+              </span>
             </span>
             <SignOutButton />
           </div>

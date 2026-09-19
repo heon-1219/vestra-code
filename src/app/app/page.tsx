@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import Link from "next/link";
 
 import { AddProject } from "@/components/app/add-project";
+import { DeleteProject } from "@/components/app/delete-project";
 import { db } from "@/db";
 import { projects } from "@/db/schema";
 import { requireSession } from "@/lib/session";
@@ -39,15 +40,22 @@ export default async function AppDashboard() {
       ) : (
         <ul className="mt-10 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {myProjects.map((project) => (
-            <li key={project.id}>
+            <li key={project.id} className="relative">
               {/* The whole card is the link, not a word inside it: this is the
                   only way into the workspace, and a small target in the corner
-                  of a card is a thing people miss. */}
+                  of a card is a thing people miss. The one exception sits on
+                  top of it rather than inside it — a button nested in an anchor
+                  is invalid markup that browsers resolve by guessing. */}
+              <DeleteProject
+                projectId={project.id}
+                displayName={project.displayName}
+                isUpload={project.source === "upload"}
+              />
               <Link
                 href={`/app/${project.id}`}
                 className="block h-full rounded-2xl border border-edge bg-ink-raised p-6 transition-colors hover:border-edge-lit"
               >
-                <h2 className="text-[17px] font-semibold tracking-[-0.02em]">
+                <h2 className="pr-12 text-[17px] font-semibold tracking-[-0.02em]">
                   {project.displayName}
                 </h2>
                 <p className="mt-1 text-[13px] text-said-faint">
