@@ -42,11 +42,23 @@ const serverSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().min(1, "GOOGLE_CLIENT_ID is missing."),
   GOOGLE_CLIENT_SECRET: z.string().min(1, "GOOGLE_CLIENT_SECRET is missing."),
 
-  // Step 4. The LLM provider is configured only by these three, never in code,
+  // Step 4. The LLM provider is configured only by these four, never in code,
   // so the model can be swapped without a deploy that touches source.
   LLM_BASE_URL: optionalUrl,
   LLM_API_KEY: optionalString,
   LLM_MODEL: optionalString,
+  /*
+   * Whether this endpoint advertises `json_schema` structured outputs (D47).
+   *
+   * Documented in `.env.example` since the decision was taken and missing from
+   * this schema until the client was written — so it validated as an unknown
+   * key and read back as `undefined`, which happens to be the safe answer and
+   * would have quietly stayed wrong the day someone set it to "true".
+   *
+   * A string rather than a boolean: an environment has only strings, and a
+   * coercing parser would read "false" as true.
+   */
+  LLM_SUPPORTS_JSON_SCHEMA: optionalString,
 
   // Step 6 stretch.
   E2B_API_KEY: optionalString,
