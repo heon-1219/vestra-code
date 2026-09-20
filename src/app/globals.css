@@ -29,7 +29,20 @@
   /* Text on dark */
   --color-said: #e8e2d6;
   --color-said-soft: #a9a294;
-  --color-said-faint: #6f6a5e;
+  /*
+   * Raised from #6f6a5e, which failed WCAG AA on the surfaces it is used on.
+   *
+   * Measured: 3.63:1 on `--color-ink` and 3.39:1 on `--color-ink-raised`,
+   * against the 4.5:1 that 13px text needs. This token carries the quietest
+   * sentence on almost every screen — the one that says what we did not do,
+   * what we could not read, what a number means — so it was the text most
+   * likely to matter to someone squinting and the text hardest to read.
+   *
+   * #857f71 is 4.91:1 on ink and 4.58:1 on ink-raised, keeps the warm cast,
+   * and still leaves a clear step below `said-soft` (relative luminance 0.214
+   * against 0.364) so the hierarchy survives.
+   */
+  --color-said-faint: #857f71;
 
   /* Connections. `wire` is resolved by the compiler; `guess` is a heuristic. */
   --color-wire: #6b6659;
