@@ -271,7 +271,9 @@ describe("the picker inside the request box", () => {
   it("leaves one action button, not one per model", () => {
     const html = render({ selectedId: "PayButton", models: [MIMO, GEMINI] });
 
-    const actions = html.match(/<button[^>]*bg-paper[^>]*>([^<]*)<\/button>/g) ?? [];
+    // The opening tag only: the action button holds an icon now, so a match
+    // that required text between the tags would find nothing.
+    const actions = html.match(/<button[^>]*bg-paper[^>]*>/g) ?? [];
     expect(actions).toHaveLength(1);
   });
 });

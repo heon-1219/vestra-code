@@ -4,7 +4,11 @@ import { describe, expect, it } from "vitest";
 
 import type { GraphItem, GraphView } from "@/lib/graph/view";
 
-import { RightPanel, type RightPanelProps } from "./connections-panel";
+import {
+  RightPanel,
+  sendsOnKey,
+  type RightPanelProps,
+} from "./connections-panel";
 import { DEFAULT_PANEL_MODE, MODE_WORDS, PANEL_MODES, type PanelMode } from "./mode";
 import { ModeSelect } from "./mode-select";
 
@@ -152,8 +156,13 @@ describe("the panel footer", () => {
   it("offers one action rather than a button per mode", () => {
     const html = render({ selectedId: "PayButton" });
 
-    // The action is the filled button, and it carries the chosen mode's word.
-    const actions = html.match(/<button[^>]*bg-paper[^>]*>([^<]*)<\/button>/g) ?? [];
+    /*
+     * The action is the filled button, and it still carries the chosen mode's
+     * word — as its accessible name rather than as its text, since it became a
+     * paper plane inside the box. The distinction between 물어보기 and
+     * 프롬프트 만들기 has to stay readable; where it is written may move.
+     */
+    const actions = html.match(/<button[^>]*bg-paper[^>]*>/g) ?? [];
     expect(actions).toHaveLength(1);
     expect(actions[0]).toContain(MODE_WORDS[DEFAULT_PANEL_MODE].name);
   });
@@ -187,5 +196,40 @@ describe("the panel footer", () => {
         expect(html).toContain(`>${MODE_WORDS[mode].name}<`);
       }
     }
+  });
+});
+
+/**
+ * Which keystroke sends.
+ *
+ * The button became a paper plane inside the box and Enter took over sending,
+ * which puts the whole weight on one rule: an IME's Enter is not ours.
+ */
+describe("sending from the keyboard", () => {
+  const press = (over: Partial<Parameters<typeof sendsOnKey>[0]> = {}) =>
+    sendsOnKey({ key: "Enter", shiftKey: false, isComposing: false, ...over });
+
+  it("sends on a plain Enter", () => {
+    expect(press()).toBe(true);
+  });
+
+  it("does not send while an IME is assembling a syllable", () => {
+    /*
+     * The one that matters. A Korean IME commits 결제 with Enter, and that
+     * keystroke belongs to it. Sending there fires mid-sentence with half a
+     * question in the box, and nothing on screen explains why.
+     */
+    expect(press({ isComposing: true })).toBe(false);
+  });
+
+  it("leaves Shift+Enter to write a second line", () => {
+    expect(press({ shiftKey: true })).toBe(false);
+  });
+
+  it("ignores every other key", () => {
+    expect(press({ key: "a" })).toBe(false);
+    expect(press({ key: "Tab" })).toBe(false);
+    // Including one that looks close enough to be worth saying out loud.
+    expect(press({ key: "NumpadEnter" })).toBe(false);
   });
 });

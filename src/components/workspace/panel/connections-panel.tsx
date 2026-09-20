@@ -949,6 +949,15 @@ function RequestBox({
       */}
       <ModeSelect value={mode} onChange={onModeChange} className="mb-2" />
 
+      {/*
+        The send mark sits inside the box rather than under it.
+
+        A textarea cannot hold a child, so the two are laid over each other and
+        the text is given room on the right to stop it running underneath. The
+        right padding is the mark's width plus its inset — change one and the
+        other has to move, which is why they are written next to each other.
+      */}
+      <div className="relative">
       <textarea
         ref={boxRef}
         rows={2}
@@ -960,13 +969,32 @@ function RequestBox({
           setHasText(next);
         }}
         onKeyDown={(event) => {
-          // isComposing is the whole point: Enter while a 한글 syllable is
-          // being assembled belongs to the IME, not to us.
-          if (event.nativeEvent.isComposing) return;
-          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-            event.preventDefault();
-            fire();
+          /*
+           * Enter sends. Two things have to be true first, and the first one
+           * is not optional in a Korean-first product.
+           *
+           * `isComposing` is the whole point: an IME uses Enter to commit the
+           * syllable it is assembling, and that keystroke belongs to the IME.
+           * Sending on it would fire the moment somebody finishes typing 결제
+           * — mid-sentence, with half a question. This guard is why plain
+           * Enter is safe to use here at all.
+           *
+           * Shift+Enter is a newline, because a plain Enter that sends leaves
+           * no other way to write a second line. Cmd/Ctrl+Enter still sends
+           * too: it was the only way before, and somebody has it in their
+           * fingers.
+           */
+          if (
+            !sendsOnKey({
+              key: event.key,
+              shiftKey: event.shiftKey,
+              isComposing: event.nativeEvent.isComposing,
+            })
+          ) {
+            return;
           }
+          event.preventDefault();
+          fire();
         }}
         // Left naming only questions and changes, which is what the box is for
         // in the two modes that read it. 설명하기 does not, and saying so here
@@ -977,8 +1005,28 @@ function RequestBox({
             : "이 프로젝트에 대해 물어보세요"
         }
         aria-label="질문이나 바꾸고 싶은 내용"
-        className="w-full resize-none rounded-xl border border-edge-lit bg-ink px-3 py-2.5 text-[14px] leading-[1.7] text-said placeholder:text-said-faint focus:border-lamp-dim focus:outline-none disabled:opacity-55"
+        className="w-full resize-none rounded-xl border border-edge-lit bg-ink py-2.5 pl-3 pr-11 text-[14px] leading-[1.7] text-said placeholder:text-said-faint focus:border-lamp-dim focus:outline-none disabled:opacity-55"
       />
+
+      {/*
+        Named by the mode, still — it is just no longer written on it.
+        `물어보기` and `프롬프트 만들기` do different things and the difference
+        has to stay readable, so it moves to the accessible name and the
+        hover. The mode row sits directly above the box and the sentence
+        underneath says the same thing in full, so nobody loses it; what goes
+        is a third copy that was taking a line of its own.
+      */}
+      <button
+        type="button"
+        onClick={fire}
+        disabled={disabled || !act || !enough}
+        aria-label={words.name}
+        title={words.name}
+        className="absolute bottom-2 right-2 grid h-7 w-7 place-items-center rounded-lg bg-paper text-ink transition-colors hover:bg-lamp disabled:bg-edge-lit disabled:text-said-faint"
+      >
+        <SendMark />
+      </button>
+      </div>
 
       {/*
         Below the box, unlike the mode row above it, and the same rule read
@@ -1002,19 +1050,6 @@ function RequestBox({
       />
 
       {/*
-        One button, named by the mode rather than by a neutral 보내기, so what is
-        about to happen is readable before it happens and not only after.
-      */}
-      <button
-        type="button"
-        onClick={fire}
-        disabled={disabled || !act || !enough}
-        className="mt-2 rounded-lg bg-paper px-3 py-1.5 text-[13px] font-semibold text-ink transition-colors hover:bg-lamp disabled:opacity-45"
-      >
-        {words.name}
-      </button>
-
-      {/*
         The one line that has to be true. While this mode has nothing behind it,
         it says what this mode will do and that it cannot yet; once it is wired,
         the same sentence without the apology. Never a shared "준비 중" — the
@@ -1025,6 +1060,64 @@ function RequestBox({
         {act ? words.promise : words.notYet}
       </p>
     </div>
+  );
+}
+
+/**
+ * Whether this keystroke sends what is in the box.
+ *
+ * Its own function, and exported, because it cannot be reached any other way:
+ * the panel's tests render to static markup and cannot press a key, so the one
+ * rule here that really matters would otherwise be pinned by nothing.
+ *
+ * **`isComposing` first, and it is not optional in a Korean-first product.**
+ * An IME uses Enter to commit the syllable it is assembling. Sending on that
+ * keystroke fires the moment somebody finishes typing 결제 — mid-sentence,
+ * with half a question, and no way to tell why. Every other clause here is a
+ * convenience; this one is the reason plain Enter is usable at all.
+ *
+ * Shift+Enter is a newline, because a plain Enter that sends leaves no other
+ * way to write a second line. Cmd/Ctrl+Enter still sends: it was the only way
+ * before this changed, and somebody has it in their fingers.
+ */
+export function sendsOnKey(event: {
+  key: string;
+  shiftKey: boolean;
+  isComposing: boolean;
+}): boolean {
+  if (event.isComposing) return false;
+  if (event.key !== "Enter") return false;
+  return !event.shiftKey;
+}
+
+/**
+ * A paper plane, pointing the way the text goes.
+ *
+ * Inline, `currentColor`, `aria-hidden` — the convention `language-mark.tsx`
+ * and `reread-button.tsx` set. The button carries the mode's own name as its
+ * accessible name, so this shape is for the people who read it faster than a
+ * word; it is never the only thing saying what the button does.
+ *
+ * Two strokes rather than one filled triangle: the fold down the middle is
+ * what makes it read as a plane at 14px instead of an arrowhead lying on its
+ * side, which is a different instruction.
+ */
+function SendMark() {
+  return (
+    <svg
+      viewBox="0 0 16 16"
+      aria-hidden="true"
+      focusable="false"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="h-3.5 w-3.5 shrink-0"
+    >
+      <path d="M14.5 1.5 7.2 8.8" />
+      <path d="M14.5 1.5 9.9 14.5 7.2 8.8 1.5 6.1z" />
+    </svg>
   );
 }
 
