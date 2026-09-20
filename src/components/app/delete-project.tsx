@@ -67,7 +67,20 @@ export function DeleteProject({
     // point of this panel is that something has intervened between the click
     // and the deletion. The darkest surface in the palette is also the right
     // register for it: a destructive confirm should recede, not shout.
-    <div className="absolute inset-0 z-20 flex flex-col justify-center rounded-2xl border border-edge-lit bg-ink-sunk p-6">
+    /*
+     * `min-h-full` and not `inset-0`, because the card is shorter than this.
+     *
+     * Measured on a real card: the card is 97px and this panel's content is
+     * 103px. Pinned to all four edges the box was exactly 97px with
+     * `overflow: visible`, so the buttons spilled out of the bottom and over
+     * whatever card came next — and an error message, which appears only when
+     * a deletion actually fails, made it worse at the moment it mattered most.
+     *
+     * Pinned along the top and sides and allowed to grow downward instead. It
+     * still covers the card, which is the point: the whole card is a link, and
+     * someone aiming for 취소 must not be able to miss and open the project.
+     */
+    <div className="absolute inset-x-0 top-0 z-20 flex min-h-full flex-col justify-center rounded-2xl border border-edge-lit bg-ink-sunk p-4">
       <p className="text-[15px] leading-[1.7] font-semibold">지울까요?</p>
       <p className="mt-2 text-[13px] leading-[1.75] text-said-soft">
         {isUpload

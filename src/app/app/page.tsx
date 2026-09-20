@@ -39,7 +39,26 @@ export default async function AppDashboard() {
     <div className="mx-auto flex h-full min-h-0 max-w-[1180px] flex-col px-6 py-10">
       <h1 className="display-kr shrink-0 text-[30px]">내 프로젝트</h1>
 
-      <div className="mt-7 grid min-h-0 flex-1 gap-8 lg:grid-cols-[minmax(300px,360px)_minmax(0,1fr)]">
+      {/*
+        `grid-cols-1` is not decoration — without it this screen is unusable
+        on a phone.
+
+        Below `lg` there was no `grid-cols-*` at all, so the grid made an
+        implicit column, and an implicit column is sized `auto`, which means
+        `minmax(min-content, max-content)`. A track like that **cannot shrink
+        below its content's min-content width**. The repository list's longest
+        row set that at 1197px, so inside a 327px container the column came out
+        1197px wide and everything in it was cut off at the screen edge — with
+        no horizontal scrollbar, because an ancestor clips, so it could not
+        even be scrolled to. Measured at 375px: the search field was 1147px.
+
+        `grid-cols-1` expands to `repeat(1, minmax(0, 1fr))`, and the `0`
+        floor is the whole fix: the track is now allowed to be narrower than
+        its contents, and the contents wrap or truncate as they were written
+        to. The `lg:` track already had `minmax(0,1fr)` for its second column
+        for the same reason.
+      */}
+      <div className="mt-7 grid min-h-0 flex-1 grid-cols-1 gap-8 lg:grid-cols-[minmax(300px,360px)_minmax(0,1fr)]">
         {/*
           The picker is the narrower of the two — its widest state is a list of
           repository names, which needs far less room than a grid of cards. On a
