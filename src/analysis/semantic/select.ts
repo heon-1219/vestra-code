@@ -54,35 +54,51 @@ export type SemanticBudget = {
 };
 
 /*
- * Measured, not guessed. Numbers from `Kim-and-Chang-`
- * (e0ef56c2-386f-4862-a41b-69a8d1bab3dd), a real 284-edge Python project, and
- * from the `shop` fixture; see the report and `docs/DECISIONS.md` D78.
+ * Measured, not guessed — and re-measured on 2026-09-21 against a project four
+ * times the size of the one that set the first numbers.
  *
- *  - `maxFiles: 120`. The project above offers 112 nameable files, so 120 opens
- *    all of it in one run. Above that a project is large enough that the map's
- *    value is in its shape rather than in every leaf being named, and the
- *    coverage event says out loud how many were left.
- *  - `batchSize: 12`. A batch is what one truncation costs, and the measured
- *    answer is ~55 output tokens per file plus ~25 per piece, so twelve files
- *    carrying four pieces each answers in ~1,500 tokens. Smaller batches
- *    multiply the fixed system prompt (~320 tokens) across more calls.
- *  - `maxPieceFiles: 40` x `maxPiecesPerFile: 4` = 160 piece names, which is
- *    D54's order of magnitude — thousands of output tokens rather than the
- *    ~54k of naming every symbol in the project.
- *  - `maxOutlineFiles: 400`. The feature call is one call over the whole
- *    project; D52 measured a 300-file outline at ~12k input tokens.
- *  - `maxTokens: 400_000`. A ceiling on the pass, not a target. The measured
- *    cost of a full first run on the project above is ~2% of it.
+ * The first version of this budget was set from `Kim-and-Chang-`
+ * (e0ef56c2-386f-4862-a41b-69a8d1bab3dd), which offers 112 nameable files, so
+ * 120 opened all of it. Then `vestra-code` (6a069e22-91c8-492a-baea-820be1f8d7f6)
+ * was analysed in full and the ceiling bound for the first time: **120 of 274
+ * files examined, 154 not opened, `stopped: 'file_budget'` — 44% coverage.**
+ * On the largest real project, more than half the map had no words on it. The
+ * coverage line said so honestly, which is right, and honest about a bad number
+ * is still a bad number.
+ *
+ *  - `maxFiles: 600`. From the measured cost rather than from taste: that run
+ *    spent **30,181 tokens over 11 calls for 120 files**, which is ~251 tokens
+ *    a file, so 600 files is ~150k tokens — about 40원 once, at D45's rates,
+ *    and zero on every re-read after it. It covers the largest project anyone
+ *    here has measured 2.2 times over, and it stays below the ~1,590 files at
+ *    which `maxTokens` would bind instead: a run that stops has to be able to
+ *    say "we stopped at a number we chose", which is a different sentence from
+ *    "we ran out of budget", and the two must not swap places silently.
+ *  - `batchSize: 12`. Unchanged. A batch is what one truncation costs, and the
+ *    measured answer is ~55 output tokens per file plus ~25 per piece, so
+ *    twelve files carrying four pieces each answers in ~1,500 tokens. Smaller
+ *    batches multiply the fixed system prompt (~320 tokens) across more calls.
+ *  - `maxPieceFiles: 150` x `maxPiecesPerFile: 4` = up to 600 piece names,
+ *    against the old 160. Measured on the same run: **119 symbols named out of
+ *    1,175**, which was the old cap doing its job rather than a defect — D52
+ *    still says pieces inherit their file's feature — but a piece's Korean name
+ *    is now read in three places rather than one, because Pass 3 shows it to
+ *    the model when it asks what calling that piece is for. ~14k extra output
+ *    tokens, which is about 4원.
+ *  - `maxOutlineFiles: 600`, to match `maxFiles`. The feature call is one call
+ *    over the whole project, and a feature list drawn from 400 files of a 600-
+ *    file repo would be a confident claim about a project we two-thirds read.
+ *  - `maxTokens: 400_000`. A ceiling on the pass, not a target.
  */
 export const DEFAULT_SEMANTIC_BUDGET: SemanticBudget = {
-  maxFiles: 120,
+  maxFiles: 600,
   batchSize: 12,
-  maxPieceFiles: 40,
+  maxPieceFiles: 150,
   maxPiecesPerFile: 4,
-  maxOutlineFiles: 400,
+  maxOutlineFiles: 600,
   maxTokens: 400_000,
   maxOutputTokens: 4_000,
-  maxFeatureOutputTokens: 3_000,
+  maxFeatureOutputTokens: 8_000,
 };
 
 /*
@@ -110,6 +126,27 @@ const OUTPUT_PER_FILE = 70;
 const OUTPUT_PER_PIECE = 30;
 /** The JSON scaffolding around the answers, plus room to close the object. */
 const OUTPUT_OVERHEAD = 240;
+
+/**
+ * How long the one feature answer is allowed to be.
+ *
+ * D88 again, applied to the call it was not applied to the first time. The
+ * feature reply is mostly a list of file indices — a 600-file project grouped
+ * into a dozen features echoes most of 600 numbers back — so a constant that
+ * fits a 120-file project silently truncates a 600-file one, and a truncated
+ * feature list is a map missing territories with no sign that any are missing.
+ *
+ * Eight tokens a file rather than the three or four an index actually costs,
+ * for the same reason `OUTPUT_PER_FILE` carries a third of headroom: the
+ * ceiling is not a reservation, so over-asking costs nothing and under-asking
+ * costs the whole answer.
+ */
+export function featureCeilingFor(
+  files: readonly OutlineFile[],
+  budget: SemanticBudget = DEFAULT_SEMANTIC_BUDGET,
+): number {
+  return Math.min(1_000 + files.length * 8, budget.maxFeatureOutputTokens);
+}
 
 /** How long this batch's answer is allowed to be. */
 export function outputCeilingFor(
@@ -224,11 +261,37 @@ export function featureOutline(
   return [...outline.files].sort(compareFiles).slice(0, budget.maxOutlineFiles);
 }
 
+/**
+ * The order a person would look in, and the one criterion that was backwards.
+ *
+ * Addresses first — `/checkout` is what someone points at when they ask what
+ * their app does. Then **how many files depend on this one**, then how
+ * connected it is overall, then the path so two runs ask in the same order.
+ *
+ * `importedBy` used to come after `degree` and that was measurably wrong. The
+ * comment above this function has always said the second criterion is meant to
+ * find "the file everything else touches", and `degree` counts links at BOTH
+ * ends — so a test file, which imports a dozen things and is imported by
+ * nothing, scores exactly as high as the module the whole project depends on.
+ *
+ * **Measured on `vestra-code` at the old ceiling of 120 files:** the ranking
+ * kept 13 test and fixture files while dropping `src/lib/auth.ts`,
+ * `src/components/auth/sign-in-buttons.tsx`, `src/lib/env.ts` and
+ * `src/components/app/add-project-form.tsx` — it gave a name to
+ * `qa/tools.test.ts` and left the login screen anonymous. Putting `importedBy`
+ * first takes the kept set from **107 source files to 117**, and the kept
+ * test-and-fixture files from **13 to 3**, out of a project that is 149 source,
+ * 91 test/fixture and 34 other.
+ *
+ * It matters less now that `maxFiles` covers that project whole, and it matters
+ * exactly as much as it ever did for the next project that is bigger than the
+ * ceiling — which is the only situation this function exists for.
+ */
 function compareFiles(a: OutlineFile, b: OutlineFile): number {
   const byAddress = Number(b.addresses.length > 0) - Number(a.addresses.length > 0);
   if (byAddress !== 0) return byAddress;
-  if (a.degree !== b.degree) return b.degree - a.degree;
   if (a.importedBy !== b.importedBy) return b.importedBy - a.importedBy;
+  if (a.degree !== b.degree) return b.degree - a.degree;
   return a.filePath < b.filePath ? -1 : a.filePath > b.filePath ? 1 : 0;
 }
 

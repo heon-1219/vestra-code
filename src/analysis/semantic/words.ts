@@ -22,6 +22,22 @@
 export const FORBIDDEN_WORDS = ["안전", "노드", "엣지"] as const;
 
 /**
+ * Three more, for a sentence that will be read as a step in 흐름 따라가기.
+ *
+ * D78: the feature narrates a path the code makes possible, and it never runs
+ * anybody's code. 실행 · 추적 · 실시간 are the words that would quietly turn it
+ * into a claim we do not make, so `lib/graph/flow.ts` refuses them in every
+ * flow sentence — including one a model wrote, which is what `purpose/` now
+ * produces. Kept here beside the other three rather than imported from
+ * `flow.ts`, which reaches `qa/answer.ts` and from there the workspace
+ * components: an analysis pass that pulled a React tree into itself could no
+ * longer be run from a plain test, and that is the one property the `Analyzer`
+ * signature exists to protect. `purpose/parse.test.ts` pins this list against
+ * `FLOW_FORBIDDEN_WORDS` so the copy cannot drift.
+ */
+export const FLOW_FORBIDDEN_EXTRA = ["실행", "추적", "실시간"] as const;
+
+/**
  * What each kind of thing is called on screen. The same words `KIND_WORDS` and
  * `grouping.ts`'s `JOB_WORDS` use, so the prompt teaches the model the
  * vocabulary the map will show its answer in.

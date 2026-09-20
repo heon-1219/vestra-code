@@ -28,6 +28,7 @@ import {
 import {
   batches,
   DEFAULT_SEMANTIC_BUDGET,
+  featureCeilingFor,
   featureOutline,
   outputCeilingFor,
   selectTargets,
@@ -392,7 +393,7 @@ async function nameFeatures(input: {
         { role: "system", content: FEATURE_SYSTEM_PROMPT },
         { role: "user", content: prompt.text },
       ],
-      maxOutputTokens: budget.maxFeatureOutputTokens,
+      maxOutputTokens: featureCeilingFor(files, budget),
       temperature: 0,
       jsonSchema: { name: "vestra_features", schema: FEATURE_JSON_SCHEMA },
       effort: "fast",

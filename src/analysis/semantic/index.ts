@@ -152,7 +152,10 @@ export async function runSemanticLayer(input: {
       notExamined: result.notExamined.length,
       staleLinksRemoved: stale,
       calls: result.spent.calls,
-      tokens: result.spent.inputTokens + result.spent.outputTokens,
+      // In and out separately, not only the sum: the two cost different money
+      // (D45), so a total is a number nobody can turn into 원 afterwards.
+      input: result.spent.inputTokens,
+      output: result.spent.outputTokens,
       stopped: result.stopped,
       drops: result.drops,
       ...(result.error ? { error: result.error } : {}),

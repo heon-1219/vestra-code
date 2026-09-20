@@ -23,6 +23,7 @@ import {
   topLevelModule,
 } from "./resolve";
 import { collectDefinitions, collectImports, scanPython } from "./scanner";
+import { looksLikeStreamlit, streamlitPages } from "./streamlit";
 
 /**
  * The analyzer for a Python repository, built on one split that is the whole
@@ -409,6 +410,72 @@ async function run(
       });
     }
   }
+
+  /*
+   * Streamlit's pages, which are the only addresses a Python project in this
+   * database actually has.
+   *
+   * Measured before this existed: of four real projects, three produced no
+   * entry point at all and 흐름 따라가기 refused on every one of them. The
+   * first guess was unparsed Flask or Django decorators and it was wrong —
+   * there is no Flask, FastAPI or Django in any of them. `Kim-and-Chang-` is a
+   * Streamlit app, and **Streamlit has no route decorators**: its pages are a
+   * file convention, the same shape Next.js `app/` is, so `streamlit.ts` reads
+   * it the way `typescript/routes.ts` reads that one.
+   *
+   * **The route is a SIBLING of its file's symbols, not their parent**, and
+   * that shape is load-bearing rather than incidental. `lib/graph/flow.ts`
+   * builds `fileOf` from `file --contains--> route` and `symbolsOf` from
+   * `file --contains--> symbol`, and its entry joint steps from the address to
+   * the file to the symbols beside it. A route emitted as the parent of the
+   * symbols would exist, draw on the map, and lead nowhere — with nothing
+   * anywhere saying so, because "no path" looks identical whether the code has
+   * none or we failed to walk it.
+   */
+  const streamlitRoutes = looksLikeStreamlit({
+    paths: files.map((file) => file.path),
+    packages: [...packageIndex.declaredIn.keys()],
+  })
+    ? streamlitPages({
+        paths: sourceFiles.map((file) => file.path),
+        importsStreamlit: (path) =>
+          (parsed.find((entry) => entry.file.path === path)?.packages ?? []).some(
+            (used) => used.name.toLowerCase() === "streamlit",
+          ),
+        importedBy: (path) => importedBy.get(path) ?? 0,
+      })
+    : [];
+
+  /*
+   * The sibling `contains`, and the edges that make the address reachable.
+   *
+   * Declared and linked here rather than in Pass A because `soleEntry` asks
+   * which files nothing imports, and that count is only complete once every
+   * import edge has been added. The nodes are emitted on their own, the way
+   * Pass C emits its edges, so the progress count stays true.
+   */
+  const routeNodes: AnalyzedNode[] = [];
+  for (const page of streamlitRoutes) {
+    const ref: NodeRef = { type: "route", filePath: page.filePath, name: page.urlPath };
+    const node: AnalyzedNode = {
+      ref,
+      metadata: { via: "streamlit", home: page.home },
+    };
+    declare(node);
+    routeNodes.push(node);
+
+    addEdge({
+      source: { type: "file", filePath: page.filePath },
+      target: ref,
+      type: "contains",
+      // The address itself is `inferred` — which script you run is a command
+      // line, not a file in the repository — so the link that says this file
+      // answers to it cannot be stronger than the claim it carries.
+      confidence: "inferred",
+      metadata: { via: "streamlit" },
+    });
+  }
+  if (routeNodes.length > 0) emit.nodes(routeNodes);
 
   emit.edges(edges);
 

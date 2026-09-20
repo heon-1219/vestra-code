@@ -136,7 +136,8 @@ import type { AnalyzedEdge, AnalyzedNode, Confidence } from "./types";
  * one full write, after which it is incremental again.
  */
 /*
- * Bumped to 3 when Pass 2 landed.
+ * Bumped to 3 when Pass 2 landed, and to 4 when Pass 3 and the Streamlit
+ * addresses did.
  *
  * A carried-forward row from a version-2 graph means something different now.
  * Version 2 had no `feature` nodes, no `belongs_to` edges and no `label`,
@@ -146,8 +147,17 @@ import type { AnalyzedEdge, AnalyzedNode, Confidence } from "./types";
  * unnamed and the first run would ask about all of them anyway. The bump makes
  * that one run a full write as well, so the two halves of the graph are never
  * a mixture of "named under the old shape" and "named under the new one".
+ *
+ * Version 3 → 4 is a stronger case, because one half of it does NOT heal on
+ * its own. A version-3 Python graph has **no `route` nodes at all** — Streamlit
+ * addresses did not exist — and an incremental write only writes the rows of
+ * files that changed, so a project whose entry script nobody edited would
+ * never gain its addresses and 흐름 따라가기 would go on refusing for ever with
+ * nothing anywhere saying why. (The other half, `edges.metadata.purpose`, does
+ * heal: an edge with no sentence is simply one nobody has answered for yet.)
+ * One full write per project, then incremental again.
  */
-export const ANALYZER_VERSION = "3";
+export const ANALYZER_VERSION = "4";
 
 /**
  * Above this share of the analysed tree, an incremental write is bookkeeping

@@ -98,6 +98,8 @@ A consequence worth stating plainly: a project analysed by the **shallow** analy
 Ranked by what exists today:
 
 1. **`route` and `api_endpoint` nodes.** These exist in every run of the deep analyzer and need no LLM. A route is the only item kind in the graph a non-developer already understands as a place: `/checkout`, `/login`. On the demo repo that is 1 route and 4 endpoints (recorded in `DECISIONS.md`).
+
+   **Until 2026-09-21 only the TypeScript analyzer produced any**, which is why three of the four real projects refused entirely. The Python analyzer now emits them for **Streamlit's page convention** — the entry script and `pages/*.py` — which is a file convention exactly the way Next.js `app/` is (D133). Entry-point coverage across all four real projects went from 15 of 16 to **18 of 19**; the three that were added are all of `Kim-and-Chang-`'s, which had none.
 2. **Whatever the user selected.** A file, a symbol, a page. `entryPointsOf(item)` resolves it: a route or endpoint goes through its joint; a file offers its symbols ranked by outgoing behaviour degree; a symbol is itself; a package or feature is refused with a sentence.
 3. **What the user typed.** `runBeam` already matches 결제 → `checkout`, `PayButton`, and handles 초성 (`ㄱㅈ`) and wrong-IME (`rufwp`). The flow list is filtered by the same beam that lights the map — not a second search, for the reason `qa/tools.ts` gives about `find_items`.
 
@@ -214,9 +216,9 @@ Cost, from `qa/types.ts`'s own arithmetic: twelve steps land near **40k input / 
 
 ### Where the purpose sentences live
 
-`edges.metadata` is jsonb and already persisted, but a sentence shared by forty edges stored forty times can drift, which is the failure the grouping was built to prevent. Proposal: a small `edge_purposes` table keyed on `(projectId, purposeKey)` carrying the sentence and `textLang` (D2). That is a schema change and belongs in `DECISIONS.md`.
+**Settled by measurement, 2026-09-21, and the numbers sent it the other way (D131). `edges.metadata.purpose`, no new table.** The worry above was that a sentence shared by forty edges stored forty times can drift. Measured on the two real projects, the duplication is **2.14 connections per purpose**, not forty: `vestra-code` holds 1,711 explainable connections collapsing into 801 purposes, `Kim-and-Chang-` 134 into 60. They are written from one map keyed on `purposeKey`, so two connections in one group cannot disagree within a run.
 
-I am not certain it earns its own table — see §12.1.
+Against that, `load.ts` already selects `edges.metadata` — D83 put the call-site line there — so the read path is that diff again, whereas a table would make the map's loader compute an analysis-layer key to join on, on every page view. The one change it needed is in `analysis/persist.ts`: Pass 1's edge upsert now keeps an existing `purpose` and replaces everything else, which is the `jsonb` form of the rule that already keeps `label` and `summary` off Pass 1's node upsert.
 
 ---
 
@@ -420,7 +422,13 @@ Two things Phase 1 and Phase 2 have to know, both of which this document got wro
 
 **Phase 2 — the map lights the path.** Path-aware `Focus`, hop numbers on the on-path links, LOD exemption, the camera walking the path under the existing reduced-motion rule. Same list, now with a picture.
 
-**Phase 3 — purpose sentences.** Wire `purpose/groups.ts` to a model as one batched pass inside the run, store them, cache on the commit sha (D53). Flow hops upgrade from 사용해요 to 여기서 가격을 사람이 읽는 모양으로 바꿔요. Zero extra cost per flow. This also improves **every connection row in the right panel**, not just flows — and it is the first thing that makes `phase.changed → semantic` emit anything, which the panel's checklist has been drawing a step for all along.
+**Phase 3 — purpose sentences. Built, 2026-09-21 (D130-D132).** `src/analysis/purpose/` is one batched pass inside the analysis run, after Pass 2 so the model sees the Korean names Pass 2 just wrote. Flow hops upgrade from 사용해요 to 여기서 가격을 사람이 읽기 좋은 모양으로 바꿔요, and so does **every connection row in the right panel**.
+
+Measured on `Kim-and-Chang-`: 60 purposes over 134 connections in **3 calls and 6,671 tokens, about 2원**, zero drops of every kind, and 0 calls / 0 tokens on a warm re-read. §8.7's assertion is `purpose/pass.test.ts`, pinned against `MAX_FLOW_HOPS` rather than against a literal twelve.
+
+Two things the plan got wrong and the build had to correct. **The budget of 60 in §4 covers 39% of `vestra-code`'s connections and 7% of its purposes** — it was set against a project a quarter the size — so it is 1,200. And the storage is `edges.metadata`, not a table; see §4 and §12.1.
+
+What is still owed to this phase: `GraphConnection` does not carry the sentence yet, because `lib/graph/load.ts` and `lib/graph/view.ts` belong to another agent. The exact diff is written out in the handover rather than applied.
 
 **Phase 4 — one hop, investigated.** A 자세히 on a hop calls `investigate()` with a question built from that hop. Citations, line numbers, refusals. Needs the QA HTTP route, which does not exist yet.
 
@@ -465,7 +473,9 @@ Found by reading, listed so nobody rediscovers them.
 
 Stated rather than smoothed over.
 
-1. **Whether the (relation, target) purpose key earns its own storage.** For a `calls` edge, the purpose is close to the target's `nodes.summary`, which already exists and which `describe.ts` already prefers. `groups.ts` argues the relation matters — `calls formatPrice` and `renders formatPrice` are different jobs — and that is true in principle. Whether it is true often enough to pay for a table is measurable on the demo repo by generating both and comparing, and it should be measured before the schema changes.
+1. ~~**Whether the (relation, target) purpose key earns its own storage.**~~ **Measured, 2026-09-21 (D131), and the premise was false.** The claim was that "for a `calls` edge, the purpose is close to the target's `nodes.summary`". That was written before Pass 2 existed. Pass 2 now exists, and **D54 and D87 deliberately keep symbol summaries lazy** — a piece gets a `label` and no `summary` — while Pass 2 refuses to describe a package at all. So on `vestra-code`: of 801 purposes, **674 point at a node with no summary whatsoever** — every one of the 542 `calls`, 102 `renders`, 8 `fetches` and 22 `uses_package` groups. Only `imports` targets carry one, 93 of 127, because those are files. **88% of purposes on the largest real project are new information**, 75% on the Python one. Something has to store the sentence, it cannot go on the target node, and it goes in `edges.metadata` for the reasons in §4.
+
+   A second finding, unasked for and worth recording: on **both** real projects, **every target is reached by exactly one relation** — 0 of 801 and 0 of 60 are reached by two. `groups.ts` argues the relation matters in principle (`calls formatPrice` and `renders formatPrice` are different jobs) and it is right in principle; on real code the key is the target. Keeping the relation in the key costs nothing and is correct where it does bite, so it stays.
 2. **Whether "lower `usedBy` is more likely to be the spine" holds on a real repository.** It is plausible, it is free, and it is untested on anything larger than 68 items. §8.3 and §8.4 are what would settle it, and it should come out if it does not move a number.
 3. **The branching factor on a 300-file repo is unknown.** The largest graph measured in this codebase is the demo's 68 items. The complete-graph fixture in §8.6 is a proxy for the hairball case, not an answer about real projects. Until a 300-file repo has actually been walked, `MAX_EXPANSIONS = 400` and `BEAM = 4` are guesses with a stated reason, not measured constants.
 4. **Whether a route's address is a good enough 기능 name for the founder's actual ask.** `/checkout` reads as 결제 to the person who built it; `/app/[projectId]` reads as nothing. Phase 1 may be more useful on some projects than others, and I do not know the split without looking at more repos than the two in this document.
@@ -493,5 +503,5 @@ the SSE rule, purpose storage, runtime tracing — are untouched and still owed.
 - **`GraphConnection` gains the edge's call-site line**, carried from `edges.metadata` through `load.ts` and `view.ts`.
 - **`Focus` becomes path-aware** — an ordered set of links, not only item ids — and on-path links are exempt from the LOD label budget and carry a hop number.
 - **Flow events reuse the `{ seq, type, payload }` shape**, are delivered by an in-process sink by default, and reach SSE only when a model call is genuinely in flight.
-- **Purpose sentences get storage** — `edge_purposes(projectId, purposeKey) → text, textLang` — pending the measurement in §12.1.
+- ~~**Purpose sentences get storage** — `edge_purposes(projectId, purposeKey) → text, textLang` — pending the measurement in §12.1.~~ **Measured and settled as D130-D132: `edges.metadata.purpose`, no table, no migration.**
 - **Runtime tracing is a separate product decision**, with the costs in §10 on the record, and its vocabulary is not borrowed forward.

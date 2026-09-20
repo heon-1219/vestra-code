@@ -12,6 +12,7 @@ import { edges, nodes, projects, user } from "@/db/schema";
 
 import { nodeId } from "./ids";
 import { loadPreviousShape } from "./incremental";
+import { loadStoredPurposes, writePurposes } from "./purpose/persist";
 import {
   carryForwardSkipped,
   persistGraph,
@@ -462,6 +463,84 @@ withDb("persistGraph against a real database", () => {
     );
     expect(result.nodesWritten).toBe(2);
     expect(await readNodes()).toHaveLength(2);
+  });
+
+  /*
+   * Pass 3's one key inside `edges.metadata`, which Pass 1 must not wipe.
+   *
+   * SQL, and therefore untestable without a database: the upsert keeps
+   * `purpose` and replaces everything else, which is the `jsonb` version of the
+   * rule that keeps `label` and `summary` off Pass 1's node upsert. A fake
+   * would agree with whatever the code believes and prove nothing.
+   */
+  describe("the sentence Pass 3 writes onto a connection", () => {
+    const callsEdge = () => ({
+      source: { type: "symbol" as const, filePath: "a.ts", name: "alpha" },
+      target: { type: "symbol" as const, filePath: "b.ts", name: "beta" },
+      type: "calls" as const,
+      confidence: "certain" as const,
+      metadata: { line: 34 },
+    });
+
+    const write = async (runId: string) =>
+      persistGraph(db, projectId, runId, fixtureNodes(), [
+        ...fixtureEdges().filter((edge) => edge.type !== "calls"),
+        callsEdge(),
+      ]);
+
+    it("survives a full re-analysis, and keeps the call-site line beside it", async () => {
+      await write("run-1");
+
+      const before = await loadStoredPurposes(db, projectId);
+      expect(before.size).toBe(0);
+
+      const target = (await readEdges()).find((row) => row.type === "calls");
+      expect(target).toBeDefined();
+      const written = await writePurposes(
+        db,
+        projectId,
+        new Map([[target!.id, "여기서 값을 사람이 읽기 좋게 바꿔요."]]),
+      );
+      expect(written).toBe(1);
+
+      // Pass 1 runs again over the same graph and rewrites every metadata blob.
+      await write("run-2");
+
+      const after = await loadStoredPurposes(db, projectId);
+      expect(after.get(target!.id)).toBe("여기서 값을 사람이 읽기 좋게 바꿔요.");
+
+      // And D83's line is still there. Adding a sentence by replacing the blob
+      // would have traded "PayButton.tsx 34줄에서" for it, which is the wrong half.
+      const row = (await readEdges()).find((edge) => edge.id === target!.id);
+      expect((row?.metadata as { line?: number }).line).toBe(34);
+    });
+
+    it("is not written onto a connection the user corrected", async () => {
+      await write("run-1");
+      const target = (await readEdges()).find((row) => row.type === "calls");
+      await db.update(edges).set({ origin: "user" }).where(eq(edges.id, target!.id));
+
+      const written = await writePurposes(
+        db,
+        projectId,
+        new Map([[target!.id, "여기서 값을 바꿔요."]]),
+      );
+      // Section 6.1 rule 2: re-analysis does not argue with a row a person put
+      // there, and that includes laying prose over it.
+      expect(written).toBe(0);
+      expect((await loadStoredPurposes(db, projectId)).size).toBe(0);
+    });
+
+    it("finds nothing when the id belongs to another project", async () => {
+      await write("run-1");
+      const target = (await readEdges()).find((row) => row.type === "calls");
+      const written = await writePurposes(
+        db,
+        "vestra-test-persist-somebody-else",
+        new Map([[target!.id, "여기서 값을 바꿔요."]]),
+      );
+      expect(written).toBe(0);
+    });
   });
 });
 

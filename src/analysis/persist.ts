@@ -35,6 +35,15 @@ import type { AnalyzedEdge, AnalyzedNode, Origin } from "./types";
  * they would be nulled on every re-analysis, and a run whose semantic pass then
  * failed would leave the user with a map that had lost every plain-language
  * name it used to have.
+ *
+ * The same rule now applies to one key inside an edge's `metadata`. Pass 3
+ * (`purpose/`) writes `metadata.purpose` — the one sentence shared by every
+ * connection that reaches for the same thing — and an edge's metadata is a
+ * single column rather than three, so "do not list it" is not available. The
+ * upsert therefore keeps an existing `purpose` and replaces everything else,
+ * which is the same sentence said in `jsonb`: **Pass 1 does not touch what a
+ * later pass owns.** Without it every re-analysis would wipe the sentences and
+ * every run would pay for them again.
  */
 
 /**
@@ -173,7 +182,17 @@ export async function persistGraph(
         set: {
           confidence: sql`excluded.confidence`,
           origin: sql`excluded.origin`,
-          metadata: sql`excluded.metadata`,
+          // Everything Pass 1 measured, plus the one key it does not own. See
+          // this module's header: `purpose` is to an edge what `label` and
+          // `summary` are to a node, and the only difference is that it lives
+          // inside a `jsonb` column rather than in a column of its own.
+          metadata: sql`
+            case when (${edgesTable.metadata} -> 'purpose') is not null
+              then excluded.metadata
+                || jsonb_build_object('purpose', ${edgesTable.metadata} -> 'purpose')
+              else excluded.metadata
+            end
+          `,
           lastSeenRunId: sql`excluded.last_seen_run_id`,
         },
         setWhere: ne(edgesTable.origin, "user"),

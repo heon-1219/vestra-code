@@ -47,6 +47,7 @@ import { createPythonAnalyzer, pythonLlmCoverage } from "./python/analyzer";
 // Type only, and only for the reason the model pass stopped. The counts are
 // read back off the nodes; this is the one fact the graph itself cannot carry.
 import type { PythonLlmResult } from "./python/llm";
+import { runPurposeLayer } from "./purpose";
 import { runSemanticLayer } from "./semantic";
 import { createShallowAnalyzer } from "./shallow/analyzer";
 import type {
@@ -739,6 +740,39 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
       emit,
     });
     await store.flush();
+
+    /*
+     * Pass 3, the purpose layer.
+     *
+     * After Pass 2, because it shows the model the Korean names Pass 2 has just
+     * written — 결제 버튼 is better evidence for what calling something is for
+     * than `PayButton` is, and it costs nothing, since the line is one string
+     * either way.
+     *
+     * It emits no event and moves no phase. The checklist's 기능 이름 붙이는 중
+     * step is about files, and every connection this pass cannot reach keeps
+     * the relation's own verb — which the map has always shown and which is
+     * true. There is no shortfall to report, so reporting one would invent a
+     * hole in a map that does not have one.
+     *
+     * `runPurposeLayer` never throws, for the same reason `runSemanticLayer`
+     * does not: the static graph is the floor.
+     */
+    const purpose = await runPurposeLayer({
+      db,
+      projectId: project.id,
+      llm: input.llm ?? null,
+      graph,
+      scope: changeScope,
+    });
+    if (purpose.purposes > 0 || purpose.spent.calls > 0) {
+      console.log(
+        "[pipeline] connection sentences",
+        runId,
+        `${purpose.purposes} purposes (${purpose.answered} asked, ${purpose.carried} kept) ` +
+          `on ${purpose.connectionsWritten} connections, ${purpose.spent.calls} calls`,
+      );
+    }
 
     /*
      * One coverage line for the run, from whichever pass fell furthest short.
