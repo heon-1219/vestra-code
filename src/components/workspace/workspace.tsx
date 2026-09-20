@@ -28,7 +28,12 @@ import {
   usePaneLayout,
 } from "./panes";
 import { PlacesPanel } from "./places-panel";
-import { RightPanel, type ConnectionLock, type LockMap } from "./panel/connections-panel";
+import {
+  RightPanel,
+  type ConnectionLock,
+  type LockMap,
+  type ModelChoice,
+} from "./panel/connections-panel";
 import { FilePreview, previewTargetFor, type PreviewTarget } from "./preview/file-preview";
 import { toAnalysisProgress, toRunProgress } from "./stream-adapter";
 
@@ -79,6 +84,15 @@ export type WorkspaceProps = {
    * client component on this screen free of anything worth protecting.
    */
   account?: ReactNode;
+  /**
+   * The models this installation has a key for, default first.
+   *
+   * Computed on the server by the page, because deciding it needs the
+   * environment and `env.ts` throws for anything that imports it without a full
+   * one. Passed through untouched: the shell does not choose a model, it hands
+   * the panel the list of ones that exist.
+   */
+  models?: readonly ModelChoice[];
 };
 
 const startedSchema = z.object({ runId: z.uuid(), started: z.boolean() });
@@ -95,6 +109,7 @@ export function Workspace({
   initialView,
   activeRunId,
   account,
+  models,
 }: WorkspaceProps) {
   const [view, setView] = useState<GraphView>(initialView);
   const [runId, setRunId] = useState<string | null>(activeRunId);
@@ -543,6 +558,7 @@ export function Workspace({
           // The centre is already showing the checklist while a run goes; the
           // same five steps twice reads as two things happening.
           showRunSteps={false}
+          models={models}
         />
         </div>
       </div>

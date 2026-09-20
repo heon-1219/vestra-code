@@ -8,6 +8,10 @@ import {
   type GraphItem,
   type GraphView,
 } from "@/lib/graph/view";
+// Type only. A runtime import of `config.ts` reaches `env.ts`, which validates
+// eleven server variables at import and throws — not something a component
+// bundled for the browser can survive. See the note at the top of `model.ts`.
+import type { ProviderId } from "@/lib/llm/config";
 
 import {
   CertaintyLegend,
@@ -32,6 +36,14 @@ import { describeAll } from "@/lib/graph/describe";
 
 import { DEFAULT_PANEL_MODE, MODE_WORDS, type PanelMode } from "./mode";
 import { ModeSelect } from "./mode-select";
+import {
+  chooseModel,
+  DEFAULT_PANEL_EFFORT,
+  type ModelChoice,
+  type PanelEffort,
+  type PanelRequest,
+} from "./model";
+import { ModelSelect } from "./model-select";
 import { previewTargetFor } from "../preview/file-preview";
 import {
   AnalysisRunningState,
@@ -49,6 +61,7 @@ export type { ConnectionLock, LockMap } from "./connection-row";
 export { DEFAULT_LOCK, lockOf } from "./connection-row";
 export type { PanelAnswer, PanelCitation, PanelPrompt, RunProgress } from "./states";
 export type { PanelMode } from "./mode";
+export type { ModelChoice, PanelEffort, PanelRequest } from "./model";
 
 /**
  * The right panel: what happens when someone points at a part of their app.
@@ -82,10 +95,25 @@ export type RightPanelProps = {
   /**
    * One per mode. Step 4 wires them; until a mode has one, that mode's own
    * sentence says it cannot do its job yet rather than the button pretending.
+   *
+   * The model and the effort travel with the text rather than being read back
+   * out of the panel afterwards, because they are part of what was asked: a
+   * request answered by whatever the picker happens to say a second later is
+   * a different request than the one the person sent.
    */
-  onAsk?: (text: string) => void;
-  onMakePrompt?: (text: string) => void;
-  onExplain?: (text: string) => void;
+  onAsk?: (text: string, request: PanelRequest) => void;
+  onMakePrompt?: (text: string, request: PanelRequest) => void;
+  onExplain?: (text: string, request: PanelRequest) => void;
+  /**
+   * The models this installation actually has a key for, default first —
+   * `availableProviders()` from `@/lib/llm`, handed down from the server
+   * because only the server may read the environment.
+   *
+   * Defaulting to none is not a placeholder, it is the honest reading of an
+   * unwired screen: there is no key on this machine today, and the box says so
+   * rather than showing a control over nothing.
+   */
+  models?: readonly ModelChoice[];
   answer?: PanelAnswer | null;
   prompt?: PanelPrompt | null;
   /** How many connections one direction may show before the panel says it capped. */
@@ -97,6 +125,13 @@ export type RightPanelProps = {
    */
   showRunSteps?: boolean;
 };
+
+/**
+ * One array, so that a panel rendered without models does not make a new empty
+ * one on every keystroke — and so "no model" is a named thing rather than a
+ * literal repeated wherever it is needed.
+ */
+const NO_MODELS: readonly ModelChoice[] = [];
 
 export function RightPanel({
   view,
@@ -110,6 +145,7 @@ export function RightPanel({
   onAsk,
   onMakePrompt,
   onExplain,
+  models = NO_MODELS,
   answer = null,
   prompt = null,
   limit = DEFAULT_LIMIT,
@@ -123,6 +159,11 @@ export function RightPanel({
   const [tab, setTab] = useState<PanelTab>("list");
   const [hops, setHops] = useState<number>(DEFAULT_HOPS);
   const [mode, setMode] = useState<PanelMode>(DEFAULT_PANEL_MODE);
+  // Null is "nobody has chosen", which is different from a name: it lets the
+  // box follow this installation's default instead of pinning the first model
+  // the panel happened to be given.
+  const [model, setModel] = useState<ProviderId | null>(null);
+  const [effort, setEffort] = useState<PanelEffort>(DEFAULT_PANEL_EFFORT);
   const requestRef = useRef<RequestBoxHandle>(null);
 
   const selected = view?.items.find((item) => item.id === selectedId) ?? null;
@@ -198,6 +239,11 @@ export function RightPanel({
         disabled={running || !view}
         mode={mode}
         onModeChange={setMode}
+        models={models}
+        model={model}
+        onModelChange={setModel}
+        effort={effort}
+        onEffortChange={setEffort}
         onAsk={onAsk}
         onMakePrompt={onMakePrompt}
         onExplain={onExplain}
@@ -829,6 +875,11 @@ function RequestBox({
   disabled,
   mode,
   onModeChange,
+  models,
+  model,
+  onModelChange,
+  effort,
+  onEffortChange,
   onAsk,
   onMakePrompt,
   onExplain,
@@ -838,9 +889,14 @@ function RequestBox({
   disabled: boolean;
   mode: PanelMode;
   onModeChange: (mode: PanelMode) => void;
-  onAsk?: (text: string) => void;
-  onMakePrompt?: (text: string) => void;
-  onExplain?: (text: string) => void;
+  models: readonly ModelChoice[];
+  model: ProviderId | null;
+  onModelChange: (model: ProviderId) => void;
+  effort: PanelEffort;
+  onEffortChange: (effort: PanelEffort) => void;
+  onAsk?: (text: string, request: PanelRequest) => void;
+  onMakePrompt?: (text: string, request: PanelRequest) => void;
+  onExplain?: (text: string, request: PanelRequest) => void;
 }) {
   const boxRef = useRef<HTMLTextAreaElement>(null);
   const [hasText, setHasText] = useState(false);
@@ -864,7 +920,7 @@ function RequestBox({
   // The chosen mode decides what the one button does. This is the whole point
   // of the change: a handler per mode still exists, but the user picks which
   // one they are in rather than reading a row of buttons and guessing.
-  const act: ((text: string) => void) | undefined = {
+  const act: ((text: string, request: PanelRequest) => void) | undefined = {
     ask: onAsk,
     prompt: onMakePrompt,
     explain: onExplain,
@@ -878,7 +934,11 @@ function RequestBox({
     const text = read();
     if (!act) return;
     if (words.needs === "text" && text.length === 0) return;
-    act(text);
+    // What the row underneath actually shows, resolved the same way it resolves
+    // it — not the raw `model`, which can name a provider whose key has since
+    // been taken away. Null means nothing is connected, and it is the caller's
+    // job to refuse rather than to pick something on the user's behalf.
+    act(text, { model: chooseModel(models, model)?.id ?? null, effort });
   }
 
   return (
@@ -919,6 +979,27 @@ function RequestBox({
         }
         aria-label="질문이나 바꾸고 싶은 내용"
         className="w-full resize-none rounded-xl border border-edge-lit bg-ink px-3 py-2.5 text-[14px] leading-[1.7] text-said placeholder:text-said-faint focus:border-lamp-dim focus:outline-none disabled:opacity-55"
+      />
+
+      {/*
+        Below the box, unlike the mode row above it, and the same rule read
+        twice: the mode changes what there is to type, so it is chosen before
+        typing; who answers and how hard is only settled at the moment of
+        sending, and this sits where sending happens.
+
+        Its own line rather than sharing one with the button, which is where
+        Claude's box puts it: at this column's width — minmax(272px, 25%) — two
+        model names, two efforts and a Korean verb do not fit one line, so they
+        would wrap anyway, and a row that has the button on it at one width and
+        not at another is harder to read than one that never does.
+      */}
+      <ModelSelect
+        className="mt-2"
+        models={models}
+        model={model}
+        onModelChange={onModelChange}
+        effort={effort}
+        onEffortChange={onEffortChange}
       />
 
       {/*

@@ -60,7 +60,11 @@ export type EventSink = <T extends AnalysisEventType>(
 ) => Promise<void>;
 
 /** Serialise one event in SSE wire format, with its id so a client can resume. */
-export function toSseFrame(event: AnalysisEvent): string {
+export function toSseFrame(event: {
+  seq: number;
+  type: string;
+  payload: unknown;
+}): string {
   return `id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event.payload)}\n\n`;
 }
 

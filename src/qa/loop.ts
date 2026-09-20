@@ -153,6 +153,14 @@ export type InvestigateInput = {
    */
   source?: SourceReader | null;
   budget?: Partial<Budget>;
+  /**
+   * How hard the model should think, passed through to every turn.
+   *
+   * The client translates it per provider — Gemini takes a graded
+   * `reasoning_effort`, MiMo has only on and off — and drops it for an endpoint
+   * with no such control. The loop neither knows nor cares which it got.
+   */
+  effort?: "fast" | "deep";
   /** Injected so the wall-clock ceiling can be tested without waiting for it. */
   now?: () => number;
   signal?: AbortSignal;
@@ -296,6 +304,7 @@ export async function investigate(
           256,
           Math.min(PER_CALL_OUTPUT_TOKENS, budget.maxOutputTokens - outputTokens),
         ),
+        effort: input.effort,
         temperature: TEMPERATURE,
         // No `jsonSchema`: the report arrives as a tool call, and D44 records
         // that tool support and structured-output support vary independently by

@@ -42,21 +42,44 @@ const serverSchema = z.object({
   GOOGLE_CLIENT_ID: z.string().min(1, "GOOGLE_CLIENT_ID is missing."),
   GOOGLE_CLIENT_SECRET: z.string().min(1, "GOOGLE_CLIENT_SECRET is missing."),
 
-  // Step 4. The LLM provider is configured only by these four, never in code,
-  // so the model can be swapped without a deploy that touches source.
+  /*
+   * Step 4. Two providers by name, plus one unnamed escape hatch.
+   *
+   * Only the KEY is required per provider: the base URL and the model have
+   * verified defaults in `llm/config.ts`, because an address nobody can look up
+   * is not a secret, it is a thing to get wrong. Both stay overridable here, so
+   * moving off `gemini-3.8-flash` is still a config change and not a deploy.
+   *
+   * `LLM_DEFAULT` picks between them ("mimo" | "gemini" | "custom"). The
+   * unprefixed trio is the `custom` provider, which is what keeps "any
+   * OpenAI-compatible endpoint" true and keeps those variables meaningful
+   * rather than silently ignored.
+   */
+  LLM_DEFAULT: optionalString,
+
+  LLM_MIMO_API_KEY: optionalString,
+  LLM_MIMO_BASE_URL: optionalUrl,
+  LLM_MIMO_MODEL: optionalString,
+  LLM_MIMO_SUPPORTS_JSON_SCHEMA: optionalString,
+
+  LLM_GEMINI_API_KEY: optionalString,
+  LLM_GEMINI_BASE_URL: optionalUrl,
+  LLM_GEMINI_MODEL: optionalString,
+  LLM_GEMINI_SUPPORTS_JSON_SCHEMA: optionalString,
+
   LLM_BASE_URL: optionalUrl,
   LLM_API_KEY: optionalString,
   LLM_MODEL: optionalString,
   /*
    * Whether this endpoint advertises `json_schema` structured outputs (D47).
    *
-   * Documented in `.env.example` since the decision was taken and missing from
-   * this schema until the client was written — so it validated as an unknown
-   * key and read back as `undefined`, which happens to be the safe answer and
-   * would have quietly stayed wrong the day someone set it to "true".
+   * Per provider, not global, because it genuinely differs: Google documents
+   * `response_format` with a schema on its OpenAI-compatible endpoint and
+   * Xiaomi documents only a `text` response format. One flag would have been
+   * right for one of them and silently wrong for the other.
    *
    * A string rather than a boolean: an environment has only strings, and a
-   * coercing parser would read "false" as true.
+   * coercing parser reads "false" as true.
    */
   LLM_SUPPORTS_JSON_SCHEMA: optionalString,
 
@@ -83,10 +106,10 @@ function loadEnv(): ServerEnv {
 
 export const env = loadEnv();
 
-/**
- * True once the LLM provider is configured. Step 4 features check this and
- * degrade with a plain-language message rather than throwing at the user.
+/*
+ * `hasLlmConfigured()` used to live here and checked the unprefixed trio only,
+ * so an installation with a Gemini or MiMo key read as having no model at all.
+ * It had no callers, which is the only reason it never lied to anyone. The
+ * question it answered now belongs to `llm/config.ts`, which knows about all
+ * three providers: use `llmConfigured()` from `@/lib/llm`.
  */
-export function hasLlmConfigured(): boolean {
-  return Boolean(env.LLM_BASE_URL && env.LLM_API_KEY && env.LLM_MODEL);
-}

@@ -36,8 +36,27 @@ import { createLlm } from "./client";
  */
 
 const live = process.env.VESTRA_LIVE === "1";
-// Read the raw variable rather than the parsed config, for the same reason.
-const keyed = Boolean(process.env.LLM_API_KEY);
+
+/*
+ * Vitest does not read `.env.local` — Next does, which is why the app works
+ * and this file used to skip on a machine that plainly had a key. Loaded here
+ * rather than in a global setup so that only this file pays for it, and only
+ * when it has been asked to run for real.
+ */
+if (live) {
+  try {
+    process.loadEnvFile(".env.local");
+  } catch {
+    // No such file, or unreadable. The skip below then reports it honestly.
+  }
+}
+
+/** Any provider with a key at all. Named ones first, then the unprefixed one. */
+const keyed = Boolean(
+  process.env.LLM_GEMINI_API_KEY ||
+    process.env.LLM_MIMO_API_KEY ||
+    process.env.LLM_API_KEY,
+);
 
 describe.skipIf(!live || !keyed)("the configured endpoint, for real", () => {
   it("answers, reports what it cost, and can call a tool", async () => {

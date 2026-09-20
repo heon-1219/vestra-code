@@ -17,6 +17,7 @@ const CONFIG: LlmConfig = {
   apiKey: "test-key",
   model: "test-model",
   supportsJsonSchema: false,
+  effort: "graded",
 };
 
 /** Captures what was sent, which is half of what is under test. */

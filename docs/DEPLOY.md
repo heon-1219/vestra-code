@@ -158,15 +158,29 @@ if this one ever falls behind.
 | `GITHUB_CLIENT_SECRET` | same |
 | `GOOGLE_CLIENT_ID` | from step 8; for now paste anything non-empty |
 | `GOOGLE_CLIENT_SECRET` | same |
-| `LLM_BASE_URL` | `https://api.xiaomimimo.com/v1` |
-| `LLM_API_KEY` | your key |
-| `LLM_MODEL` | `mimo-v2.5` |
+| `LLM_MIMO_API_KEY` | your MiMo key, if you have one |
+| `LLM_GEMINI_API_KEY` | your Gemini key, if you have one |
+| `LLM_DEFAULT` | `mimo` or `gemini` — which one answers when nobody picks. Leave it out to take whichever has a key |
 
 The placeholders for the four OAuth values are there because the app refuses to
 start without them, and you cannot fill them in properly until you have a
 domain, which you do not have until it starts. Step 6 breaks that circle.
 
-Notes on three of them:
+Notes on four of them:
+
+- **The model wants a key and nothing else.** The base URL and the model name
+  have defaults in `src/lib/llm/config.ts`, taken from each vendor's own
+  documentation, and are overridable with `LLM_MIMO_BASE_URL`,
+  `LLM_MIMO_MODEL` and their `LLM_GEMINI_` twins if you ever need to move off
+  one. Set both keys and the request box lets you choose between the two; set
+  one and it names the one it is using rather than offering a choice of one;
+  set neither and it says so in plain Korean instead of showing a control that
+  cannot do anything. There is a third, unnamed provider for any other
+  OpenAI-compatible endpoint — `LLM_BASE_URL`, `LLM_API_KEY` and `LLM_MODEL`,
+  all three together, since it has no defaults to fall back on. **Do not point
+  any of them at a router** (D44): MiMo-V2.5's capabilities differ by serving
+  provider, so the same key can land somewhere tool-less between one run and
+  the next, which is a product that works today and fails silently tomorrow.
 
 - **`DATABASE_URL` — the direct string, not the pooled one.** This app holds its
   own connection pool inside a long-lived process, so routing through Neon's

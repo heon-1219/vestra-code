@@ -8,6 +8,7 @@ import { Workspace } from "@/components/workspace/workspace";
 import { db } from "@/db";
 import { projects } from "@/db/schema";
 import { loadGraphView } from "@/lib/graph/load";
+import { availableProviders } from "@/lib/llm";
 import { getSession, requireSession } from "@/lib/session";
 
 /**
@@ -81,6 +82,13 @@ export default async function ProjectPage({ params }: ProjectPageProps) {
       }}
       initialView={view}
       activeRunId={running && run ? run.id : null}
+      /*
+       * Read here because reading it anywhere else would import `env.ts` into
+       * the client bundle, and that module validates the whole environment on
+       * import. An empty list is the honest answer on an installation with no
+       * key, and the panel says so in words.
+       */
+      models={availableProviders()}
       /*
        * Rendered here, where the session already is, and handed over as a node.
        * The workspace is the one client component on this screen and it has no

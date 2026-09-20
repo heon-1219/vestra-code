@@ -52,6 +52,24 @@ export type LlmConfig = {
    * day and a silently ignored constraint on a bad one.
    */
   supportsJsonSchema: boolean;
+  /**
+   * What shape this endpoint's thinking control has.
+   *
+   * Three shapes, because the two providers genuinely differ and pretending
+   * otherwise would be a lie in the interface:
+   *
+   *   - `graded` — Google documents `reasoning_effort`, mapped to its own
+   *     thinking level.
+   *   - `binary` — Xiaomi documents `thinking: { type: "enabled" | "disabled" }`
+   *     and nothing finer. It is on or off.
+   *   - `none` — an endpoint we know nothing about, so we send nothing. An
+   *     unknown parameter is a 400 on a strict server.
+   *
+   * This is why the choice offered to a person is two options and not three:
+   * a third would be a level MiMo cannot honour, and a control whose middle
+   * setting does nothing on half the providers is worse than no control.
+   */
+  effort: "graded" | "binary" | "none";
 };
 
 export type LlmRole = "system" | "user" | "assistant" | "tool";
@@ -91,6 +109,25 @@ export type LlmToolCall = {
    * be a lie that only shows up at runtime, in production, on someone's repo.
    */
   arguments: unknown;
+  /**
+   * Whatever the endpoint attached to this call, carried back untouched.
+   *
+   * Opaque on purpose: we never read it and never depend on its shape. It
+   * exists because Gemini 3 attaches a `thought_signature` to every function
+   * call and REJECTS the next turn without it —
+   *
+   *   "Function call is missing a thought_signature in functionCall parts.
+   *    This is required for tools to work correctly."
+   *
+   * — which is a 400 on the SECOND step of any loop, with the first step
+   * looking perfect. Not documented for the OpenAI-compatible endpoint at the
+   * time of writing; found by dumping a real response.
+   *
+   * Treating it as an opaque blob rather than a Google field is what keeps this
+   * from becoming a provider special case: an endpoint that sends nothing gets
+   * nothing echoed, and one that starts sending something new keeps working.
+   */
+  extra?: unknown;
 };
 
 export type LlmUsage = { inputTokens: number; outputTokens: number };
@@ -126,6 +163,14 @@ export type LlmRequest = {
    * the caller's own validation is what catches a bad shape.
    */
   jsonSchema?: { name: string; schema: Record<string, unknown> };
+  /**
+   * How hard to think, in our vocabulary rather than any provider's.
+   *
+   * Translated per endpoint by the client, and dropped entirely where the
+   * endpoint has no such control. The caller asks for the outcome it wants and
+   * never learns which knob it turned.
+   */
+  effort?: "fast" | "deep";
   signal?: AbortSignal;
 };
 

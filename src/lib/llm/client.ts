@@ -82,6 +82,22 @@ export function createLlm(
       }
 
       /*
+       * The same request, expressed in whichever knob this endpoint has.
+       *
+       * Google takes `reasoning_effort` and maps it to a thinking level;
+       * Xiaomi takes `thinking: { type }` and has only on and off. Sending
+       * either one to the other is at best ignored and at worst a 400, so the
+       * translation lives here and the caller never learns which it got.
+       */
+      if (request.effort) {
+        if (config.effort === "graded") {
+          body.reasoning_effort = request.effort === "deep" ? "high" : "low";
+        } else if (config.effort === "binary") {
+          body.thinking = { type: request.effort === "deep" ? "enabled" : "disabled" };
+        }
+      }
+
+      /*
        * Two ways to stop: the caller gave up, or the endpoint went quiet.
        *
        * Combined rather than chosen between, because they are different events
@@ -134,6 +150,7 @@ type WireMessage = {
     id: string;
     type: "function";
     function: { name: string; arguments: string };
+    extra_content?: unknown;
   }[];
   tool_call_id?: string;
 };
@@ -160,6 +177,10 @@ function toWireMessage(message: {
             ? call.arguments
             : JSON.stringify(call.arguments ?? {}),
       },
+      // Echoed exactly as it arrived, or not at all. Gemini 3 rejects a second
+      // turn whose function call has lost its thought_signature, and the error
+      // names neither our request nor the turn it came from.
+      ...(call.extra === undefined ? {} : { extra_content: call.extra }),
     }));
   }
   if (message.toolCallId) wire.tool_call_id = message.toolCallId;
@@ -235,6 +256,8 @@ function readReply(parsed: unknown): LlmReply {
       toolCalls.push({
         id,
         name,
+        // Kept whatever it is. See `LlmToolCall.extra`.
+        ...(call?.extra_content === undefined ? {} : { extra: call.extra_content }),
         // Kept as the raw string when it does not parse, rather than dropped.
         // The caller validates these anyway, and a tool call we silently
         // discarded is a loop that stalls for a reason nobody can see.
