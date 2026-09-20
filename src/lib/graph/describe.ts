@@ -49,6 +49,35 @@ const USES: ReadonlySet<ConnectionRelation> = new Set<ConnectionRelation>([
  * and sorting one into "꾸미기" because of its name is a guess presented as a
  * fact. A piece with no recorded shape is just 조각.
  */
+/**
+ * 예요 or 이에요, by whether the word ends in a final consonant.
+ *
+ * Not a nicety. Three of the seven words in `SHAPE_WORDS` carry 받침 —
+ * 화면 조각, 정해 둔 값, 정해 둔 모양 — and the first is the commonest kind in any
+ * React project, so **"화면 조각예요" was on screen for almost every user of
+ * this product**. A Korean reader does not experience that as a typo; they
+ * experience it as software that does not speak their language, which is a
+ * bad thing to think about the tool explaining your code to you.
+ *
+ * The rule is exact rather than heuristic. A Hangul syllable is one code point
+ * in U+AC00-U+D7A3 composed as `((lead * 21) + vowel) * 28 + final`, so
+ * `(code - 0xAC00) % 28` **is** the final consonant, and zero means there is
+ * none. No dictionary and no guessing.
+ *
+ * Anything not ending in a Hangul syllable — a package name, a file path —
+ * has no deterministic answer here, because the particle follows how the word
+ * is *read* aloud and we do not know that. Those sentences are written to
+ * avoid the choice instead: `flow.ts` ends the phrase in 쪽 before the
+ * particle rather than guessing at `stripe`.
+ */
+export function copula(word: string): "예요" | "이에요" {
+  const last = word.codePointAt(word.length - 1);
+  if (last === undefined) return "예요";
+  const isHangulSyllable = last >= 0xac00 && last <= 0xd7a3;
+  if (!isHangulSyllable) return "예요";
+  return (last - 0xac00) % 28 === 0 ? "예요" : "이에요";
+}
+
 const SHAPE_WORDS: Record<string, string> = {
   component: "화면 조각",
   hook: "화면 도우미",
@@ -166,7 +195,7 @@ function whatItIs(item: GraphItem, holds: Map<string, number> | undefined): stri
       return "기능 하나로 묶어 둔 것이에요";
     case "symbol": {
       const shape = SHAPE_WORDS[item.shape ?? ""];
-      return shape ? `${shape}예요` : "코드 조각이에요";
+      return shape ? `${shape}${copula(shape)}` : "코드 조각이에요";
     }
     case "file": {
       if (!holds || holds.size === 0) {

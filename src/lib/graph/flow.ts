@@ -1368,7 +1368,7 @@ function marginBetween(ranked: readonly Ranked[], ignore: ReadonlySet<HopCriteri
   };
 }
 
-function notesFor(
+export function notesFor(
   index: FlowIndex,
   path: FlowPath,
   margin: FlowMargin,
@@ -1553,7 +1553,16 @@ function hopSentence(index: FlowIndex, from: GraphItem | null, step: Step): stri
    * The line and the certainty still follow: the purpose says what this
    * connection is for, and neither of those is part of that.
    */
-  const parts: string[] = [step.purpose ?? RELATION_WORDS[step.relation].forward];
+  /*
+   * The purpose's own full stop comes off before the join.
+   *
+   * Pass 3 writes whole sentences, and this row is a list separated by ` · `,
+   * so keeping it produced "…창을 보여줘요. · page.tsx 99줄" — a sentence that
+   * has ended, followed by more of it.
+   */
+  const parts: string[] = [
+    step.purpose?.replace(/[.。]\s*$/, "") ?? RELATION_WORDS[step.relation].forward,
+  ];
   const file = from ? fileNameOf(index, from.id) : null;
   if (step.line !== null && file) parts.push(`${file} ${step.line}줄`);
   // Never asserted on a hop we are sure of; `CERTAINTY_WORDS.certain` is the

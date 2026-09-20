@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { FORBIDDEN_WORDS } from "./words";
+import { FLOW_FORBIDDEN_EXTRA, FORBIDDEN_WORDS } from "./words";
 
 /**
  * The model's reply, and every reason to throw a piece of it away.
@@ -328,8 +328,30 @@ export function hasHangul(text: string): boolean {
   return /[가-힣]/u.test(text);
 }
 
+/**
+ * Both lists, not just the first three.
+ *
+ * Pass 2's output is not only read on the map. A `label` is the subject of
+ * every row in 흐름 따라가기 and the words under every district, so a name this
+ * pass coins is a sentence the flow shows — and the flow may not say 실행,
+ * 추적 or 실시간, because we never ran anybody's code.
+ *
+ * **Found in production.** `/api/projects/:id/events` had been named
+ * **실시간 상황 주소** by this pass and was appearing in the flow panel, on the
+ * map and in the file list. Every other place a model writes Korean here
+ * already refuses those three — `purpose/parse.ts` does, `flow.ts` does — and
+ * this was the one door nobody was watching. Echoing a *user's* 추적 back to
+ * them is fine; a word we chose ourselves is a claim.
+ *
+ * A dropped label costs the node its plain name and nothing else: it falls
+ * back to what the code calls it, which is true, and D88's counters record
+ * that it happened rather than hiding it.
+ */
 function hasForbidden(text: string): boolean {
-  return FORBIDDEN_WORDS.some((word) => text.includes(word));
+  return (
+    FORBIDDEN_WORDS.some((word) => text.includes(word)) ||
+    FLOW_FORBIDDEN_EXTRA.some((word) => text.includes(word))
+  );
 }
 
 function tidy(raw: string): string {

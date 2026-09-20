@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { describeAll } from "./describe";
+import { describeAll, copula } from "./describe";
 import type { GraphConnection, GraphItem } from "./view";
 
 /**
@@ -147,5 +147,38 @@ describe("describeAll", () => {
   it("recognises a file we recorded but never read", () => {
     const photo = item({ kind: "file", id: "f", path: "public/me.jpg" });
     expect(describeAll(view([photo], [])).get("f")!.line).toContain("그림이나 파일이에요");
+  });
+});
+
+describe("예요 and 이에요", () => {
+  it("picks the one the word actually takes", () => {
+    // The three in SHAPE_WORDS that carry 받침, and the four that do not.
+    // 화면 조각 is the commonest kind in any React project, so 화면 조각예요 was
+    // on screen for almost every user of this product.
+    expect(copula("화면 조각")).toBe("이에요");
+    expect(copula("정해 둔 값")).toBe("이에요");
+    expect(copula("정해 둔 모양")).toBe("이에요");
+    expect(copula("일 처리")).toBe("예요");
+    expect(copula("화면 도우미")).toBe("예요");
+    expect(copula("설계도")).toBe("예요");
+    expect(copula("꾸미기")).toBe("예요");
+  });
+
+  it("reads the final consonant out of the syllable rather than a list", () => {
+    // 각 and 가 are the same syllable with and without a final ㄱ, one code
+    // point apart in the block. If this ever needed a dictionary it would be
+    // wrong for some word nobody thought of.
+    expect(copula("가")).toBe("예요");
+    expect(copula("각")).toBe("이에요");
+    expect(copula("갛")).toBe("이에요");
+  });
+
+  it("does not guess at a word it cannot read", () => {
+    // A package name or a path has no deterministic answer: the particle
+    // follows how the word is said aloud. Sentences that would need one are
+    // written to avoid the choice instead.
+    for (const foreign of ["stripe", "orders.ts", "", "42"]) {
+      expect(copula(foreign)).toBe("예요");
+    }
   });
 });
