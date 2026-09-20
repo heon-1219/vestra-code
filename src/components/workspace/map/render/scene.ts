@@ -279,6 +279,19 @@ export const NO_TRAIL: Trail = {
   critical: new Set<string>(),
 };
 
+/**
+ * Whether a walk is showing at all.
+ *
+ * Asked of the places, not the hops, and that distinction is load-bearing: an
+ * investigation that found everything by searching crosses no connections, so
+ * it has points and an empty `steps`. Gating on `steps` — which both callers
+ * below originally did — meant such a walk lit nothing whatsoever and the map
+ * silently fell back to the selection, showing a walk as if none had happened.
+ */
+export function walking(trail: Trail): boolean {
+  return trail.lit.size > 0;
+}
+
 /** The two lookup sets, built once from the hops rather than at every draw. */
 export function trailOf(steps: readonly TrailStep[]): Trail {
   const lit = new Set<string>();
@@ -326,7 +339,7 @@ export function itemStrength(
    * is which — the same warning this file already gives about a second private
    * idea of near.
    */
-  const litPart = trail.steps.length
+  const litPart = walking(trail)
     ? (trail.lit.has(id) ? 1 : DIM)
     : (focus.id === null || focus.lit.has(id) ? 1 : DIM);
 
@@ -351,7 +364,7 @@ export function linkStrength(
    * The picture would then show a triangle where a path was walked, and
    * nothing on it would say which line was taken.
    */
-  if (trail.steps.length) {
+  if (walking(trail)) {
     return stepFor(link, trail) ? 1 : DIM;
   }
   return Math.min(

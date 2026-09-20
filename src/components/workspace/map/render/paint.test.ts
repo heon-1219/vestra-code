@@ -7,7 +7,15 @@ import { layoutMap } from "../layout";
 
 import { drawMap, type Scene, type View } from "./paint";
 import { FALLBACK } from "./palette";
-import { buildAdjacency, buildLinks, focusOf, hubsOf, NO_FOCUS } from "./scene";
+import {
+  buildAdjacency,
+  buildLinks,
+  focusOf,
+  hubsOf,
+  NO_FOCUS,
+  NO_TRAIL,
+} from "./scene";
+import { trailFrom } from "./walk";
 
 /**
  * A stand-in for a 2D context that remembers what it was asked to draw.
@@ -164,6 +172,7 @@ function sceneWith(over: Partial<Scene> = {}): Scene {
     selection: NO_FOCUS,
     pointed: NO_FOCUS,
     selectedId: null,
+    trail: NO_TRAIL,
     size: { width: 1600, height: 1200 },
     ...over,
   };
@@ -254,5 +263,101 @@ describe("drawMap, what it costs", () => {
     const near = paint(sceneWith(), viewWith());
     const far = paint(sceneWith(), viewWith({ camera: { x: 70, y: 0, scale: 0.08 } }));
     expect(far.strokes + far.fills).toBeLessThan(near.strokes + near.fills);
+  });
+});
+
+/**
+ * The walk, drawn.
+ *
+ * `walk.test.ts` proves the translation and `scene.test.ts` proves the
+ * strengths; what is left for the painter is the thing neither can see — that
+ * the sequence actually reaches the canvas, and reaches it at the zoom where a
+ * person is most likely to be reading it.
+ */
+function walkTrail() {
+  const point = (id: string, critical = false) => ({
+    id,
+    number: 0,
+    step: 1,
+    leg: 1,
+    critical,
+  });
+  const hop = (connectionId: string, from: string, to: string) => ({
+    connectionId,
+    from,
+    to,
+    relation: "calls" as const,
+    certainty: "certain" as const,
+    step: 1,
+    via: "opened" as const,
+  });
+
+  // a → b → f. Nothing in this fixture joins a to f, so the picture has to get
+  // its shape from the hops rather than from which dots are lit.
+  return trailFrom({
+    points: [point("a"), point("b"), point("f", true)],
+    hops: [hop("1", "a", "b"), hop("4", "b", "f")],
+    unplaced: [],
+  });
+}
+
+/**
+ * A crossing number, drawn alone or in front of the relation word.
+ *
+ * Asserted as a shape rather than by counting labels: how many of a walk's
+ * lines are long enough to carry text is geometry, and it changes with the
+ * layout, the zoom and the size of the container. What must not change is that
+ * every word on the map during a walk belongs to the walk.
+ */
+const NUMBERED = /^\d+( · .+)?$/;
+
+describe("drawMap, the walk", () => {
+  const QUIET = viewWith({ fitScale: 1, camera: { x: 70, y: 0, scale: 0.6 } });
+
+  it("numbers the crossings even at a zoom that says nothing about connections", () => {
+    // The same view draws no relation words at all, which is the baseline this
+    // is measured against. The `rankCeiling` budget that silences ordinary
+    // connections must not silence the answer to the question just asked.
+    expect(relationLabels(paint(sceneWith(), QUIET))).toHaveLength(0);
+
+    const labels = relationLabels(paint(sceneWith({ trail: walkTrail() }), QUIET));
+    expect(labels.length).toBeGreaterThan(0);
+    for (const label of labels) expect(label.text).toMatch(NUMBERED);
+  });
+
+  it("writes on no line but the ones the walk crossed", () => {
+    const quiet = relationLabels(paint(sceneWith(), viewWith()));
+    // Six connections, and at this zoom several of them ordinarily get named.
+    expect(quiet.length).toBeGreaterThan(2);
+
+    const labels = relationLabels(paint(sceneWith({ trail: walkTrail() }), viewWith()));
+    expect(labels.length).toBeGreaterThan(0);
+    // Every one of them is a crossing. A bare relation word here would be a
+    // line competing with the walk for the same glance.
+    for (const label of labels) expect(label.text).toMatch(NUMBERED);
+    expect(labels.length).toBeLessThan(quiet.length);
+  });
+
+  it("stands the selection's neighbourhood down rather than drawing two answers", () => {
+    /*
+     * `b` is on the walk and has connections the walk did not cross. With no
+     * walk those get named as the selection's own neighbourhood, below every
+     * other threshold. With one, the walk owns the lines — otherwise the map
+     * shows a bright neighbourhood and a bright path at once and nothing says
+     * which of them answers the question.
+     */
+    const chosen = {
+      selectedId: "b",
+      selection: focusOf("b", ADJACENCY),
+      pointed: focusOf("b", ADJACENCY),
+    };
+
+    expect(relationLabels(paint(sceneWith(chosen), QUIET)).length).toBeGreaterThan(0);
+
+    const labels = relationLabels(
+      paint(sceneWith({ ...chosen, trail: walkTrail() }), QUIET),
+    );
+    expect(labels.length).toBeGreaterThan(0);
+    for (const label of labels) expect(label.text).toMatch(NUMBERED);
   });
 });

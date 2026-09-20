@@ -11,6 +11,7 @@ import type {
 import { describeAll } from "@/lib/graph/describe";
 import type { GraphConnection, GraphItem } from "@/lib/graph/view";
 import { KIND_WORDS } from "@/lib/graph/view";
+import type { QaTrail } from "@/qa";
 
 import { previewTargetFor } from "../preview/file-preview";
 
@@ -36,6 +37,7 @@ import {
   hubsOf,
   NO_FOCUS,
 } from "./render/scene";
+import { trailFrom } from "./render/walk";
 
 /**
  * The map of the app. D59's resting screen.
@@ -124,6 +126,15 @@ export type DistrictMapProps = {
    */
   onOpen?: (id: string) => void;
   onHoverChange?: (id: string | null) => void;
+  /**
+   * The walk an answer was found by, when one is showing.
+   *
+   * **This takes the lighting over from the selection while it is set.** A
+   * walk and a neighbourhood are two different answers to "what should I be
+   * looking at", and showing both at once leaves the reader to guess which one
+   * came from the question they asked. Clear it to hand the map back.
+   */
+  trail?: QaTrail | null;
   className?: string;
 };
 
@@ -153,6 +164,7 @@ export function DistrictMap({
   onSelect,
   onOpen,
   onHoverChange,
+  trail: qaTrail = null,
   className,
 }: DistrictMapProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -314,6 +326,10 @@ export function DistrictMap({
     [hoverId, selectedId, adjacency],
   );
 
+  // Translated once per change rather than per frame: the draw pass runs at 60
+  // a second and this builds two sets.
+  const trail = useMemo(() => trailFrom(qaTrail), [qaTrail]);
+
   /**
    * Everything the draw pass reads, in one ref.
    *
@@ -332,6 +348,7 @@ export function DistrictMap({
     selection: NO_FOCUS,
     pointed: NO_FOCUS,
     selectedId,
+    trail,
     size,
   });
 
@@ -349,6 +366,7 @@ export function DistrictMap({
       selection,
       pointed,
       selectedId,
+      trail,
       size,
     };
   });
@@ -496,7 +514,7 @@ export function DistrictMap({
 
   useEffect(() => {
     requestDraw();
-  }, [beam, selection, pointed, grouped, roads, links, hubs, requestDraw]);
+  }, [beam, selection, pointed, grouped, roads, links, hubs, trail, requestDraw]);
 
   useEffect(() => {
     return () => {

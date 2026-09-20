@@ -27,9 +27,12 @@ import { hueFor, withAlpha, type Palette } from "./palette";
 import {
   itemStrength,
   linkStrength,
+  stepFor,
   touchesFocus,
+  walking,
   type Focus,
   type MapLink,
+  type Trail,
 } from "./scene";
 
 /**
@@ -88,6 +91,18 @@ export type Scene = {
    */
   pointed: Focus;
   selectedId: string | null;
+  /**
+   * The investigation's walk, when one is showing. `NO_TRAIL` otherwise.
+   *
+   * Required rather than optional, though every function below already defaults
+   * it, because a scene that quietly means "no walk" is how a feature stops
+   * working without anything failing. There are two places that build a
+   * `Scene`; both should have to say.
+   *
+   * While this is non-empty it **takes over the lighting from the selection**
+   * — see `itemStrength`. One screen, one meaning of "near".
+   */
+  trail: Trail;
   size: { width: number; height: number } | null;
 };
 
@@ -221,7 +236,7 @@ export function drawMap(
   view: View,
 ): void {
   const { width, height, dpr, camera, palette } = view;
-  const { layout, roads, beam, selection, pointed } = scene;
+  const { layout, roads, beam, selection, pointed, trail } = scene;
 
   // No transform on the context beyond the device pixel ratio. Everything below
   // converts to screen coordinates itself, which is what makes line widths,
@@ -254,10 +269,14 @@ export function drawMap(
    * dimmed shape.
    */
   const districtStrength = new Map<string, number>();
-  const anythingDimmed = beam.active || selection.id !== null;
+  // A walk dims too, and it dims without anything being selected. Leaving it
+  // out of this test left every territory at full strength underneath a map
+  // whose items had gone dark — the shapes stayed lit while their contents did
+  // not, which reads as the map having failed rather than as an answer.
+  const anythingDimmed = beam.active || selection.id !== null || walking(trail);
   if (anythingDimmed) {
     for (const placed of layout.items) {
-      const strength = itemStrength(placed.id, selection, beam);
+      const strength = itemStrength(placed.id, selection, beam, trail);
       const current = districtStrength.get(placed.districtId);
       if (current === undefined || strength > current) {
         districtStrength.set(placed.districtId, strength);
@@ -365,19 +384,33 @@ export function drawMap(
   //    enough that they describe a neighbourhood instead of covering the map in
   //    string. The ones touching the selection are skipped here and drawn over
   //    everything in step 6, so a bright line is never crossed by a dim one.
-  if (detail.links > 0) {
+  // While a walk is showing it owns the lines: the focus overlay in step 6 is
+  // skipped entirely, so walked links must not be held back for it here.
+  if (detail.links > 0 || walking(trail)) {
     let drawn = 0;
     for (const link of scene.links) {
-      if (touchesFocus(link, pointed)) continue;
+      if (touchesFocus(link, pointed) && !walking(trail)) continue;
       const a = layout.byItemId.get(link.from);
       const b = layout.byItemId.get(link.to);
       if (!a || !b) continue;
 
-      const reach =
-        detail.links *
-        Math.min(itemAlphaFor(a.r, camera.scale), itemAlphaFor(b.r, camera.scale)) *
-        linkStrength(link, selection, beam) *
-        (scene.grouped && link.crossing ? CROSSING_FADE : 1);
+      const step = stepFor(link, trail);
+      /*
+       * A walked line is drawn at full reach, whatever the zoom says.
+       *
+       * Every factor below is a way of saying "this line is not worth the
+       * clutter right now": too many links on screen, dots too small to anchor
+       * one, a connection crossing between territories. None of them is true of
+       * a line the person just asked about — and `detail.links` being zero when
+       * the whole map fits would otherwise erase the walk at exactly the zoom
+       * where it is meant to be read.
+       */
+      const reach = step
+        ? 1
+        : detail.links *
+          Math.min(itemAlphaFor(a.r, camera.scale), itemAlphaFor(b.r, camera.scale)) *
+          linkStrength(link, selection, beam, trail) *
+          (scene.grouped && link.crossing ? CROSSING_FADE : 1);
       const alpha = reach * LINK_ALPHA;
       if (alpha <= 0.02) continue;
 
@@ -409,13 +442,44 @@ export function drawMap(
       if (!span) continue;
       const laid = shifted(span, link.lane);
 
-      const words =
-        detail.relations > 0 && link.rank < detail.rankCeiling
+      /*
+       * A walked line says which crossing it was, and says it at any zoom.
+       *
+       * The number is not subject to `rankCeiling` the way a relation word is.
+       * That budget exists because most lines are worth a word only when there
+       * is room for all of them; these few are the answer to a question the
+       * person just asked, and a walk with step 2 missing is not a smaller
+       * picture, it is a wrong one.
+       *
+       * The word rides along in front of the number when the line is long
+       * enough, and is dropped before the number is — "3" alone still places
+       * the hop in the sequence, while "불러와요" alone loses the thing that
+       * made this line worth drawing.
+       */
+      /*
+       * While a walk is showing, no line but the walk's carries words.
+       *
+       * The other lines are still drawn — dimmed, never hidden (D59) — because
+       * they are the shape of the project the walk happened inside. Their words
+       * are a different matter: a label is read at whatever alpha it is drawn,
+       * so five faint relation words sit at the same size and in the same place
+       * as the numbers and compete with them for the one thing the person is
+       * trying to follow. Dimming says "context". Keeping the words says
+       * "also read this".
+       */
+      const relation =
+        !walking(trail) && detail.relations > 0 && link.rank < detail.rankCeiling
           ? RELATION_WORDS[link.relation].short
           : null;
-      const textWidth = words === null ? 0 : widthOf(ctx, labelFont, words);
-      const room =
-        words !== null && labelFits(laid.length, textWidth, LABEL_CLEARANCE);
+
+      let words = step ? `${step.order} · ${RELATION_WORDS[link.relation].short}` : relation;
+      let textWidth = words === null ? 0 : widthOf(ctx, labelFont, words);
+      let room = words !== null && labelFits(laid.length, textWidth, LABEL_CLEARANCE);
+      if (step && !room) {
+        words = String(step.order);
+        textWidth = widthOf(ctx, labelFont, words);
+        room = labelFits(laid.length, textWidth, LABEL_CLEARANCE);
+      }
 
       drawThread(
         ctx,
@@ -424,7 +488,11 @@ export function drawMap(
         palette.wire,
         palette.guess,
         alpha,
-        1,
+        // A line the answer rests on is drawn heavier than one merely walked
+        // through. The loop already separates the two and the picture has to
+        // as well, or "where it looked" and "what it found" arrive as one
+        // claim.
+        step?.critical ? 2 : 1,
         room ? textWidth / 2 + LABEL_CLEARANCE : 0,
         width,
         height,
@@ -433,7 +501,23 @@ export function drawMap(
         drawArrow(ctx, laid, link.certainty === "certain" ? palette.wire : palette.guess, alpha);
       }
       if (room && words !== null) {
-        drawRelation(ctx, laid, words, labelFont, palette.saidFaint, detail.relations * reach);
+        drawRelation(
+          ctx,
+          laid,
+          words,
+          labelFont,
+          // A walked line's number is said in the text colour, not the faint
+          // one. It is the one thing on the map the person is reading right now.
+          step ? palette.said : palette.saidFaint,
+          /*
+           * `detail.relations` is zero at a zoom where relation words would be
+           * noise, and multiplying by it there would compute a number and then
+           * draw it at alpha 0 — the walk silently losing its sequence exactly
+           * when the whole map is on screen, which is when a person most wants
+           * to follow it.
+           */
+          step ? reach : detail.relations * reach,
+        );
       }
 
       if (++drawn > MAX_LINKS) break;
@@ -453,7 +537,7 @@ export function drawMap(
 
     const district = layout.byDistrictId.get(placed.districtId);
     const hue = hueFor(palette, district?.hue ?? 0, scene.grouped);
-    const strength = itemStrength(placed.id, selection, beam);
+    const strength = itemStrength(placed.id, selection, beam, trail);
 
     // A ring in the surface colour, so two dots that touch still read as two
     // things. The reference picture does this in white on paper; the same idea
@@ -503,8 +587,16 @@ export function drawMap(
     }
   }
 
-  // 6. The neighbourhood of whatever is pointed at or selected, over everything.
-  if (pointed.id !== null) {
+  /*
+   * 6. The neighbourhood of whatever is pointed at or selected, over everything.
+   *
+   * Stands down entirely while a walk is showing. `itemStrength` already hands
+   * the lighting to the walk, so leaving this on would paint a second, brighter
+   * neighbourhood over a map dimmed for a different reason — two ideas of
+   * "near" on one screen, with nothing to tell the reader which one answers the
+   * question they asked.
+   */
+  if (pointed.id !== null && !walking(trail)) {
     const centre = layout.byItemId.get(pointed.id);
     if (centre) {
       let labelled = 0;
