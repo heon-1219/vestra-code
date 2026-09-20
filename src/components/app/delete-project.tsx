@@ -46,7 +46,11 @@ export function DeleteProject({
         // The card's own title is right there; a screen reader reading five
         // buttons all called "삭제" cannot tell the user which is which.
         aria-label={`${displayName} 지우기`}
-        className="absolute top-3 right-3 z-10 rounded-lg px-2.5 py-1.5 text-[12px] text-said-faint transition-colors hover:bg-ink hover:text-said focus-visible:bg-ink focus-visible:text-said"
+        // Brightens rather than darkens under the pointer. It sits on a raised
+        // card, so filling with `ink` made the hover read as a hole punched in
+        // the card — the same inversion the tab row had. Everything on this
+        // screen now moves toward the light when you are on it.
+        className="absolute top-3 right-3 z-10 rounded-lg px-2.5 py-1.5 text-[12px] text-said-faint transition-colors hover:bg-edge-lit hover:text-said focus-visible:bg-edge-lit focus-visible:text-said"
       >
         삭제
       </button>
@@ -56,7 +60,14 @@ export function DeleteProject({
   return (
     // Covers the card entirely, so the link underneath cannot be clicked by
     // someone aiming for 취소 and missing.
-    <div className="absolute inset-0 z-20 flex flex-col justify-center rounded-2xl border border-edge-lit bg-ink-raised p-6">
+    //
+    // `ink-sunk`, where this was the same `ink-raised` as the card it covers.
+    // Two surfaces of one colour with a brighter line between them is a card
+    // whose contents changed, not a question laid over a card — and the whole
+    // point of this panel is that something has intervened between the click
+    // and the deletion. The darkest surface in the palette is also the right
+    // register for it: a destructive confirm should recede, not shout.
+    <div className="absolute inset-0 z-20 flex flex-col justify-center rounded-2xl border border-edge-lit bg-ink-sunk p-6">
       <p className="text-[15px] leading-[1.7] font-semibold">지울까요?</p>
       <p className="mt-2 text-[13px] leading-[1.75] text-said-soft">
         {isUpload

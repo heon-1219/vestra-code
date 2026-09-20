@@ -258,7 +258,21 @@
  * collapses both durations, so this needs no guard of its own.
  */
 @utility lift {
+  /*
+   * `translate` is listed first, and leaving it out is why this never worked.
+   *
+   * Tailwind v4's `translate-*` utilities write the **`translate` property**,
+   * not `transform` — `node_modules/tailwindcss/dist/lib.js` maps them to
+   * `"translate","var(--tw-translate-x) var(--tw-translate-y)"`, and v4's own
+   * `transition-transform` names `transform, translate, scale, rotate` for
+   * exactly this reason. So every `lift … hover:-translate-y-0.5` on the
+   * landing page snapped to its new position instead of gliding, and only the
+   * border half of this utility was doing anything.
+   *
+   * `transform` stays for anything that sets it directly.
+   */
   transition:
+    translate 300ms var(--ease-decel),
     transform 300ms var(--ease-decel),
     border-color 150ms cubic-bezier(0.4, 0, 0.2, 1);
 }

@@ -35,7 +35,7 @@ export function AddProject() {
      * A column that takes the height it is given rather than the height of its
      * contents, so the repo list inside can be the only scroller on this side.
      */
-    <div className="flex min-h-0 flex-1 flex-col rounded-2xl border border-edge bg-ink-raised p-6">
+    <div className="hairline flex min-h-0 flex-1 flex-col rounded-2xl bg-ink-raised p-6">
       {/*
         Three labels short enough to sit on one line each at this column's
         narrowest, which is 300px minus the card's padding. Two-line tabs read
@@ -74,10 +74,19 @@ export function AddProject() {
         )}
       </div>
 
+      {/*
+        Under a rule, and in the page's ordinary text colour.
+
+        This is the sentence that says the thing you came here to do worked,
+        and it was the quietest type in the card — `said-soft` at the foot of a
+        panel, with nothing separating it from the form above. A rule gives it
+        its own register without making it loud, which is the same move the
+        empty state makes between "what to do" and "what it costs".
+      */}
       {notice ? (
         <p
           role="status"
-          className="mt-4 shrink-0 text-[14px] leading-[1.75] text-said-soft"
+          className="rule-t mt-5 shrink-0 pt-4 text-[14px] leading-[1.75] text-said"
         >
           {notice}
         </p>
@@ -99,14 +108,22 @@ function TabButton({
     // `whitespace-nowrap` is the guarantee rather than the hope: a tab that
     // wraps is the exact thing this row's type size and padding are set to
     // avoid, and a label two lines tall reads as a broken layout.
+    //
+    // The selected tab is `edge-lit`, not `ink`. Both are chips this product
+    // already uses for exactly this — the workspace's panel modes fill with
+    // `ink`, its places tabs fill with `edge-lit` — but the two are on
+    // opposite sides of the surface they sit on. This row is on a raised card,
+    // so an `ink` chip is DARKER than its own card and the selected tab reads
+    // as a hole punched in the panel. `edge-lit` is lighter, which is the
+    // direction this palette already means by "you are here".
     <button
       type="button"
       onClick={onClick}
       aria-pressed={active}
       className={`rounded-lg px-2.5 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors ${
         active
-          ? "bg-ink text-said"
-          : "text-said-faint hover:text-said-soft"
+          ? "bg-edge-lit text-said"
+          : "text-said-faint hover:bg-edge/60 hover:text-said-soft"
       }`}
     >
       {children}

@@ -218,18 +218,54 @@ export function FolderUpload({
 
   return (
     <div>
-      <input
-        ref={inputRef}
-        type="file"
-        // Non-standard but supported everywhere this product runs; it is the
-        // only way a browser can offer a folder rather than a file.
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        {...({ webkitdirectory: "", directory: "" } as any)}
-        multiple
-        onChange={(event) => handleFiles(event.target.files)}
-        className="block w-full cursor-pointer rounded-xl border border-dashed border-edge-lit bg-ink px-4 py-8 text-center text-[14px] text-said-soft file:hidden hover:border-lamp-dim"
-        aria-label="프로젝트 폴더 선택"
-      />
+      {/*
+        The zone is a <label>; the input inside it is `sr-only`.
+
+        Styling the input itself put the browser's own words on the largest
+        element in this tab. `file:hidden` hides the button but not the text
+        beside it, so the drop zone read "선택된 파일 없음" — or whatever the
+        user's Chrome calls it, in whatever language their OS is set to —
+        centred in a dashed box, and then "3,412개 파일" once they chose. A
+        product that has an opinion about every other sentence on this page was
+        letting the browser write that one.
+
+        `sr-only` rather than `hidden`: it clips the input to a pixel but leaves
+        it in the tab order, so the zone is still reachable by keyboard, and
+        `focus-within` puts the ring on the box the eye is actually looking at.
+        Clicking the label opens the same picker the input would have, and
+        `inputRef` still clears it after an upload.
+
+        The visible words are the input's existing `aria-label`, not a new
+        sentence: the accessible name is unchanged, and it is now also the one
+        on screen.
+      */}
+      {/*
+        Hover brightens the edge and the words, and leaves the fill alone. The
+        zone is a well — it is `ink` inside an `ink-raised` card — so there is
+        no lighter fill available that does not simply erase the recess, and
+        darkening it further would be the one hover on this screen that moves
+        away from the light.
+      */}
+      <label className="group flex w-full cursor-pointer flex-col items-center justify-center rounded-xl border border-dashed border-edge-lit bg-ink px-4 py-9 text-center transition-colors focus-within:border-lamp focus-within:ring-2 focus-within:ring-lamp hover:border-lamp-dim">
+        <input
+          ref={inputRef}
+          type="file"
+          // Non-standard but supported everywhere this product runs; it is the
+          // only way a browser can offer a folder rather than a file.
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          {...({ webkitdirectory: "", directory: "" } as any)}
+          multiple
+          onChange={(event) => handleFiles(event.target.files)}
+          className="sr-only"
+          aria-label="프로젝트 폴더 선택"
+        />
+        <span
+          aria-hidden
+          className="text-[14px] font-medium text-said-soft transition-colors group-hover:text-said"
+        >
+          프로젝트 폴더 선택
+        </span>
+      </label>
 
       {/* Says what actually happens now, which is not what it used to say. A
           folder we keep is a folder we can open later, and someone deciding
@@ -239,31 +275,78 @@ export function FolderUpload({
         보관해요. 영상처럼 큰 파일은 이름만 확인하고 올리지 않아요.
       </p>
 
+      {/*
+        Reading a folder takes the same slot the summary is about to take, and
+        wears the same panel, so the tab does not grow a box out of nowhere the
+        moment the file dialog closes.
+
+        The bar breathes rather than fills. This loop has no idea how far
+        through it is — it walks a FileList reading text files one await at a
+        time — and a bar that crept to 80% and sat there would be the product
+        inventing a number it does not have.
+      */}
       {reading ? (
-        <p className="mt-4 text-[14px] text-said-soft">폴더를 읽는 중…</p>
+        <div role="status" className="hairline mt-4 rounded-xl bg-ink p-4">
+          <p className="text-[14px] text-said-soft">폴더를 읽는 중…</p>
+          <div
+            aria-hidden
+            className="mt-3 h-[3px] w-full animate-pulse rounded-full bg-edge-lit"
+          />
+        </div>
       ) : null}
 
       {chosen ? (
-        <div className="mt-4 rounded-xl border border-edge bg-ink p-4">
+        <div className="hairline mt-4 rounded-xl bg-ink p-4">
           <p className="text-[15px] font-semibold">{chosen.rootName}</p>
-          <p className="mt-1.5 text-[13px] leading-[1.75] text-said-soft">
-            읽을 파일 {chosen.texts.length.toLocaleString("ko-KR")}개 (
-            {formatBytes(chosen.textBytes)})
-            {chosen.previewable.length > 0
-              ? ` · 열어볼 수 있는 사진·PDF ${chosen.previewable.length.toLocaleString("ko-KR")}개 (${formatBytes(chosen.previewableBytes)})`
-              : ""}
-            {chosen.assets.length > chosen.previewable.length
-              ? ` · 나머지 ${(chosen.assets.length - chosen.previewable.length).toLocaleString("ko-KR")}개는 이름만`
-              : ""}
-            {chosen.skippedCount > 0
-              ? ` · ${chosen.skippedCount.toLocaleString("ko-KR")}개는 읽지 않아요`
-              : ""}
-          </p>
+          {/*
+            One fact per line, where this was a single paragraph of four
+            clauses strung on middle dots.
+
+            This is the last screen before someone hands over a folder, and the
+            numbers on it are the ones they check: how much gets read, how much
+            gets kept, how much is only a name. Wrapped into a 13px paragraph in
+            a 310px column they came out as three ragged lines with the dots
+            landing anywhere. Same words, same order, nothing added — only the
+            separators are gone, because the line break now does their job.
+
+            The split in colour is the split in meaning: the first two lines are
+            what you get, the last two are what you do not.
+          */}
+          <ul className="mt-2.5 space-y-1 text-[13px] leading-[1.7]">
+            <li className="text-said-soft">
+              읽을 파일 <Num>{chosen.texts.length.toLocaleString("ko-KR")}</Num>
+              개 (<Num>{formatBytes(chosen.textBytes)}</Num>)
+            </li>
+            {chosen.previewable.length > 0 ? (
+              <li className="text-said-soft">
+                열어볼 수 있는 사진·PDF{" "}
+                <Num>{chosen.previewable.length.toLocaleString("ko-KR")}</Num>개
+                (<Num>{formatBytes(chosen.previewableBytes)}</Num>)
+              </li>
+            ) : null}
+            {chosen.assets.length > chosen.previewable.length ? (
+              <li className="text-said-faint">
+                나머지{" "}
+                <Num>
+                  {(
+                    chosen.assets.length - chosen.previewable.length
+                  ).toLocaleString("ko-KR")}
+                </Num>
+                개는 이름만
+              </li>
+            ) : null}
+            {chosen.skippedCount > 0 ? (
+              <li className="text-said-faint">
+                <Num>{chosen.skippedCount.toLocaleString("ko-KR")}</Num>개는
+                읽지 않아요
+              </li>
+            ) : null}
+          </ul>
           <button
             type="button"
             onClick={upload}
             disabled={uploading || chosen.texts.length === 0}
-            className="mt-4 rounded-lg bg-paper px-5 py-2.5 text-[14px] font-semibold text-ink transition-colors hover:bg-lamp disabled:opacity-55"
+            className="mt-4 w-full rounded-lg bg-paper px-5 py-2.5 text-[14px] font-semibold text-ink transition-colors hover:bg-lamp disabled:opacity-55"
           >
             {keeping
               ? `사진 보관 중 ${keeping.done}/${keeping.total}`
@@ -281,4 +364,17 @@ export function FolderUpload({
       ) : null}
     </div>
   );
+}
+
+/**
+ * A numeral inside a Korean sentence.
+ *
+ * `font-mono` is reserved in this product for Latin and numerals, where it
+ * means something — a Korean sentence set in it falls back to whatever face the
+ * OS picks for Hangul, which is a different family from the rest of the page.
+ * `tabular-nums` so the counts in a stacked list line up at the same width
+ * whether they read 9 or 3,412.
+ */
+function Num({ children }: { children: React.ReactNode }) {
+  return <span className="font-mono tabular-nums">{children}</span>;
 }
