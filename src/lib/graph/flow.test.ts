@@ -167,11 +167,11 @@ function shopShape(): GraphView {
       // The coarse-grained reach that must never become a hop.
       edge("f_page", "f_orders", "imports"),
       edge("f_orders", "p_stripe", "uses_package"),
-      edge("s_page", "s_pay", "renders", { metadata: { line: 18 } }),
-      edge("s_page", "s_price", "renders", { metadata: { line: 17 } }),
-      edge("s_pay", "s_price", "renders", { metadata: { line: 22 } }),
-      edge("s_pay", "s_create", "calls", { metadata: { line: 34 } }),
-      edge("s_create", "e_orders", "fetches", { metadata: { line: 9 } }),
+      edge("s_page", "s_pay", "renders", { line: "18" }),
+      edge("s_page", "s_price", "renders", { line: "17" }),
+      edge("s_pay", "s_price", "renders", { line: "22" }),
+      edge("s_pay", "s_create", "calls", { line: "34" }),
+      edge("s_create", "e_orders", "fetches", { line: "9" }),
     ],
   );
 }
@@ -1041,7 +1041,11 @@ async function measuredShop(): Promise<GraphView> {
         targetNodeId: id(entry.target),
         type: entry.type as ConnectionRelation,
         confidence: entry.confidence,
-        metadata: entry.metadata ?? {},
+        // `load.ts` asks Postgres for `metadata->>'line'`, which comes back as
+        // text or null. Doing the same conversion here keeps this test on the
+        // path the product actually takes, rather than on a row shape the
+        // query stopped returning.
+        line: jsonLine(entry.metadata),
       }))
       // The order `load.ts` hands the view builder, so this test sees the
       // array the product sees.
@@ -1370,3 +1374,14 @@ describe("the entry joint's targets", () => {
     expect(starts.map((item) => item.id)).toContain("Page");
   });
 });
+
+/**
+ * What `metadata->>'line'` returns: the value as text, or null when the key is
+ * absent or the object is. Postgres's `->>`  does not care what type the value
+ * had, which is exactly why `load.ts` reads it as text and checks it itself.
+ */
+function jsonLine(metadata: unknown): string | null {
+  if (typeof metadata !== "object" || metadata === null) return null;
+  const line = (metadata as Record<string, unknown>).line;
+  return line === undefined || line === null ? null : String(line);
+}

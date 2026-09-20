@@ -568,3 +568,49 @@ describe("what counts as being used", () => {
     expect(view.items.find((i) => i.id === "a")?.uses).toBe(5);
   });
 });
+
+/**
+ * The call-site line, which reaches this file as **text**.
+ *
+ * `load.ts` asks Postgres for `metadata->>'line'` rather than for the whole
+ * `jsonb` object — measured at 39.7 KB per load on this repository's own
+ * graph, most of it import specifiers nothing reads. `->>` returns text
+ * whatever the value's JSON type was, and it returns null for a missing key,
+ * so every check that used to run against an unknown object now runs against
+ * an unknown string. These are those checks.
+ *
+ * The failure this guards is specific and has a shape: a line number printed
+ * into a sentence in front of someone who is already unsure whether to trust
+ * us. "PayButton.tsx NaN줄에서" is worse than saying nothing.
+ */
+describe("the call-site line", () => {
+  const withLine = (line: string | null | undefined) =>
+    buildGraphView(
+      PROJECT,
+      [node({ id: "a" }), node({ id: "b" })],
+      [edge({ id: "e1", type: "calls", ...(line === undefined ? {} : { line }) })],
+      null,
+    ).connections[0];
+
+  it("reads a line back as a number", () => {
+    expect(withLine("34").line).toBe(34);
+  });
+
+  it("leaves the field off entirely when there is none", () => {
+    // Absent, not `undefined`. `view.ts` says absent is the only way to say
+    // "no line"; a present key holding undefined would give it a second.
+    for (const missing of [null, undefined, ""]) {
+      expect("line" in withLine(missing)).toBe(false);
+    }
+  });
+
+  it("refuses anything that is not a whole line number", () => {
+    // `->>` hands back whatever was in the column. A float, a zero, a
+    // negative, an object stringified by Postgres, a word — each is the
+    // parser having recorded something we do not understand, and inventing a
+    // number from it is the quiet guess this file exists to refuse.
+    for (const bad of ["0", "-1", "3.5", "1e3", "{}", "true", "abc", " "]) {
+      expect("line" in withLine(bad), bad).toBe(false);
+    }
+  });
+});
