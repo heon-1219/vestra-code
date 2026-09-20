@@ -11,10 +11,11 @@ import {
   NO_CODE_MESSAGE,
   NOT_STORED_MESSAGE,
 } from "./ingest/restore";
-import { llmCoveragePayload, selectAnalyzer } from "./pipeline";
+import { llmCoveragePayload, manifestsIn, selectAnalyzer } from "./pipeline";
 import { createRunStore } from "./run-store";
 import { createShallowAnalyzer } from "./shallow/analyzer";
 import { createTypescriptAnalyzer } from "./typescript/analyzer";
+import type { SourceFile } from "./types";
 
 /**
  * What the store has to guarantee, and one live run of the whole pipeline.
@@ -480,4 +481,68 @@ live("analysis pipeline against the demo repo", () => {
       await db.delete(user).where(eq(user.id, userId));
     }
   }, 240_000);
+});
+
+/**
+ * Re-reading what a project is, from the files that actually arrived.
+ *
+ * The stored `kind` is decided when a project is added and was never looked at
+ * again, so a project kept the answer the product gave on the day it was
+ * connected — for ever. When the Python analyzer landed, every Python
+ * repository already in the database stayed `unsupported` and kept getting the
+ * shallow one no matter how often it was re-read.
+ *
+ * `detectProject` and `selectAnalyzer` are both tested elsewhere; what is new
+ * is gathering the manifests detection needs out of files already on disk
+ * rather than fetching them one at a time over the network.
+ */
+function sourceFile(path: string, text: string | null): SourceFile {
+  return {
+    path,
+    absolutePath: `/tmp/${path}`,
+    size: text?.length ?? 0,
+    read: text === null ? null : () => text,
+  };
+}
+
+describe("the manifests a re-read judges a project by", () => {
+  it("reads the package.json files off the tree", () => {
+    const found = manifestsIn([
+      sourceFile("package.json", JSON.stringify({ dependencies: { next: "16" } })),
+      sourceFile("src/index.ts", "export const a = 1;"),
+    ]);
+
+    expect(found).toHaveLength(1);
+    expect(found[0].path).toBe("package.json");
+    expect(found[0].json).toEqual({ dependencies: { next: "16" } });
+  });
+
+  it("keeps a manifest that will not parse, rather than dropping it", () => {
+    /*
+     * Its presence is a signal in its own right — it says something builds
+     * this. Dropping it would let a project with one broken `package.json`
+     * read as a hand-written site and lose the analyzer it should have had.
+     */
+    const found = manifestsIn([sourceFile("package.json", "{ this is not json")]);
+
+    expect(found).toHaveLength(1);
+    expect(found[0].json).toBeNull();
+  });
+
+  it("ignores vendored manifests, the way detection does", () => {
+    const found = manifestsIn([
+      sourceFile("node_modules/react/package.json", "{}"),
+      sourceFile("main.py", "print(1)"),
+    ]);
+
+    expect(found).toEqual([]);
+  });
+
+  it("skips a manifest whose bytes we never held", () => {
+    // An asset, or a file ingest declined to read. There is nothing to parse
+    // and pretending otherwise would put `json: null` on a file that is fine.
+    const found = manifestsIn([sourceFile("package.json", null)]);
+
+    expect(found).toEqual([]);
+  });
 });

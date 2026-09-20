@@ -1,13 +1,18 @@
 import { eq } from "drizzle-orm";
 
 import type { Db } from "@/db";
-import { analysisRuns } from "@/db/schema";
+import { analysisRuns, projects } from "@/db/schema";
 import {
   compareCommits,
   fetchCommitSha,
   type GithubFailure,
   type RepoComparison,
 } from "@/lib/github/api";
+import {
+  detectProject,
+  manifestsToFetch,
+  type PackageManifest,
+} from "@/lib/github/detect";
 
 import type { AnalysisEventPayloads, EventSink } from "./events";
 import {
@@ -49,6 +54,7 @@ import type {
   AnalyzedNode,
   Analyzer,
   ProjectKind,
+  SourceFile,
 } from "./types";
 import { createTypescriptAnalyzer } from "./typescript/analyzer";
 
@@ -133,6 +139,34 @@ const NOTHING_READABLE_MESSAGE =
 
 /** A failure with something we are willing to show the user. */
 class AnalysisFailure extends Error {}
+
+/**
+ * The manifests detection wants, read from the files we already hold.
+ *
+ * `detectProject` takes parsed `package.json` bodies because the add-project
+ * path fetches them one at a time over the network. By the time a run reaches
+ * here the whole tree is on disk, so they are simply read.
+ *
+ * A manifest that will not parse is still recorded, with `json: null`. Its
+ * presence is a detection signal in its own right — it says "something builds
+ * this" — and dropping it would let a project with one broken `package.json`
+ * read as a hand-written site.
+ */
+export function manifestsIn(files: readonly SourceFile[]): PackageManifest[] {
+  const wanted = new Set(manifestsToFetch(files.map((file) => file.path)));
+  const manifests: PackageManifest[] = [];
+
+  for (const file of files) {
+    if (!wanted.has(file.path) || !file.read) continue;
+    try {
+      manifests.push({ path: file.path, json: JSON.parse(file.read()) });
+    } catch {
+      manifests.push({ path: file.path, json: null });
+    }
+  }
+
+  return manifests;
+}
 
 /**
  * What an analyzer is built from: the model, and a way to hand back what the
@@ -343,9 +377,26 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
     stopped: null,
   };
 
-  const analyzer = selectAnalyzer(project.kind, input.llm ?? null, (result) => {
-    modelPass.stopped = result.stopped;
-  });
+  const chooseAnalyzer = (kind: ProjectKind) =>
+    selectAnalyzer(kind, input.llm ?? null, (result) => {
+      modelPass.stopped = result.stopped;
+    });
+
+  /*
+   * Chosen twice: once from what we recorded, once from what actually arrived.
+   *
+   * The stored `kind` was decided when the project was added and never looked
+   * at again, so a project keeps the answer the product gave on the day it was
+   * connected — for ever. When the Python analyzer landed, every Python
+   * repository already in the database stayed `unsupported` and kept getting
+   * the shallow analyzer no matter how many times it was re-read. The feature
+   * was unreachable for exactly the projects it was written for.
+   *
+   * The first choice still happens here because the run row records an analyzer
+   * name before ingest. The second happens below, once the files are in hand,
+   * which is the only moment the question can actually be answered.
+   */
+  let analyzer = chooseAnalyzer(project.kind);
   let cleanup: (() => Promise<void>) | null = null;
 
   try {
@@ -429,6 +480,46 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
 
     const { root, files, skipped, limitsHit } = outcome.value;
     cleanup = outcome.value.cleanup;
+
+    /*
+     * What this project turned out to be, judged on the files that arrived.
+     *
+     * Only ever widens what we can read, never narrows it: `selectAnalyzer`
+     * falls through to the shallow analyzer for anything nobody claims, so the
+     * worst outcome of a wrong re-reading is the analyzer the project already
+     * had. And it is written back, because the stored kind is what the rest of
+     * the product reads — the sentence on the project card, and the first
+     * choice on the next run before any file is in hand.
+     *
+     * A changed kind means a changed analyzer, which `planChangeScope` already
+     * refuses to go incremental against: the base graph was built by a
+     * different parser and carrying its rows forward would leave the map a
+     * mixture of two with nothing to say which is which.
+     */
+    const detected = detectProject(
+      files.map((file) => file.path),
+      manifestsIn(files),
+    );
+    if (detected.kind !== project.kind) {
+      const rechosen = chooseAnalyzer(detected.kind);
+      if (rechosen) {
+        console.log(
+          "[pipeline] kind changed",
+          runId,
+          `${project.kind} -> ${detected.kind} (${analyzer?.name ?? "none"} -> ${rechosen.name})`,
+        );
+        analyzer = rechosen;
+        await db
+          .update(projects)
+          .set({ kind: detected.kind })
+          .where(eq(projects.id, project.id));
+        await db
+          .update(analysisRuns)
+          .set({ analyzer: rechosen.name })
+          .where(eq(analysisRuns.id, runId));
+      }
+    }
+    if (!analyzer) throw new AnalysisFailure(UNSUPPORTED_MESSAGE);
 
     // The denominator for progress. Assets are excluded because they are never
     // read at all, which on a repo of photographs would leave the bar a third
