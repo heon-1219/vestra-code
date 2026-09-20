@@ -1,8 +1,24 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { z } from "zod";
 
+import { ChangeGraphList } from "./change-graph";
+import {
+  changeDetailSchema,
+  changeFacts,
+  changeHeadline,
+  changesResponseSchema,
+  litSentence,
+  MISSING_NOTE,
+  NO_HISTORY_WORDS,
+  shortChangeSha,
+  STATUS_WORDS,
+  TRUNCATED_NOTE,
+  type ChangeDetail,
+  type ChangesResponse,
+} from "./changes";
+import { layoutChanges } from "./lanes";
 import {
   buildRunEntries,
   runFacts,
@@ -19,31 +35,59 @@ import { exactWhen, formatWhen, parseWhen } from "./when";
 /**
  * The band along the bottom of the workspace: what happened to this project.
  *
- * Every run is a dated snapshot of the map, and the band lays them out newest
- * first with what changed between each one and the one before it. It has two
- * shapes because it lives in two sizes, and the difference is not a
+ * Two histories of one thing, and the band shows both.
+ *
+ *   - **코드를 바꾼 기록** — the repository's own commits, drawn as a branch
+ *     graph: what the person actually did. This is the history they lived
+ *     through, and the one they can recognise.
+ *   - **지도를 그린 기록** — our readings of the project, each a dated snapshot
+ *     of the map, each with what changed between it and the one before.
+ *
+ * They are joined at `analysis_runs.commit_sha`: a change we drew a map from is
+ * marked on its own row rather than listed twice. Neither replaces the other. A
+ * run can fail, and a failure is ours and belongs in our list; a change can be
+ * one we never read, and it still happened.
+ *
+ * It has two shapes because it lives in two sizes, and the difference is not a
  * breakpoint — it is which question there is room to answer:
  *
  *   - **A strip** at its resting 4.5% of the workspace. One line per run, and
  *     the line has to survive being ~18px tall: when, and the one sentence.
- *     Everything else is on the hover.
+ *     The branch graph is deliberately not here: a graph squeezed into 18px is
+ *     a row of dots that means nothing, and the strip's job is a glance.
  *   - **A list** when the band is the maximised pane, which is the state that
- *     exists for reading rather than glancing. The counts, the files, and the
- *     commit go here, because this is the only place they fit honestly.
+ *     exists for reading rather than glancing. The graph, the counts, the
+ *     files and the commit go here, because this is the only place they fit
+ *     honestly.
  *
  * What it will not do is fill either shape with something that is not true. A
  * project with one run shows one run; a project with none says so in a
- * sentence. There is no skeleton row, no example, and no placeholder history —
- * the thing this band replaced was a placeholder, and the product's whole
- * promise is that what is on the screen was measured.
+ * sentence; an uploaded folder is told plainly that it has no commit history
+ * rather than being shown an empty graph. There is no skeleton row, no example
+ * and no placeholder history — the thing this band replaced was a placeholder,
+ * and the product's whole promise is that what is on the screen was measured.
  */
 
 const LOAD_FAILED = "변경 기록을 불러오지 못했어요.";
+const CHANGES_FAILED = "코드를 바꾼 기록을 불러오지 못했어요.";
+const DETAIL_FAILED = "이 변경의 내용을 불러오지 못했어요.";
 const LOADING = "불러오는 중이에요…";
 const NOTHING_YET = "아직 이 프로젝트를 읽은 적이 없어요.";
 const STALE = "새로 불러오지 못했어요.";
 
+/**
+ * How many changed files one panel lists.
+ *
+ * GitHub itself stops at 300 for one commit, and 300 filenames is not a thing
+ * anybody reads off a panel. The remainder is counted out loud rather than
+ * silently dropped, which is the same rule the map's reachable list follows.
+ */
+const FILES_SHOWN = 80;
+
 const messageSchema = z.object({ message: z.string() });
+
+/** What the band asks the map to light, and what it hands back. */
+export type ChangeLight = { sha: string; ids: ReadonlySet<string> };
 
 export type HistoryBandProps = {
   projectId: string;
@@ -58,6 +102,19 @@ export type HistoryBandProps = {
   activeRunId: string | null;
   lastRunId: string | null;
   lastRunStatus: string | null;
+  /**
+   * The change currently lighting the map, owned by the workspace and not
+   * here.
+   *
+   * It lives up there because the map's light has two switches — this and the
+   * search box — and only one of them may be on. A band that kept its own
+   * selection could not know the box had just been typed into, and the person
+   * would be left with a row that looks picked and a map that is not showing
+   * it.
+   */
+  selectedSha?: string | null;
+  /** Light these places on the map, or null to hand the map back. */
+  onLight?: (light: ChangeLight | null) => void;
 };
 
 export function HistoryBand({
@@ -66,9 +123,18 @@ export function HistoryBand({
   activeRunId,
   lastRunId,
   lastRunStatus,
+  selectedSha = null,
+  onLight,
 }: HistoryBandProps) {
   const [loaded, setLoaded] = useState<RunsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const [changes, setChanges] = useState<ChangesResponse | null>(null);
+  const [changesError, setChangesError] = useState<string | null>(null);
+
+  const [detail, setDetail] = useState<ChangeDetail | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [pendingSha, setPendingSha] = useState<string | null>(null);
 
   /*
    * The clock, kept in state and moved on a timer.
@@ -122,9 +188,117 @@ export function HistoryBand({
     return () => controller.abort();
   }, [projectId, activeRunId, lastRunId, lastRunStatus]);
 
+  /*
+   * The repository's own history, read only once somebody has opened the band.
+   *
+   * Unlike the runs list, this one costs a request to GitHub on somebody else's
+   * rate limit — 60 an hour for a user who signed in with Google and has no
+   * token — so it is not spent on a strip that cannot draw a graph anyway. The
+   * latch is a ref written inside the effect rather than state: once the band
+   * has been opened, a run finishing still refreshes the 지도를 그린 곳 marks
+   * even if it has since been collapsed.
+   */
+  const opened = useRef(false);
+  useEffect(() => {
+    if (!expanded && !opened.current) return;
+    opened.current = true;
+
+    const controller = new AbortController();
+
+    void (async () => {
+      try {
+        const response = await fetch(`/api/projects/${projectId}/commits`, {
+          headers: { accept: "application/json" },
+          signal: controller.signal,
+        });
+        const body: unknown = await response.json().catch(() => null);
+
+        if (!response.ok) {
+          const told = messageSchema.safeParse(body);
+          setChangesError(told.success ? told.data.message : CHANGES_FAILED);
+          return;
+        }
+
+        const parsed = changesResponseSchema.safeParse(body);
+        if (!parsed.success) {
+          setChangesError(CHANGES_FAILED);
+          return;
+        }
+        setChanges(parsed.data);
+        setChangesError(null);
+      } catch {
+        if (!controller.signal.aborted) setChangesError(CHANGES_FAILED);
+      }
+    })();
+
+    return () => controller.abort();
+  }, [projectId, expanded, lastRunId, lastRunStatus]);
+
   const entries = useMemo(
     () => (loaded ? buildRunEntries(loaded.runs, loaded.truncated) : []),
     [loaded],
+  );
+
+  /**
+   * What each run that drew a map changed, by run id.
+   *
+   * Built from the same `runHeadline` the list below uses, rather than a second
+   * sentence written for the graph. One fact said twice in two wordings is the
+   * failure D69 was about, and it would be on the same screen here.
+   */
+  const runHeadlines = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const entry of entries) map.set(entry.run.id, runHeadline(entry));
+    return map;
+  }, [entries]);
+
+  const graph = useMemo(
+    () => layoutChanges(changes?.changes ?? []),
+    [changes],
+  );
+
+  const pick = useCallback(
+    async (sha: string) => {
+      // Pressing the change that is already showing hands the map back. The
+      // same rule the pane chips follow, and the only way out of a lit map for
+      // somebody who reached the row with a keyboard.
+      if (selectedSha === sha) {
+        onLight?.(null);
+        return;
+      }
+
+      setPendingSha(sha);
+      setDetailError(null);
+      try {
+        const response = await fetch(`/api/projects/${projectId}/commits/${sha}`, {
+          headers: { accept: "application/json" },
+        });
+        const body: unknown = await response.json().catch(() => null);
+
+        if (!response.ok) {
+          const told = messageSchema.safeParse(body);
+          setDetailError(told.success ? told.data.message : DETAIL_FAILED);
+          return;
+        }
+
+        const parsed = changeDetailSchema.safeParse(body);
+        if (!parsed.success) {
+          setDetailError(DETAIL_FAILED);
+          return;
+        }
+
+        setDetail(parsed.data);
+        // The set is built here, once, rather than in the map's render: it is
+        // read on every frame and a fresh Set per render would rebuild the
+        // beam's memo on every unrelated keystroke in the workspace.
+        onLight?.({ sha, ids: new Set(parsed.data.itemIds) });
+      } catch {
+        setDetailError(DETAIL_FAILED);
+      } finally {
+        setPendingSha(null);
+      }
+    },
+    [projectId, selectedSha, onLight],
   );
 
   /*
@@ -142,6 +316,29 @@ export function HistoryBand({
       : null;
   const stale = loaded !== null && error !== null;
 
+  /*
+   * The same three-way answer for the repository's history, with one extra
+   * case the runs list does not have: a project that has no such history at
+   * all. That is not an empty list and must not be drawn as one.
+   */
+  const changesNote = !changes
+    ? (changesError ?? LOADING)
+    : changes.none
+      ? NO_HISTORY_WORDS[changes.none]
+      : changes.changes.length === 0
+        ? "아직 올라온 변경이 없어요."
+        : null;
+
+  /**
+   * The open change, and only while the workspace agrees it is open.
+   *
+   * Compared during render rather than cleared in an effect. The workspace
+   * drops the light the moment somebody types in the search box, and an effect
+   * watching for that would render one frame of a panel describing a change
+   * the map has already stopped showing.
+   */
+  const open = detail && detail.sha === selectedSha ? detail : null;
+
   if (expanded) {
     return (
       <section
@@ -151,29 +348,82 @@ export function HistoryBand({
         <div className="shrink-0 pb-2">
           <h2 className="display-kr text-[15px] text-said">변경 기록</h2>
           <p className="mt-1 text-[12px] leading-[1.7] text-said-faint">
-            프로젝트를 읽을 때마다 그때의 지도를 하나씩 남겨 둬요. 무엇이 달라졌는지 여기에서 볼 수 있어요.
+            코드를 바꿔 온 기록과, 그때마다 그린 지도를 나란히 보여드려요. 하나를 고르면 무엇이 바뀌었는지 알려드리고, 그 자리를 지도에서 밝혀요.
           </p>
         </div>
 
-        {note ? (
-          <p className="text-[12px] text-said-faint">{note}</p>
-        ) : (
-          <ol className="min-h-0 flex-1 overflow-y-auto pr-2">
-            {entries.map((entry) => (
-              <HistoryRow key={entry.run.id} entry={entry} now={now} />
-            ))}
-          </ol>
-        )}
+        <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
+          <div className="min-h-0 flex-1 overflow-y-auto pr-2">
+            <h3 className="text-[12px] font-medium text-said-soft">
+              코드를 바꾼 기록
+            </h3>
+            {changesNote ? (
+              <p className="mt-1 text-[12px] leading-[1.7] text-said-faint">
+                {changesNote}
+              </p>
+            ) : (
+              <div className="mt-1">
+                <ChangeGraphList
+                  changes={changes?.changes ?? []}
+                  graph={graph}
+                  runHeadlines={runHeadlines}
+                  now={now}
+                  selectedSha={selectedSha}
+                  pendingSha={pendingSha}
+                  onPick={(sha) => void pick(sha)}
+                />
+              </div>
+            )}
+            {/* Why the oldest row above is not the project's first change. */}
+            {changes?.truncated ? (
+              <p className="pt-2 text-[11px] text-said-faint">
+                최근 {changes.changes.length}번만 보여드려요. 그 아래로도 기록이 더 있어요.
+              </p>
+            ) : null}
 
-        {/* Why the oldest row above says 이때 다시 읽었어요 rather than naming
-            itself the first run. Rendered only when there is something to say,
-            so it never costs a line of an empty band. */}
-        {loaded?.truncated || stale ? (
-          <p className="shrink-0 pt-2 text-[11px] text-said-faint">
-            {loaded?.truncated ? `최근 ${entries.length}번만 보여드려요. ` : null}
-            {stale ? STALE : null}
-          </p>
-        ) : null}
+            <h3 className="mt-7 text-[12px] font-medium text-said-soft">
+              지도를 그린 기록
+            </h3>
+            {note ? (
+              <p className="mt-1 text-[12px] text-said-faint">{note}</p>
+            ) : (
+              <ol className="mt-1">
+                {entries.map((entry) => (
+                  <HistoryRow key={entry.run.id} entry={entry} now={now} />
+                ))}
+              </ol>
+            )}
+
+            {/* Why the oldest row above says 이때 다시 읽었어요 rather than naming
+                itself the first run. Rendered only when there is something to say,
+                so it never costs a line of an empty band. */}
+            {loaded?.truncated || stale ? (
+              <p className="pt-2 text-[11px] text-said-faint">
+                {loaded?.truncated ? `최근 ${entries.length}번만 보여드려요. ` : null}
+                {stale ? STALE : null}
+              </p>
+            ) : null}
+          </div>
+
+          {open || detailError ? (
+            <aside
+              aria-label="고른 변경"
+              className="min-h-0 shrink-0 overflow-y-auto border-edge lg:w-[24rem] lg:border-l lg:pl-4"
+            >
+              {detailError ? (
+                <p role="alert" className="text-[12px] leading-[1.7] text-c4">
+                  {detailError}
+                </p>
+              ) : open ? (
+                <ChangeDetailPanel
+                  detail={open}
+                  now={now}
+                  onClose={() => onLight?.(null)}
+                />
+              ) : null}
+            </aside>
+          ) : null}
+        </div>
       </section>
     );
   }
@@ -184,6 +434,29 @@ export function HistoryBand({
       className="flex min-w-0 flex-1 items-center gap-3 self-stretch overflow-hidden"
     >
       <span className="shrink-0">변경 기록</span>
+      {/*
+        The one control the strip must carry.
+
+        A change can be picked while the band is open and the band then put
+        back to a strip, leaving the map showing an answer whose only switch is
+        off screen — which reads as the map being stuck rather than as an
+        answer being shown.
+
+        It says 고른 변경 and not 지도에 비추는 중, because a change that touched
+        nothing the map holds is picked without anything being lit, and that is
+        the common case on a project whose analyzer only places files. A button
+        claiming the map is lit beside a map that is not would be the one
+        sentence on this strip that is not true.
+      */}
+      {selectedSha ? (
+        <button
+          type="button"
+          onClick={() => onLight?.(null)}
+          className="shrink-0 rounded-md border border-edge-lit px-2 leading-[1.5] text-said-soft transition-colors hover:text-said"
+        >
+          고른 변경 지우기
+        </button>
+      ) : null}
       {note ? (
         <span className="truncate">{note}</span>
       ) : (
@@ -207,6 +480,125 @@ export function HistoryBand({
         </ol>
       )}
     </section>
+  );
+}
+
+/**
+ * What one change was, in plain language.
+ *
+ * Not a diff, and the distinction is the whole reason this panel exists. A diff
+ * assumes the reader can read code, which is the one assumption this product
+ * does not make. What it says instead is: when, who, what the person wrote
+ * about it in their own words, how many files moved and in which direction,
+ * and how much of that landed on the map.
+ */
+function ChangeDetailPanel({
+  detail,
+  now,
+  onClose,
+}: {
+  detail: ChangeDetail;
+  now: number;
+  onClose: () => void;
+}) {
+  const at = parseWhen(detail.at);
+  const facts = changeFacts(detail);
+  const shown = detail.files.slice(0, FILES_SHOWN);
+  const hidden = detail.files.length - shown.length;
+
+  return (
+    <div className="pb-2">
+      <div className="flex items-start gap-2">
+        <h3 className="min-w-0 flex-1 text-[13px] leading-[1.6] text-said">
+          {detail.title}
+        </h3>
+        <button
+          type="button"
+          onClick={onClose}
+          className="shrink-0 text-[11px] text-said-faint transition-colors hover:text-said-soft"
+        >
+          닫기
+        </button>
+      </div>
+
+      <p className="mt-1 text-[11px] leading-[1.7] text-said-faint">
+        {[at ? exactWhen(at) : null, at ? formatWhen(at, new Date(now)) : null, detail.authorName]
+          .filter(Boolean)
+          .join(" · ")}
+      </p>
+
+      {detail.body ? (
+        // The person's own words, kept as they wrote them — line breaks and
+        // all. Nothing here rewrites a commit message: we have no better
+        // account of what they were doing than the one they left.
+        <p className="mt-2 whitespace-pre-wrap text-[12px] leading-[1.7] text-said-soft">
+          {detail.body}
+        </p>
+      ) : null}
+
+      <p className="mt-3 text-[13px] leading-[1.6] text-said-soft">
+        {changeHeadline(detail)}
+      </p>
+      {facts.length > 0 ? (
+        <p className="mt-1 text-[11px] leading-[1.7] text-said-faint">
+          {facts.join(" · ")}
+        </p>
+      ) : null}
+
+      <p className="mt-2 text-[12px] leading-[1.7] text-said-faint">
+        {litSentence(detail)}
+      </p>
+
+      {detail.fileListMissing ? (
+        <p className="mt-2 text-[11px] leading-[1.7] text-said-faint">{MISSING_NOTE}</p>
+      ) : null}
+      {detail.fileListTruncated ? (
+        <p className="mt-2 text-[11px] leading-[1.7] text-said-faint">{TRUNCATED_NOTE}</p>
+      ) : null}
+
+      {shown.length > 0 ? (
+        <ul className="mt-3 border-t border-edge pt-2">
+          {shown.map((file) => (
+            <li
+              key={`${file.path}-${file.status}`}
+              className="flex items-baseline gap-2 py-1"
+            >
+              {/*
+                A file the map does not hold is still listed, dimmed. It changed
+                — that is a fact about their project — and leaving it out would
+                make the panel's own count disagree with its own list.
+              */}
+              <span
+                className={`min-w-0 flex-1 truncate text-[11px] leading-[1.6] ${
+                  file.onMap ? "text-said-soft" : "text-said-faint"
+                }`}
+                title={file.path}
+              >
+                {file.path}
+              </span>
+              <span className="shrink-0 text-[10px] text-said-faint">
+                {STATUS_WORDS[file.status]}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {hidden > 0 ? (
+        <p className="mt-1 text-[11px] text-said-faint">
+          그 밖에 {hidden.toLocaleString("ko-KR")}개가 더 있어요.
+        </p>
+      ) : null}
+
+      <p className="mt-3 text-[11px] text-said-faint">
+        이 변경의 번호{" "}
+        <code
+          title={`이 번호로 그때의 코드를 찾을 수 있어요. 전체: ${detail.sha}`}
+          className="text-said-soft"
+        >
+          {shortChangeSha(detail.sha)}
+        </code>
+      </p>
+    </div>
   );
 }
 

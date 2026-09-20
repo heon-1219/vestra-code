@@ -54,6 +54,44 @@ const NO_MATCHES: ReadonlySet<string> = new Set<string>();
 
 export const IDLE_BEAM: BeamResult = { active: false, matched: NO_MATCHES };
 
+/**
+ * The same light, pointed by something other than typing.
+ *
+ * ## Why this is the beam and not a fourth mechanism
+ *
+ * `scene.ts` warns in writing against adding a second private idea of "near",
+ * and the map already has three ways of saying "look here": `selection` (a
+ * Focus and its one hop), `beam` (a set of items that match, everything else
+ * at 30%), and `trail` (the walk an answer was found by, which takes the
+ * lighting over while it is set). A change picked in the 변경 기록 band is a
+ * *set of items that match* — the places living in the files that change
+ * touched — which is what `beam` already means, word for word. So it becomes a
+ * beam rather than a fourth path.
+ *
+ * The alternative was a `changed` highlight with its own dimming. It would
+ * have needed its own answer to every question the beam has already answered:
+ * what happens when a change is lit and somebody types, what 30% means when
+ * two dimmings overlap, what the sentence under the canvas says. Each of those
+ * answers is a chance for the map to dim for two reasons at once, which is the
+ * failure D59 and `scene.ts`'s own warning both exist to prevent. One light
+ * with two switches has one answer to all of them.
+ *
+ * The switches are exclusive, and the workspace is where that is enforced:
+ * typing drops the picked change, and picking a change clears the box. Not a
+ * precedence rule here, because a precedence rule would leave the losing one
+ * *set and invisible* — a person would see their own search do nothing.
+ *
+ * An empty set returns the idle beam rather than an active one that matches
+ * nothing. An active beam over an empty set dims the entire map and lights
+ * nothing, which reads as the project having vanished — D59 exactly — when the
+ * true answer is "this change did not touch anything on the map", and that is a
+ * sentence, not a lighting state.
+ */
+export function beamOf(ids: ReadonlySet<string>): BeamResult {
+  if (ids.size === 0) return IDLE_BEAM;
+  return { active: true, matched: ids };
+}
+
 const CHO =
   "ㄱㄲㄴㄷㄸㄹㅁㅂㅃㅅㅆㅇㅈㅉㅊㅋㅌㅍㅎ";
 const JUNG =

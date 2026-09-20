@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { buildBeamIndex, choseongOf, isChoseongQuery, runBeam, toHangul } from "./beam";
+import {
+  beamOf,
+  buildBeamIndex,
+  choseongOf,
+  isChoseongQuery,
+  runBeam,
+  toHangul,
+} from "./beam";
 import type { BeamItem } from "./beam";
 
 const items: BeamItem[] = [
@@ -143,5 +150,29 @@ describe("runBeam", () => {
      * is a red suite that means nothing and trains everyone to re-run it.
      */
     expect(Date.now() - started).toBeLessThan(800);
+  });
+});
+
+describe("beamOf", () => {
+  it("lights exactly the items it was handed", () => {
+    const result = beamOf(new Set(["pay", "cart"]));
+    expect(result.active).toBe(true);
+    expect([...result.matched].sort()).toEqual(["cart", "pay"]);
+  });
+
+  /*
+   * The empty set is the case this exists for.
+   *
+   * A change that touched nothing the map holds — a README, a lockfile, a
+   * config — is the ordinary answer on a project whose analyzer only places
+   * files. An active beam over an empty set dims every item on the map to 30%
+   * and lights none of them, which is the map telling an already-anxious
+   * person that their project has gone (D59). The honest answer is a sentence,
+   * so the lighting stays idle and the band says it.
+   */
+  it("stays idle for an empty set rather than dimming the whole map", () => {
+    const result = beamOf(new Set<string>());
+    expect(result.active).toBe(false);
+    expect(result.matched.size).toBe(0);
   });
 });

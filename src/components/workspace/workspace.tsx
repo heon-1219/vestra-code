@@ -11,9 +11,9 @@ import { describeAll } from "@/lib/graph/describe";
 import type { GraphView } from "@/lib/graph/view";
 
 import { AnalysisScreen } from "./analysis-screen";
-import { HistoryBand } from "./history/history-band";
+import { HistoryBand, type ChangeLight } from "./history/history-band";
 import { DistrictMap } from "./map/district-map";
-import { buildBeamIndex, runBeam, IDLE_BEAM } from "./map/beam";
+import { beamOf, buildBeamIndex, runBeam, IDLE_BEAM } from "./map/beam";
 import {
   DEFAULT_GROUPING,
   groupingOptions,
@@ -123,6 +123,29 @@ export function Workspace({
   const [query, setQuery] = useState("");
   const [locks, setLocks] = useState<LockMap>({});
   const inputRef = useRef<HTMLInputElement>(null);
+
+  /**
+   * The change from the 변경 기록 band that is lighting the map, if any.
+   *
+   * Owned here rather than in the band because the map has **one** light and
+   * two switches for it — the search box in this toolbar and a change picked
+   * in the band — and only one may be on. Keeping both in one component is
+   * what makes that enforceable: picking a change empties the box, typing in
+   * the box drops the change, and neither can be left set and invisible. See
+   * `beamOf` for why a change's places are the beam rather than a fourth way
+   * of dimming the map.
+   */
+  const [change, setChange] = useState<ChangeLight | null>(null);
+
+  const onLight = useCallback((light: ChangeLight | null) => {
+    setChange(light);
+    if (!light) return;
+    // The input is uncontrolled, so its value is cleared the same way the
+    // 지우기 button clears it: written once, never written back during render,
+    // so a 한글 syllable being composed is never replaced mid-word.
+    if (inputRef.current) inputRef.current.value = "";
+    setQuery("");
+  }, []);
 
   /**
    * What the map is grouped by.
@@ -245,9 +268,25 @@ export function Workspace({
   // because the map's lives inside the canvas component — both are rebuilt only
   // when the items change, and cost well under a millisecond at this size.
   const beamIndex = useMemo(() => buildBeamIndex(view.items), [view.items]);
+  /*
+   * One light, two switches — and the file list lights with the same one the
+   * map does, whichever switch is on.
+   *
+   * A change that touched nothing the map holds is not a switch being on. It
+   * is the ordinary answer on a project whose analyzer only places files — a
+   * commit to a README, a lockfile, a config — and it hands the light back to
+   * the box rather than taking it away and lighting nothing. The band says the
+   * set was empty in words; the lighting does not try to.
+   */
+  const changeLit = change !== null && change.ids.size > 0;
   const beam = useMemo(
-    () => (query.trim() === "" ? IDLE_BEAM : runBeam(beamIndex, query)),
-    [beamIndex, query],
+    () =>
+      changeLit && change
+        ? beamOf(change.ids)
+        : query.trim() === ""
+          ? IDLE_BEAM
+          : runBeam(beamIndex, query),
+    [changeLit, change, beamIndex, query],
   );
 
   const groupings = useMemo(
@@ -428,7 +467,14 @@ export function Workspace({
               ref={inputRef}
               type="search"
               defaultValue=""
-              onChange={(event) => setQuery(event.currentTarget.value)}
+              onChange={(event) => {
+                setQuery(event.currentTarget.value);
+                // Typing takes the light back from the band. Done here rather
+                // than by a precedence rule in the map, so a picked change is
+                // never left set and unlit — which would look like a search
+                // that did nothing.
+                setChange(null);
+              }}
               disabled={running || !hasGraph}
               placeholder={
                 running ? "다 읽으면 찾아볼 수 있어요" : "찾고 싶은 것을 적어 보세요"
@@ -492,6 +538,9 @@ export function Workspace({
                 // out to be a dead end, and the person cannot tell the
                 // difference until it stops.
                 trail={walk?.trail ?? null}
+                // The places a picked change touched. The same light the beam
+                // is, aimed by the band instead of by the box.
+                highlight={change?.ids ?? null}
                 className="absolute inset-0"
               />
             ) : (
@@ -637,6 +686,8 @@ export function Workspace({
           activeRunId={runId}
           lastRunId={view.lastRun?.id ?? null}
           lastRunStatus={view.lastRun?.status ?? null}
+          selectedSha={change?.sha ?? null}
+          onLight={onLight}
         />
       </div>
       </div>

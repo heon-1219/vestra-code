@@ -15,7 +15,7 @@ import type { QaTrail } from "@/qa";
 
 import { previewTargetFor } from "../preview/file-preview";
 
-import { buildBeamIndex, runBeam } from "./beam";
+import { beamOf, buildBeamIndex, runBeam } from "./beam";
 import {
   districtLookup,
   groupItems,
@@ -135,6 +135,20 @@ export type DistrictMapProps = {
    * came from the question they asked. Clear it to hand the map back.
    */
   trail?: QaTrail | null;
+  /**
+   * A set of items to light instead of whatever is typed, when one is set.
+   *
+   * This is the same light the query produces, aimed by something else — a
+   * change picked in the 변경 기록 band lights the places that live in the
+   * files it touched, which is "this set of items matches", which is what the
+   * beam already means. See `beamOf` in `beam.ts` for why it is not a fourth
+   * dimming path of its own.
+   *
+   * It replaces the query rather than combining with it, and the two are kept
+   * mutually exclusive by whoever owns them, so the map never dims for two
+   * reasons at once.
+   */
+  highlight?: ReadonlySet<string> | null;
   className?: string;
 };
 
@@ -165,6 +179,7 @@ export function DistrictMap({
   onOpen,
   onHoverChange,
   trail: qaTrail = null,
+  highlight = null,
   className,
 }: DistrictMapProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -282,7 +297,23 @@ export function DistrictMap({
   const hubs = useMemo(() => hubsOf(layout, items), [layout, items]);
 
   const beamIndex = useMemo(() => buildBeamIndex(items), [items]);
-  const beam = useMemo(() => runBeam(beamIndex, query), [beamIndex, query]);
+  /*
+   * One light, two switches. A highlight handed in replaces the typed query
+   * rather than adding to it — see `beamOf` for why a change's items are a
+   * beam and not a fourth way of dimming the map.
+   *
+   * An EMPTY highlight is not a highlight. It is the common answer on a
+   * shallowly-analysed project, where a commit to a README or a config touches
+   * nothing the map holds, and treating it as one would take the query's light
+   * away and put nothing in its place: the person's own search would go out
+   * because of a change they clicked on. The set being empty is said in words
+   * by the band instead.
+   */
+  const highlighting = highlight !== null && highlight.size > 0;
+  const beam = useMemo(
+    () => (highlighting && highlight ? beamOf(highlight) : runBeam(beamIndex, query)),
+    [highlighting, highlight, beamIndex, query],
+  );
 
   const cameraRef = useRef<Camera>({ x: 0, y: 0, scale: 1 });
   const tweenRef = useRef<{ from: Camera; to: Camera; started: number } | null>(null);
@@ -851,8 +882,13 @@ export function DistrictMap({
     grouped
       ? "동네마다 색을 따로 썼어요."
       : "동네가 하나뿐이라 색으로는 나누지 않았어요.",
+    // Same light, so the same shape of sentence — but it has to name which
+    // switch is on. "찾는 말과 맞는 것" beside a change nobody searched for
+    // would be the one sentence on this screen that is not true.
     beam.active
-      ? `찾는 말과 맞는 것은 ${beam.matched.size.toLocaleString("ko-KR")}개예요. 나머지는 흐리게 보일 뿐 그대로 있어요.`
+      ? highlighting
+        ? `고른 변경이 건드린 곳은 ${beam.matched.size.toLocaleString("ko-KR")}개예요. 나머지는 흐리게 보일 뿐 그대로 있어요.`
+        : `찾는 말과 맞는 것은 ${beam.matched.size.toLocaleString("ko-KR")}개예요. 나머지는 흐리게 보일 뿐 그대로 있어요.`
       : null,
     selectedName
       ? `지금 고른 것은 ${displayNameOf(selectedName)}, 바로 이어진 것은 ${Math.max(selection.lit.size - 1, 0).toLocaleString("ko-KR")}개예요. 나머지는 흐리게 보일 뿐 그대로 있고, 아래 목록에서 모두 고를 수 있어요.`
