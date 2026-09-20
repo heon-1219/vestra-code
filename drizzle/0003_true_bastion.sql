@@ -1,0 +1,1 @@
+ALTER TABLE "analysis_runs" ADD COLUMN "analyzer_version" text;

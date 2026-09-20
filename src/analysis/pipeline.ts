@@ -1,23 +1,45 @@
 import { eq } from "drizzle-orm";
-import { z } from "zod";
 
 import type { Db } from "@/db";
 import { analysisRuns } from "@/db/schema";
+import {
+  compareCommits,
+  fetchCommitSha,
+  type GithubFailure,
+  type RepoComparison,
+} from "@/lib/github/api";
 
 import type { EventSink } from "./events";
+import {
+  ANALYZER_VERSION,
+  FULL_REASON_NOTES,
+  loadPreviousShape,
+  planChangeScope,
+  resolveWriteScope,
+  selectOwnedRows,
+  type ChangeScope,
+  type WriteScope,
+} from "./incremental";
 import { ingestRepo, LIMIT_MESSAGES, type IngestOutcome } from "./ingest";
 import { ingestStoredUpload } from "./ingest/restore";
 import { ingestUpload, type UploadPayload } from "./ingest/upload";
-import { persistGraph, promoteRun } from "./persist";
+import { graphSize, persistGraph, promoteRun } from "./persist";
 import {
   createRun,
   createRunStore,
   findActiveRun,
+  findBaseRun,
   reapStaleRun,
   type RunStore,
 } from "./run-store";
 import { createShallowAnalyzer } from "./shallow/analyzer";
-import type { AnalysisEmitter, Analyzer, ProjectKind } from "./types";
+import type {
+  AnalysisEmitter,
+  AnalyzedEdge,
+  AnalyzedNode,
+  Analyzer,
+  ProjectKind,
+} from "./types";
 import { createTypescriptAnalyzer } from "./typescript/analyzer";
 
 /**
@@ -222,7 +244,14 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
 
     await db
       .update(analysisRuns)
-      .set({ status: "running", phase: "ingest", analyzer: analyzer.name })
+      .set({
+        status: "running",
+        phase: "ingest",
+        analyzer: analyzer.name,
+        // Recorded on the run that produces the graph, not read from it, so the
+        // *next* run can refuse to carry forward rows a different parser made.
+        analyzerVersion: ANALYZER_VERSION,
+      })
       .where(eq(analysisRuns.id, runId));
     await emit("phase.changed", { phase: "ingest" });
 
@@ -232,7 +261,7 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
     // saw.
     const commitSha =
       project.source === "github"
-        ? await resolveCommitSha(
+        ? await fetchCommitSha(
             project.repoOwner,
             project.repoName,
             project.defaultBranch,
@@ -245,6 +274,19 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
         .set({ commitSha })
         .where(eq(analysisRuns.id, runId));
     }
+
+    // Ask what changed before downloading anything. It cannot make this run
+    // faster — Pass 1 has to see the whole tree either way, for reasons
+    // measured in `incremental.ts` — but it decides which rows this run
+    // re-states, and it is the answer Pass 2 will need when it lands.
+    const changeScope = await planRun({
+      db,
+      project,
+      analyzerName: analyzer.name,
+      headSha: commitSha,
+      githubToken,
+      runId,
+    });
 
     let outcome: IngestOutcome;
     if (project.source === "upload") {
@@ -348,7 +390,44 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
       throw new AnalysisFailure(NOTHING_READABLE_MESSAGE);
     }
 
-    const written = await persistGraph(db, project.id, runId, graph.nodes, graph.edges);
+    // With the graph in hand, decide how much of it to write. Every escalation
+    // to a full write is free at this point — the analysis already happened —
+    // which is exactly why the decision is taken here rather than up front.
+    const writeScope: WriteScope = await resolveWrite(
+      db,
+      project.id,
+      changeScope,
+      files.map((file) => file.path),
+      graph,
+    );
+
+    if (writeScope.mode === "incremental") {
+      console.log(
+        "[pipeline] incremental write",
+        runId,
+        {
+          changed: changeScope.mode === "incremental" ? changeScope.changed.size : 0,
+          rewriting: writeScope.touched.size,
+          carriedForward: writeScope.carryForward.length,
+        },
+      );
+    } else {
+      // Never silent. A feature that quietly stops working is worse than one
+      // that never worked, because nobody goes looking for it.
+      console.log(
+        "[pipeline] full write",
+        runId,
+        writeScope.reason,
+        FULL_REASON_NOTES[writeScope.reason],
+      );
+    }
+
+    const slice =
+      writeScope.mode === "incremental"
+        ? selectOwnedRows(graph, writeScope.touched)
+        : graph;
+
+    const written = await persistGraph(db, project.id, runId, slice.nodes, slice.edges);
     if (written.nodesDropped > 0 || written.edgesDropped > 0) {
       console.warn(
         "[pipeline] dropped rows",
@@ -361,8 +440,24 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
     // Carry forward, then sweep, in one transaction — and only here, on the
     // success path. A file that became unparseable this run still has correct
     // rows from the last one, and sweeping them takes every connection from
-    // healthy files with them through the cascade (D37).
-    await promoteRun(db, project.id, runId, [...skippedPaths]);
+    // healthy files with them through the cascade (D37). An unchanged file is
+    // carried forward by the same mechanism and a narrower rule: see
+    // `CarryForwardScope`.
+    await promoteRun(
+      db,
+      project.id,
+      runId,
+      [...skippedPaths],
+      writeScope.mode === "incremental" ? writeScope.carryForward : [],
+    );
+
+    // What the user is told is the size of the map, not the size of this run's
+    // write. A full run is left counting exactly what it counted before, so the
+    // only behaviour that changes is the incremental case.
+    const measured =
+      writeScope.mode === "incremental"
+        ? graphSize(project.id, graph.nodes, graph.edges)
+        : { nodes: written.nodesWritten, edges: written.edgesWritten };
 
     // Row first, then the event. A client that closes on `run.completed` and
     // then reads the project would otherwise be able to see a run still marked
@@ -373,16 +468,16 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
         status: "completed",
         phase: "done",
         filesParsed,
-        nodeCount: written.nodesWritten,
-        edgeCount: written.edgesWritten,
+        nodeCount: measured.nodes,
+        edgeCount: measured.edges,
         filesSkipped: [...skippedPaths],
         finishedAt: new Date(),
       })
       .where(eq(analysisRuns.id, runId));
 
     await emit("run.completed", {
-      nodeCount: written.nodesWritten,
-      edgeCount: written.edgesWritten,
+      nodeCount: measured.nodes,
+      edgeCount: measured.edges,
       filesParsed,
       filesSkipped: skippedPaths.size,
       limits: limitsHit.map((limit) => LIMIT_MESSAGES[limit]),
@@ -428,39 +523,131 @@ function fire(promise: Promise<unknown>): void {
   });
 }
 
-const commitSchema = z.object({ sha: z.string() });
+/**
+ * Find the commit this project's graph was last measured at, and ask GitHub
+ * what has happened since.
+ *
+ * Everything that can go wrong here resolves to a full run, never to a partial
+ * one: no base, an unreadable answer, a base GitHub has forgotten. The
+ * decisions themselves live in `incremental.ts` so they can be tested without
+ * a network; this function only gathers the facts they need.
+ */
+async function planRun(input: {
+  db: Db;
+  project: AnalysisProject;
+  analyzerName: string;
+  headSha: string | null;
+  githubToken: string | null;
+  runId: string;
+}): Promise<ChangeScope> {
+  // Every failure in here is a failure of an optimisation, never of the run.
+  // A connection blip while reading the base run would otherwise turn "we
+  // could have written fewer rows" into "your analysis failed", which is a
+  // strictly worse product than not having this feature at all.
+  try {
+    return await planRunOrThrow(input);
+  } catch (error) {
+    console.error("[pipeline] could not plan an incremental run", input.runId, error);
+    return { mode: "full", reason: "compare_failed" };
+  }
+}
 
 /**
- * The commit a ref currently points at, or null.
+ * Decide the write scope, degrading to a full write rather than failing.
  *
- * Belongs in `src/lib/github/api.ts` beside the other calls; it is here because
- * that file is being edited elsewhere. Best effort by design — a run without a
- * recorded commit is a graph that cannot be dated, which is worth strictly less
- * than a run that did not happen.
+ * The graph is already computed by the time this runs, so a full write costs
+ * one more statement. That asymmetry is why the read below is allowed to fail
+ * at all: there is a correct answer available for free.
  */
-async function resolveCommitSha(
-  owner: string,
-  repo: string,
-  ref: string,
-  token: string | null,
-): Promise<string | null> {
+async function resolveWrite(
+  db: Db,
+  projectId: string,
+  changeScope: ChangeScope,
+  analysedPaths: string[],
+  graph: { nodes: AnalyzedNode[]; edges: AnalyzedEdge[] },
+): Promise<WriteScope> {
+  if (changeScope.mode !== "incremental") return changeScope;
   try {
-    const response = await fetch(
-      `https://api.github.com/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`,
-      {
-        headers: {
-          Accept: "application/vnd.github+json",
-          "User-Agent": "vestra-code",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
-        cache: "no-store",
-      },
-    );
-    if (!response.ok) return null;
-
-    const parsed = commitSchema.safeParse(await response.json());
-    return parsed.success ? parsed.data.sha : null;
-  } catch {
-    return null;
+    return resolveWriteScope({
+      projectId,
+      scope: changeScope,
+      analysedPaths,
+      graph,
+      previous: await loadPreviousShape(db, projectId),
+    });
+  } catch (error) {
+    console.error("[pipeline] could not read the previous graph", projectId, error);
+    return { mode: "full", reason: "compare_failed" };
   }
+}
+
+async function planRunOrThrow(input: {
+  db: Db;
+  project: AnalysisProject;
+  analyzerName: string;
+  headSha: string | null;
+  githubToken: string | null;
+  runId: string;
+}): Promise<ChangeScope> {
+  const { db, project, analyzerName, headSha, githubToken, runId } = input;
+
+  if (project.source !== "github") {
+    return planChangeScope({
+      source: project.source,
+      baseRun: null,
+      headSha,
+      analyzer: analyzerName,
+      comparison: null,
+      comparisonError: null,
+    });
+  }
+
+  const base = await findBaseRun(db, project.id);
+  const baseRun = base
+    ? {
+        commitSha: base.commitSha,
+        analyzer: base.analyzer,
+        analyzerVersion: base.analyzerVersion,
+      }
+    : null;
+
+  let comparison: RepoComparison | null = null;
+  let comparisonError: GithubFailure | null = null;
+
+  if (baseRun?.commitSha && headSha) {
+    if (baseRun.commitSha === headSha) {
+      // Nobody pushed. Asking GitHub to compare a commit with itself is a
+      // request we already know the answer to, and a re-read of an unchanged
+      // repository is the most common reason this path runs at all.
+      comparison = { status: "identical", files: [], gap: null };
+    } else {
+      const result = await compareCommits(
+        project.repoOwner,
+        project.repoName,
+        baseRun.commitSha,
+        headSha,
+        githubToken,
+      );
+      if (result.ok) comparison = result.value;
+      else comparisonError = result.error;
+    }
+  }
+
+  const scope = planChangeScope({
+    source: project.source,
+    baseRun,
+    headSha,
+    analyzer: analyzerName,
+    comparison,
+    comparisonError,
+  });
+
+  if (scope.mode === "incremental") {
+    console.log("[pipeline] compared", runId, {
+      base: scope.base.slice(0, 7),
+      head: scope.head.slice(0, 7),
+      changedFiles: scope.changed.size,
+    });
+  }
+  return scope;
 }

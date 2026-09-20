@@ -149,6 +149,32 @@ export async function findActiveRun(
 }
 
 /**
+ * The run the stored graph was last measured against.
+ *
+ * This is the base an incremental re-analysis compares the new commit to, and
+ * "completed" is load-bearing: a failed run never sweeps (D20), so the rows in
+ * the table still belong to the last run that finished, not to the last run
+ * that started. Taking the newest run regardless of status would date the
+ * graph to a commit it was never measured at, and every file that changed
+ * between the two would be treated as unchanged — stale rows, silently.
+ */
+export async function findBaseRun(
+  db: Db,
+  projectId: string,
+): Promise<AnalysisRunRow | null> {
+  const [run] = await db
+    .select()
+    .from(analysisRuns)
+    .where(
+      and(eq(analysisRuns.projectId, projectId), eq(analysisRuns.status, "completed")),
+    )
+    .orderBy(desc(analysisRuns.finishedAt), desc(analysisRuns.startedAt))
+    .limit(1);
+
+  return run ?? null;
+}
+
+/**
  * Close out a run whose process is gone.
  *
  * The pipeline runs detached from any request, so nothing survives a restart or

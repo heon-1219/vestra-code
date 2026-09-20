@@ -175,6 +175,17 @@ export const analysisRuns = pgTable(
     commitSha: text("commit_sha"),
     /** Which analyzer ran, e.g. "typescript" or "web". */
     analyzer: text("analyzer"),
+    /**
+     * Which version of that analyzer, so an incremental re-analysis can refuse
+     * to carry forward rows a different parser produced.
+     *
+     * Without it, a deploy that improves the parser would leave every file
+     * nobody touched holding the old parser's output for ever: the sweep never
+     * reaches those rows because each run keeps stamping them, and the graph
+     * ends up a mix of two versions with nothing to say which is which. See
+     * `ANALYZER_VERSION` in `src/analysis/incremental.ts`.
+     */
+    analyzerVersion: text("analyzer_version"),
 
     filesParsed: integer("files_parsed").notNull().default(0),
     nodeCount: integer("node_count").notNull().default(0),

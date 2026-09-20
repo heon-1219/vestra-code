@@ -105,39 +105,12 @@ export async function persistGraph(
 ): Promise<PersistResult> {
   const origin = options.origin ?? "static";
 
-  // Keyed by id, which is a dedupe and not merely a tidy one: Postgres rejects
-  // an ON CONFLICT DO UPDATE whose VALUES name the same key twice ("cannot
-  // affect row a second time"), so one duplicate ref from any analyzer would
-  // fail the whole statement.
-  const nodeRows = new Map<string, typeof nodesTable.$inferInsert>();
-  let nodesDropped = 0;
-
-  for (const node of nodes) {
-    const path = normalizePath(node.ref.filePath);
-    // A package node carries a name and no file; a file node carries a path and
-    // no name. Something with neither cannot be addressed or shown, and `name`
-    // is NOT NULL, so it is dropped rather than written as an empty string.
-    const name = node.ref.name ?? path;
-    if (name === "") {
-      nodesDropped += 1;
-      continue;
-    }
-
-    const id = nodeId(projectId, node.ref);
-    nodeRows.set(id, {
-      id,
-      projectId,
-      type: node.ref.type,
-      kind: node.kind ?? null,
-      name,
-      filePath: path === "" ? null : path,
-      startLine: node.startLine ?? null,
-      endLine: node.endLine ?? null,
-      origin,
-      metadata: node.metadata ?? {},
-      lastSeenRunId: runId,
-    });
-  }
+  const { rows: nodeRows, dropped: nodesDropped } = buildNodeRows(
+    projectId,
+    runId,
+    nodes,
+    origin,
+  );
 
   for (const rows of chunk([...nodeRows.values()], WRITE_CHUNK)) {
     await db
@@ -164,17 +137,14 @@ export async function persistGraph(
   }
 
   const written = new Set(nodeRows.keys());
-
-  const candidates = edges.map((edge) => ({
-    edge,
-    sourceId: nodeId(projectId, edge.source),
-    targetId: nodeId(projectId, edge.target),
-  }));
+  const candidates = resolveEdgeEndpoints(projectId, edges);
 
   // An endpoint this pass did not write may still be a real row: Pass 2's
   // `belongs_to` edges point at symbols Pass 1 wrote in an earlier call of the
-  // same run. So ask the database about the ids we cannot vouch for ourselves,
-  // rather than dropping every edge that crosses a pass boundary.
+  // same run, and an incremental run writes only the rows of the files that
+  // moved while the rest stay in the table untouched. So ask the database
+  // about the ids we cannot vouch for ourselves, rather than dropping every
+  // edge that crosses a pass — or a run — boundary.
   const unknown = new Set<string>();
   for (const candidate of candidates) {
     if (!written.has(candidate.sourceId)) unknown.add(candidate.sourceId);
@@ -182,38 +152,17 @@ export async function persistGraph(
   }
   const present = await existingNodeIds(db, projectId, [...unknown]);
 
-  const edgeRows = new Map<string, typeof edgesTable.$inferInsert>();
-  const droppedSamples: string[] = [];
-  let edgesDropped = 0;
-
-  for (const { edge, sourceId, targetId } of candidates) {
-    const resolved =
-      (written.has(sourceId) || present.has(sourceId)) &&
-      (written.has(targetId) || present.has(targetId));
-
-    if (!resolved) {
-      edgesDropped += 1;
-      if (droppedSamples.length < 10) {
-        droppedSamples.push(
-          `${edge.type} ${describeRef(edge.source)} -> ${describeRef(edge.target)}`,
-        );
-      }
-      continue;
-    }
-
-    const id = edgeId(projectId, edge.type, sourceId, targetId);
-    edgeRows.set(id, {
-      id,
-      projectId,
-      sourceNodeId: sourceId,
-      targetNodeId: targetId,
-      type: edge.type,
-      confidence: edge.confidence,
-      origin,
-      metadata: edge.metadata ?? {},
-      lastSeenRunId: runId,
-    });
-  }
+  const {
+    rows: edgeRows,
+    dropped: edgesDropped,
+    droppedSamples,
+  } = buildEdgeRows(
+    projectId,
+    runId,
+    candidates,
+    origin,
+    (id) => written.has(id) || present.has(id),
+  );
 
   for (const rows of chunk([...edgeRows.values()], WRITE_CHUNK)) {
     await db
@@ -241,6 +190,167 @@ export async function persistGraph(
 }
 
 /**
+ * A node ref, turned into the row that represents it.
+ *
+ * Extracted from `persistGraph` rather than left inline because incremental
+ * re-analysis has to answer "would a full run have written exactly these
+ * rows?" without a database in the way, and a second copy of this logic in a
+ * test would only ever prove that the copy agrees with itself.
+ *
+ * Keyed by id, which is a dedupe and not merely a tidy one: Postgres rejects
+ * an ON CONFLICT DO UPDATE whose VALUES name the same key twice ("cannot
+ * affect row a second time"), so one duplicate ref from any analyzer would
+ * fail the whole statement.
+ */
+export function buildNodeRows(
+  projectId: string,
+  runId: string,
+  nodes: readonly AnalyzedNode[],
+  origin: Exclude<Origin, "user">,
+): { rows: Map<string, typeof nodesTable.$inferInsert>; dropped: number } {
+  const rows = new Map<string, typeof nodesTable.$inferInsert>();
+  let dropped = 0;
+
+  for (const node of nodes) {
+    const path = normalizePath(node.ref.filePath);
+    // A package node carries a name and no file; a file node carries a path and
+    // no name. Something with neither cannot be addressed or shown, and `name`
+    // is NOT NULL, so it is dropped rather than written as an empty string.
+    const name = node.ref.name ?? path;
+    if (name === "") {
+      dropped += 1;
+      continue;
+    }
+
+    const id = nodeId(projectId, node.ref);
+    rows.set(id, {
+      id,
+      projectId,
+      type: node.ref.type,
+      kind: node.kind ?? null,
+      name,
+      filePath: path === "" ? null : path,
+      startLine: node.startLine ?? null,
+      endLine: node.endLine ?? null,
+      origin,
+      metadata: node.metadata ?? {},
+      lastSeenRunId: runId,
+    });
+  }
+
+  return { rows, dropped };
+}
+
+/** An edge with both ends hashed, before we know whether those nodes exist. */
+export type EdgeEndpoints = {
+  edge: AnalyzedEdge;
+  sourceId: string;
+  targetId: string;
+};
+
+export function resolveEdgeEndpoints(
+  projectId: string,
+  edges: readonly AnalyzedEdge[],
+): EdgeEndpoints[] {
+  return edges.map((edge) => ({
+    edge,
+    sourceId: nodeId(projectId, edge.source),
+    targetId: nodeId(projectId, edge.target),
+  }));
+}
+
+/**
+ * Edge rows, minus the ones whose endpoints resolved to no node.
+ *
+ * `resolves` is passed in rather than looked up here because whether a node
+ * exists is a question about the database, and this function has to stay
+ * answerable without one.
+ */
+export function buildEdgeRows(
+  projectId: string,
+  runId: string,
+  candidates: readonly EdgeEndpoints[],
+  origin: Exclude<Origin, "user">,
+  resolves: (nodeId: string) => boolean,
+): {
+  rows: Map<string, typeof edgesTable.$inferInsert>;
+  dropped: number;
+  droppedSamples: string[];
+} {
+  const rows = new Map<string, typeof edgesTable.$inferInsert>();
+  const droppedSamples: string[] = [];
+  let dropped = 0;
+
+  for (const { edge, sourceId, targetId } of candidates) {
+    if (!resolves(sourceId) || !resolves(targetId)) {
+      dropped += 1;
+      if (droppedSamples.length < 10) {
+        droppedSamples.push(
+          `${edge.type} ${describeRef(edge.source)} -> ${describeRef(edge.target)}`,
+        );
+      }
+      continue;
+    }
+
+    const id = edgeId(projectId, edge.type, sourceId, targetId);
+    rows.set(id, {
+      id,
+      projectId,
+      sourceNodeId: sourceId,
+      targetNodeId: targetId,
+      type: edge.type,
+      confidence: edge.confidence,
+      origin,
+      metadata: edge.metadata ?? {},
+      lastSeenRunId: runId,
+    });
+  }
+
+  return { rows, dropped, droppedSamples };
+}
+
+/**
+ * How big the graph a run measured actually is.
+ *
+ * An incremental run writes a slice, so the count of rows it wrote is not the
+ * size of the map — and the run row's counts are what the user is shown and
+ * what a log is read for. Counted the same way `persistGraph` counts: deduped
+ * by id, because two refs for the same thing are one row.
+ */
+export function graphSize(
+  projectId: string,
+  nodes: readonly AnalyzedNode[],
+  edges: readonly AnalyzedEdge[],
+): { nodes: number; edges: number } {
+  const nodeIds = buildNodeRows(projectId, "", nodes, "static").rows;
+  const edgeIds = new Set<string>();
+  for (const { edge, sourceId, targetId } of resolveEdgeEndpoints(projectId, edges)) {
+    edgeIds.add(edgeId(projectId, edge.type, sourceId, targetId));
+  }
+  return { nodes: nodeIds.size, edges: edgeIds.size };
+}
+
+/**
+ * Which of a carried-forward file's edges the stamp covers.
+ *
+ * The two callers want genuinely different answers, and getting them the wrong
+ * way round is silent in both directions.
+ *
+ * `touching` is D37's rule, for a file we could not parse. Its own nodes are
+ * still in the table but this run produced nothing for them, so every edge at
+ * either end has to survive — including edges *from* healthy files, which
+ * nothing else will stamp because the healthy file's analysis found a target
+ * it could not resolve.
+ *
+ * `outgoing` is the rule for a file that did not change. Here the opposite is
+ * true: a changed file's edge *into* this one was re-derived this run and has
+ * either been written or deliberately not written, so stamping it would
+ * resurrect a connection the author just deleted — the map would keep claiming
+ * a call that no longer exists. Only the edges this file owns are its to keep.
+ */
+export type CarryForwardScope = "touching" | "outgoing";
+
+/**
  * Stamp this run onto the rows of files we could not parse this time (D37).
  *
  * Must happen before the sweep. A file that parsed in run one and has a syntax
@@ -258,6 +368,7 @@ export async function carryForwardSkipped(
   projectId: string,
   runId: string,
   skippedPaths: readonly string[],
+  scope: CarryForwardScope = "touching",
 ): Promise<CarryForwardResult> {
   const paths = [...new Set(skippedPaths.map(normalizePath))].filter((p) => p !== "");
   if (paths.length === 0) return { nodes: 0, edges: 0 };
@@ -300,10 +411,12 @@ export async function carryForwardSkipped(
         and(
           eq(edgesTable.projectId, projectId),
           ne(edgesTable.origin, "user"),
-          or(
-            inArray(edgesTable.sourceNodeId, batch),
-            inArray(edgesTable.targetNodeId, batch),
-          ),
+          scope === "outgoing"
+            ? inArray(edgesTable.sourceNodeId, batch)
+            : or(
+                inArray(edgesTable.sourceNodeId, batch),
+                inArray(edgesTable.targetNodeId, batch),
+              ),
         ),
       )
       .returning({ id: edgesTable.id });
@@ -354,23 +467,57 @@ export async function sweepStaleRows(
 }
 
 /**
- * Finish a successful run: carry skipped files forward, then sweep.
+ * Finish a successful run: carry forward, then sweep.
  *
  * One transaction, because the two halves are one decision. A carry-forward
  * that committed without its sweep would leave last run's rows looking current;
  * a sweep that ran without its carry-forward is exactly the cascade D37
  * describes. A failed run never calls this at all.
+ *
+ * Two kinds of file are carried forward and they are not the same kind of
+ * thing. `skippedPaths` are files this run could not read — their rows are the
+ * last good measurement we have, kept under D37's rule. `unchangedPaths` are
+ * files an incremental run chose not to re-state because nothing about them
+ * moved; see `CarryForwardScope` for why they get the narrower stamp.
  */
 export async function promoteRun(
   db: Db,
   projectId: string,
   runId: string,
   skippedPaths: readonly string[] = [],
+  unchangedPaths: readonly string[] = [],
 ): Promise<PromoteResult> {
+  // A file that is both unparseable and unchanged takes the wider stamp. Doing
+  // both would double-count the rows in the returned totals, and the totals are
+  // what a run log is read for.
+  const skipped = new Set(skippedPaths.map(normalizePath));
+  const unchanged = unchangedPaths
+    .map(normalizePath)
+    .filter((path) => !skipped.has(path));
+
   return db.transaction(async (tx) => {
-    const carriedForward = await carryForwardSkipped(tx, projectId, runId, skippedPaths);
+    const fromSkipped = await carryForwardSkipped(
+      tx,
+      projectId,
+      runId,
+      [...skipped],
+      "touching",
+    );
+    const fromUnchanged = await carryForwardSkipped(
+      tx,
+      projectId,
+      runId,
+      unchanged,
+      "outgoing",
+    );
     const swept = await sweepStaleRows(tx, projectId, runId);
-    return { carriedForward, swept };
+    return {
+      carriedForward: {
+        nodes: fromSkipped.nodes + fromUnchanged.nodes,
+        edges: fromSkipped.edges + fromUnchanged.edges,
+      },
+      swept,
+    };
   });
 }
 

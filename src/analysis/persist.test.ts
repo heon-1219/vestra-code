@@ -11,6 +11,7 @@ import * as schema from "@/db/schema";
 import { edges, nodes, projects, user } from "@/db/schema";
 
 import { nodeId } from "./ids";
+import { loadPreviousShape } from "./incremental";
 import {
   carryForwardSkipped,
   persistGraph,
@@ -382,6 +383,68 @@ withDb("persistGraph against a real database", () => {
     const promoted = await promoteRun(db, projectId, "run-3");
     expect(promoted.swept).toEqual({ nodes: 0, edges: 0 });
     expect(await readNodes()).toHaveLength(4);
+  });
+
+  it("carries an unchanged file's own connections forward and no one else's", async () => {
+    await persistGraph(db, projectId, "run-1", fixtureNodes(), fixtureEdges());
+    await promoteRun(db, projectId, "run-1");
+
+    // Run two is incremental: `a.ts` changed and dropped its call into `b.ts`,
+    // `b.ts` did not change and is carried forward. The stale `a.ts -> b.ts`
+    // connections must NOT survive — `b.ts` is at the far end of them, and the
+    // wider `touching` stamp would resurrect a call the author just deleted.
+    await persistGraph(
+      db,
+      projectId,
+      "run-2",
+      [
+        { ref: { type: "file", filePath: "a.ts" }, metadata: { size: 11 } },
+        {
+          ref: { type: "symbol", filePath: "a.ts", name: "alpha" },
+          kind: "function",
+          startLine: 1,
+          endLine: 3,
+        },
+      ],
+      [
+        {
+          source: { type: "file", filePath: "a.ts" },
+          target: { type: "symbol", filePath: "a.ts", name: "alpha" },
+          type: "contains",
+          confidence: "certain",
+        },
+      ],
+    );
+    await promoteRun(db, projectId, "run-2", [], ["b.ts"]);
+
+    expect((await readNodes()).map((row) => row.name).sort()).toEqual([
+      "a.ts",
+      "alpha",
+      "b.ts",
+      "beta",
+    ]);
+    // `b.ts contains beta` is b.ts's own and survives. The import and the call
+    // out of a.ts are gone, because a.ts re-stated its connections this run.
+    const edgeRows = await readEdges();
+    expect(edgeRows.map((row) => row.type).sort()).toEqual(["contains", "contains"]);
+  });
+
+  it("reads the previous graph's shape as the file-level dependency graph", async () => {
+    await persistGraph(db, projectId, "run-1", fixtureNodes(), fixtureEdges());
+    await promoteRun(db, projectId, "run-1");
+
+    const shape = await loadPreviousShape(db, projectId);
+    const pairs = shape.dependencies
+      .map((dependency) => `${dependency.from} -> ${dependency.to}`)
+      .sort();
+
+    // Four edges collapse to the two distinct file pairs the closure asks
+    // about. That collapse happening in Postgres rather than here is the whole
+    // point: a repository with ten thousand connections comes back as a few
+    // hundred rows.
+    expect(pairs).toEqual(["a.ts -> a.ts", "a.ts -> b.ts", "b.ts -> b.ts"]);
+    expect(shape.packageNames).toEqual([]);
+    expect(shape.endpointIds).toEqual([]);
   });
 
   it("resolves an existing project's node ids without a hash collision", async () => {

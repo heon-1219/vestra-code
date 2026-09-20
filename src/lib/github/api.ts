@@ -268,3 +268,208 @@ export async function listUserRepos(
     },
   };
 }
+
+// --- What changed between two commits --------------------------------------
+
+/**
+ * The commit a ref currently points at, or null.
+ *
+ * Best effort by design — a run without a recorded commit is a graph that
+ * cannot be dated, which is worth strictly less than a run that did not
+ * happen. It is also what makes the next run incremental: the recorded commit
+ * is the base the compare below is taken against, so a null here costs the
+ * *following* run its saving, not this one its result.
+ */
+export async function fetchCommitSha(
+  owner: string,
+  repo: string,
+  ref: string,
+  token: string | null,
+): Promise<string | null> {
+  try {
+    const response = await fetch(
+      `${GITHUB_API}/repos/${owner}/${repo}/commits/${encodeURIComponent(ref)}`,
+      { headers: headers(token), cache: "no-store" },
+    );
+    if (!response.ok) return null;
+
+    const parsed = z.object({ sha: z.string() }).safeParse(await response.json());
+    return parsed.success ? parsed.data.sha : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How a path changed between two commits, in the four cases that matter to us.
+ *
+ * A rename is kept as its own case rather than folded into "modified" because
+ * the path is inside a node's id hash (`analysis/ids.ts`). Treating it as an
+ * update would leave the old path's rows in the graph *and* create the new
+ * path's rows, so the user would see the same file twice and any correction
+ * they had made would still be attached to the copy that no longer exists.
+ */
+export type ChangeStatus = "added" | "modified" | "removed" | "renamed";
+
+export type ChangedFile = {
+  /** Repo-relative POSIX path. For a removal, the path the file used to have. */
+  path: string;
+  /** The path this file had before, for a rename. Null otherwise. */
+  previousPath: string | null;
+  status: ChangeStatus;
+};
+
+/**
+ * Why a comparison cannot be trusted as a complete description of the change.
+ *
+ * Both of these mean the same thing to a caller — do a full run — but they are
+ * distinguished so the log says which one happened. "We only got 300 of the
+ * changed files" and "GitHub used a word we do not know" are different
+ * problems, and a log line that cannot tell them apart is a log line nobody
+ * can act on.
+ */
+export type ComparisonGap = "file_cap" | "unknown_status";
+
+export type RepoComparison = {
+  /**
+   * `ahead` means head is a descendant of base and nothing else happened.
+   *
+   * This is the only value that makes an incremental run safe, and the reason
+   * is not obvious: GitHub's compare endpoint is three-dot, so for a
+   * `diverged` pair it lists the diff from the **merge base** to head — which
+   * silently omits everything that happened on base's side. The recorded graph
+   * was measured at base, so those omissions are exactly the rows that would
+   * be left stale. `behind` and `diverged` are the force-push and
+   * branch-rewrite cases, and they get a full run.
+   */
+  status: "identical" | "ahead" | "behind" | "diverged";
+  files: ChangedFile[];
+  /** Non-null when `files` is not a complete, fully understood change list. */
+  gap: ComparisonGap | null;
+};
+
+/**
+ * GitHub returns at most 300 entries in `files`, and says nothing about the
+ * ones it left out — there is no total to compare against. So a full page is
+ * treated as "there may be more", which costs a needless full run on a commit
+ * range that touched exactly 300 files and prevents a silently partial one on
+ * every range that touched more.
+ */
+const COMPARE_FILE_CAP = 300;
+
+const compareSchema = z.object({
+  status: z.string(),
+  files: z
+    .array(
+      z.object({
+        filename: z.string(),
+        status: z.string(),
+        previous_filename: z.string().optional(),
+      }),
+    )
+    // Absent, not empty, when the range changed no files at all.
+    .optional(),
+});
+
+/**
+ * Map GitHub's `status` onto ours, or null when we do not recognise it.
+ *
+ * `copied` becomes `added` because a copy is a path that did not exist before,
+ * which is all our ids care about. `changed` is GitHub's word for a mode or
+ * type change with the same content, and `unchanged` appears when a file was
+ * edited and edited back inside the range — both are re-parsed rather than
+ * reasoned about, because re-parsing one file is free and being wrong about it
+ * is not.
+ */
+function mapStatus(status: string): ChangeStatus | null {
+  switch (status) {
+    case "added":
+    case "copied":
+      return "added";
+    case "removed":
+      return "removed";
+    case "renamed":
+      return "renamed";
+    case "modified":
+    case "changed":
+    case "unchanged":
+      return "modified";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Which files differ between two commits.
+ *
+ * This is the whole factual basis for incremental re-analysis, so every way it
+ * can be less than the truth is turned into something the caller can see: a
+ * base commit GitHub no longer has comes back as `not_found` (a force-push
+ * deleted it), a rewritten history comes back in `status`, and a list that may
+ * be missing entries comes back in `gap`. None of them are recoverable here,
+ * and all of them mean the same thing one level up — analyse everything.
+ */
+export async function compareCommits(
+  owner: string,
+  repo: string,
+  base: string,
+  head: string,
+  token: string | null,
+): Promise<GithubResult<RepoComparison>> {
+  let response: Response;
+  try {
+    response = await fetch(
+      `${GITHUB_API}/repos/${owner}/${repo}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`,
+      { headers: headers(token), cache: "no-store" },
+    );
+  } catch {
+    return { ok: false, error: "unavailable" };
+  }
+
+  if (!response.ok) {
+    return { ok: false, error: classify(response.status), status: response.status };
+  }
+
+  const parsed = compareSchema.safeParse(await response.json());
+  if (!parsed.success) return { ok: false, error: "malformed" };
+
+  const status = parsed.data.status;
+  if (
+    status !== "identical" &&
+    status !== "ahead" &&
+    status !== "behind" &&
+    status !== "diverged"
+  ) {
+    return { ok: false, error: "malformed" };
+  }
+
+  const entries = parsed.data.files ?? [];
+  const files: ChangedFile[] = [];
+  let gap: ComparisonGap | null =
+    entries.length >= COMPARE_FILE_CAP ? "file_cap" : null;
+
+  for (const entry of entries) {
+    const mapped = mapStatus(entry.status);
+    if (mapped === null) {
+      // One word we do not understand makes the whole list untrustworthy: we
+      // cannot tell whether that file needs adding, re-parsing or deleting,
+      // and guessing wrong leaves a stale row nobody will ever notice.
+      gap = gap ?? "unknown_status";
+      continue;
+    }
+    files.push({
+      path: entry.filename,
+      previousPath:
+        mapped === "renamed" ? (entry.previous_filename ?? null) : null,
+      status: mapped,
+    });
+  }
+
+  // A rename with no previous name is a rename we cannot undo, so it is the
+  // same problem as an unknown status: the old path's rows would survive.
+  if (files.some((file) => file.status === "renamed" && file.previousPath === null)) {
+    gap = gap ?? "unknown_status";
+  }
+
+  return { ok: true, value: { status, files, gap } };
+}
