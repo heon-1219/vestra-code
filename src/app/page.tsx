@@ -130,9 +130,83 @@ const PROMISES = [
 
 /* One action, one shape, used everywhere. Small radius rather than a pill: a
    pill is friendly and a rectangle is certain, and this product's promise is
-   certainty. Light fill because on this page light means "you act here". */
-const ACTION =
-  "inline-flex h-11 items-center justify-center rounded-lg bg-paper px-6 text-[15px] font-semibold text-ink transition-colors hover:bg-lamp";
+   certainty. Light fill because on this page light means "you act here".
+
+   `active:` gives it a floor to press against. The button had a hover colour
+   and nothing at all on the press, which on a touch screen — where hover does
+   not exist — meant the one action on the page answered a tap with nothing
+   until the next route painted. One pixel is enough to feel. No transition on
+   the way down on purpose: a press that eases is a press that lags. */
+const ACTION_BASE =
+  "inline-flex items-center justify-center rounded-lg bg-paper font-semibold text-ink transition-colors hover:bg-lamp active:translate-y-px";
+
+const ACTION = `${ACTION_BASE} h-11 px-6 text-[15px]`;
+
+/**
+ * The nav's smaller version of the same button, and the reason it is a
+ * separate string rather than three extra classes on the end of `ACTION`.
+ *
+ * It WAS three extra classes — `${ACTION} h-10 px-5 text-[14px]` — and none of
+ * the three did anything. Tailwind emits its utilities in its own order, not
+ * in the order they appear in a `class` attribute, and `h-11`, `px-6` and
+ * `text-[15px]` all sort after their smaller siblings, so every one of them
+ * won. Measured: the nav button rendered at 44px tall with 15px type and 24px
+ * of padding, pixel for pixel the hero's primary action.
+ *
+ * The cost of that is not a rounding error, it is the page's hierarchy. The
+ * hero holds one action and one sentence about what to hand over; with an
+ * identical button sitting above it in the corner, the first screen asked the
+ * same question twice at the same volume. One size per role, composed rather
+ * than overridden, so the cascade has nothing to decide.
+ */
+const ACTION_SMALL = `${ACTION_BASE} h-10 px-5 text-[14px]`;
+
+/**
+ * The recessed bands, with their edges given back.
+ *
+ * The intent recorded below is that sections are divided by a change of
+ * surface and by silence, "not by a rule across the page". A flat
+ * `bg-ink-sunk/70` over a fixed sky delivered the opposite: the sky is
+ * always violet and the band is nearly opaque, so the top and bottom of every
+ * recessed section resolved into a hard horizontal edge running the full
+ * width — a rule across the page, drawn 100% wide, that nobody drew.
+ *
+ * The same surface with the first and last 160px ramped in reads as a change
+ * of light instead of a taped edge, which is what "a change of surface" was
+ * supposed to mean. 160px because the bands carry 112 to 160px of padding
+ * before their first word, so the ramp finishes in the silence above the
+ * heading and never touches type.
+ */
+const SUNK_BAND: React.CSSProperties = {
+  background:
+    "linear-gradient(to bottom, transparent 0, color-mix(in oklab, var(--color-ink-sunk) 72%, transparent) 160px, color-mix(in oklab, var(--color-ink-sunk) 72%, transparent) calc(100% - 160px), transparent 100%)",
+};
+
+/**
+ * The entrance, offset by reading order.
+ *
+ * `.rise` is a scroll-driven animation on a `view()` timeline, so every item
+ * in a row shares one range and the whole row therefore arrives in the same
+ * instant — three cards and four cards appearing as one block, which reads as
+ * a section popping rather than as a section being read. Pushing each item's
+ * range six percent further into the scroll makes them arrive in the order the
+ * eye already takes them, left to right, over about a fifth of a screen.
+ *
+ * Written as an inline `animation-range` rather than a utility class on
+ * purpose. `.rise` lives outside any cascade layer in `globals.css`, and
+ * unlayered rules beat every layered utility no matter how specific, so a
+ * Tailwind class here would be silently ignored. It is also why this is a
+ * range and not a delay: a scroll-driven animation has no clock to delay.
+ *
+ * Nothing needs a reduced-motion guard. `.rise` only declares an animation
+ * inside `@media (prefers-reduced-motion: no-preference)`, so when a visitor
+ * has asked for less there is no animation for this range to describe and the
+ * property does nothing at all — likewise in any browser without `view()`.
+ */
+function stagger(index: number): React.CSSProperties {
+  const start = 10 + index * 6;
+  return { animationRange: `entry ${start}% cover ${start + 18}%` };
+}
 
 export default function LandingPage() {
   return (
@@ -161,7 +235,7 @@ export default function LandingPage() {
             >
               로그인
             </Link>
-            <Link href="/sign-in" className={`${ACTION} h-10 px-5 text-[14px]`}>
+            <Link href="/sign-in" className={ACTION_SMALL}>
               시작하기
             </Link>
           </nav>
@@ -178,7 +252,28 @@ export default function LandingPage() {
         <HeroGraph />
 
         <div className="pointer-events-none sticky top-0 flex h-screen items-center">
-          <div className="mx-auto w-full max-w-[1200px] px-6 md:px-10">
+          {/*
+            A band under the nav, and nothing else.
+
+            The graph's own mask already clears the reading column, so the
+            words need no panel — but the nav sits at the top RIGHT, which is
+            the one part of the screen the mask deliberately leaves at full
+            strength, and 14px of `said-soft` over lit links is the thinnest
+            thing on the page laid over the busiest. Sixteen percent of the
+            viewport, fading to nothing, is enough to seat it. Kept light so
+            the crown light still reads through: this paints above the sky as
+            well as above the canvas, and the aurora's bright core is up here.
+          */}
+          <div
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-x-0 top-0 h-[16vh]"
+            style={{
+              background:
+                "linear-gradient(to bottom, color-mix(in oklab, var(--color-ink) 62%, transparent) 0%, color-mix(in oklab, var(--color-ink) 30%, transparent) 46%, transparent 100%)",
+            }}
+          />
+
+          <div className="relative mx-auto w-full max-w-[1200px] px-6 md:px-10">
             <div className="max-w-[820px]">
               {/*
                 No eyebrow. The wordmark is already in the nav two inches above
@@ -205,7 +300,11 @@ export default function LandingPage() {
               <p className="mt-9 max-w-[520px] text-lede text-said">
                 코드를 읽는 법부터 배우라고 하지 않습니다.
               </p>
-              <p className="mt-4 max-w-[500px] text-copy text-said-soft">
+              {/* Same measure as the lede above it. The two were 520 and 500,
+                  which is not a difference anyone chose — it is a difference
+                  that shows up as two ragged right edges 20px apart under a
+                  headline whose whole authority comes from alignment. */}
+              <p className="mt-4 max-w-[520px] text-copy text-said-soft">
                 Vestra Code는 프로젝트를 처음부터 끝까지 읽어서, 화면 하나가
                 어디에서 만들어지고 그것을 건드리면 또 어디가 움직이는지 한 장의
                 지도로 그립니다. 읽는 건 우리가 합니다.
@@ -214,7 +313,15 @@ export default function LandingPage() {
                 <Link href="/sign-in" className={ACTION}>
                   내 프로젝트 연결하기
                 </Link>
-                <span className="text-micro text-said-faint">
+                {/* `said-soft`, not `said-faint`. This is 13px sitting over a
+                    canvas that is still lit here, and `said-faint` measures
+                    3.6:1 against the ink even with nothing behind it — under
+                    AA for text this size before the graph is considered. The
+                    quiet tier is the right intent and the wrong value: the
+                    token itself wants raising, and until it is, the places
+                    that carry a fact rather than a flourish take the tier
+                    above it. */}
+                <span className="text-micro text-said-soft">
                   GitHub 저장소 또는 내 컴퓨터의 폴더
                 </span>
               </div>
@@ -225,7 +332,7 @@ export default function LandingPage() {
 
       {/* Sections are divided by a change of surface and a great deal of empty
           space, not by a rule across the page. */}
-      <section className="relative bg-ink-sunk/70">
+      <section className="relative" style={SUNK_BAND}>
         <div className="mx-auto max-w-[1200px] px-6 py-28 md:px-10 md:py-40">
           <h2 className="rise display-section max-w-[680px] text-section">
             바이브 코딩이 무너지는 건 언제나 같은 세 지점입니다.
@@ -240,7 +347,11 @@ export default function LandingPage() {
           */}
           <div className="mt-20 grid grid-cols-12 gap-x-2 gap-y-14 sm:gap-x-6 md:gap-x-8">
             {PAINS.map((pain, index) => (
-              <div key={pain.title} className="rise col-span-12 md:col-span-4">
+              <div
+                key={pain.title}
+                className="rise col-span-12 md:col-span-4"
+                style={stagger(index)}
+              >
                 {/* The colour is on the row, not on either half of it: the mark
                     draws in `currentColor`, and a colour written twice is a
                     colour that will eventually be written differently twice.
@@ -293,10 +404,11 @@ export default function LandingPage() {
           {/* Tight gutters. The cards are a single mosaic, not four separate
               objects with a corridor between them. */}
           <div className="mt-20 grid grid-cols-12 gap-2">
-            {FEATURES.map((feature) => (
+            {FEATURES.map((feature, index) => (
               <article
                 key={feature.title}
                 className={`rise col-span-12 ${feature.span} hairline lift rounded-xl bg-ink-raised p-8 hover:-translate-y-0.5 hover:border-edge-lit md:p-10`}
+                style={stagger(index)}
               >
                 {/* Colour on the row for the same reason as the numbered band
                     above: the mark is `currentColor`, so there is one place to
@@ -317,7 +429,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      <section className="relative bg-ink-sunk/70">
+      <section className="relative" style={SUNK_BAND}>
         <div className="mx-auto max-w-[1200px] px-6 py-28 md:px-10 md:py-40">
           <h2 className="rise display-section max-w-[680px] text-section">
             우리가 하지 않는 것.
@@ -329,10 +441,11 @@ export default function LandingPage() {
           {/* A ruled band rather than four boxes: this is a specification, and
               it should read like one. */}
           <div className="mt-20 grid grid-cols-12 gap-x-2 gap-y-12 sm:gap-x-6 md:gap-x-8">
-            {PROMISES.map((promise) => (
+            {PROMISES.map((promise, index) => (
               <div
                 key={promise.title}
                 className="rise rule-t col-span-12 pt-6 sm:col-span-6 lg:col-span-3"
+                style={stagger(index)}
               >
                 <h3 className="text-[16px] font-semibold tracking-[-0.022em]">
                   {promise.title}

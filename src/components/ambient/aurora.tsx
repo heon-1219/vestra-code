@@ -1,4 +1,29 @@
 /**
+ * A grain tile, and the reason a sky made of gradients needs one.
+ *
+ * Every layer of the sky below is a gradient with soft stops, which is what
+ * buys the diffusion, and on a near-black ground it is also the exact recipe
+ * for banding. Between `#171029` and `#0d0c0a` there are only a handful of
+ * distinguishable 8-bit steps across a whole viewport height, so the ramp
+ * resolves into visible stripes on most panels. That is not an artefact of the
+ * colours; it is arithmetic, and no choice of stops fixes it.
+ *
+ * Dither fixes it. A fixed, static noise tile at a few percent pushes each
+ * pixel across a step boundary at random, and the stripes stop existing. The
+ * side effect is the one worth having anyway: the ground stops reading as a
+ * printed gradient and starts reading as a lit surface, which is what D76
+ * asked the sky for in the first place.
+ *
+ * It is an inline data URI rather than a file, so D76's "nothing is
+ * downloaded" still holds, and it is a `background-image` on a static element,
+ * so it is rasterised once and never animates. Desaturated on purpose: RGB
+ * turbulence at this opacity would put faint colour speckle on a page whose
+ * whole colour budget is spent elsewhere.
+ */
+const GRAIN =
+  "url(\"data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='140'%20height='140'%3E%3Cfilter%20id='g'%3E%3CfeTurbulence%20type='fractalNoise'%20baseFrequency='0.9'%20numOctaves='2'%20stitchTiles='stitch'/%3E%3CfeColorMatrix%20type='saturate'%20values='0'/%3E%3C/filter%3E%3Crect%20width='140'%20height='140'%20filter='url(%23g)'/%3E%3C/svg%3E\")";
+
+/**
  * Aurora: light in a dark room, not a second accent colour.
  *
  * The product was one flat black and read austere rather than calm. This puts
@@ -157,6 +182,19 @@ export function Aurora({
           }}
         />
       </div>
+
+      {/* Last, because it has to fall across every ramp above it — including
+          the floor, which is the longest ramp here and therefore the one that
+          bands worst. Weaker on the quiet surfaces for the same reason the
+          lights are: where colour carries meaning, nothing ambient competes. */}
+      <div
+        className="absolute inset-0"
+        style={{
+          backgroundImage: GRAIN,
+          backgroundSize: "140px 140px",
+          opacity: full ? 0.05 : 0.03,
+        }}
+      />
     </div>
   );
 }

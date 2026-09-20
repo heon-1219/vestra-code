@@ -116,14 +116,87 @@ export function HeroGraph() {
     <div ref={sectionRef} className="absolute inset-0">
       <div className="sticky top-0 h-screen w-full">
         {shouldAnimate === true ? (
-          <HeroGraphScene progressRef={progressRef} />
+          /*
+            The graph is masked, not dimmed, and the difference matters.
+
+            Full bleed, it ran at the same strength under the headline as it
+            did in the open, and the two smallest lines in the hero — the
+            paragraph and the caption beside the button — were being read
+            across lit links. The obvious fix is a dark panel behind the text,
+            but everything in this hero paints ABOVE the sky, so a panel takes
+            the aurora with it, and the crown light is upper left: exactly
+            where the words are. A mask is applied to this layer alone, so the
+            web thins out over the reading column and the sky behind it is
+            untouched.
+
+            It thins to a quarter rather than to nothing. At zero the hero
+            reads as two unrelated halves, a page and a picture; at a quarter
+            the same tangle runs behind the sentence that describes it, which
+            is the whole reason it is there. A mask changes paint only, so a
+            node under the faded part is still hoverable.
+          */
+          <div
+            className="h-full w-full"
+            style={{
+              maskImage:
+                "linear-gradient(100deg, rgba(0,0,0,0.2) 0%, rgba(0,0,0,0.28) 28%, rgba(0,0,0,0.72) 50%, rgba(0,0,0,1) 68%)",
+              WebkitMaskImage:
+                "linear-gradient(100deg, rgba(0,0,0,0.2) 0%, rgba(0,0,0,0.28) 28%, rgba(0,0,0,0.72) 50%, rgba(0,0,0,1) 68%)",
+            }}
+          >
+            <HeroGraphScene progressRef={progressRef} />
+          </div>
         ) : (
-          <div className="flex h-full w-full items-center justify-center p-8">
-            <div className="h-full max-h-[520px] w-full max-w-[600px]">
+          /*
+            Below `scene` the still is the whole picture, and the copy above it
+            runs the full width of the screen — so the still is pushed to the
+            bottom of the sticky box rather than centred in it. Centred, it
+            landed exactly under the lede and the paragraph, which is the one
+            place on a 375px screen where a drawing costs more than it gives.
+            Sitting low it reads as a horizon under the sentence instead of a
+            texture behind it.
+          */
+          <div
+            className="flex h-full w-full items-end justify-center px-6 pb-12"
+            style={{
+              // Same idea as the scene's mask, turned through ninety degrees
+              // because the copy above it runs the full width here: the
+              // drawing arrives from underneath rather than from the side.
+              maskImage:
+                "linear-gradient(to bottom, rgba(0,0,0,0.28) 0%, rgba(0,0,0,0.62) 34%, rgba(0,0,0,1) 62%)",
+              WebkitMaskImage:
+                "linear-gradient(to bottom, rgba(0,0,0,0.28) 0%, rgba(0,0,0,0.62) 34%, rgba(0,0,0,1) 62%)",
+            }}
+          >
+            <div className="h-full max-h-[380px] w-full max-w-[560px]">
               <HeroGraphStill />
             </div>
           </div>
         )}
+
+        {/*
+          The floor of the hero.
+
+          The scene is a full-bleed canvas and the section under it is an
+          opaque surface, so without this the sky, the links and the nodes are
+          all cut by one straight horizontal line at the moment the hero stops
+          sticking — spheres sliced in half across the full width of the page.
+          Fading to the ink the next section sits on makes the same boundary a
+          horizon. Decorative, and never in the way of the pointer, so hovering
+          a node near the bottom edge still works.
+
+          Shorter below `scene`, where the still is anchored to the bottom of
+          this same box: at 26vh the floor swallowed the lower third of the one
+          picture a phone visitor gets of what the product makes.
+        */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-[18vh] scene:h-[26vh]"
+          style={{
+            background:
+              "linear-gradient(to top, var(--color-ink) 0%, color-mix(in oklab, var(--color-ink) 72%, transparent) 42%, transparent 100%)",
+          }}
+        />
       </div>
     </div>
   );
