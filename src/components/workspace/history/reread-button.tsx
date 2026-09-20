@@ -123,7 +123,7 @@ export function RereadButton({
         // both shapes — read aloud at rest, read and seen when maximised. The
         // hover says it too, since at rest there is nothing else to go on.
         title={state.label}
-        className={`flex shrink-0 items-center gap-1.5 rounded-md border border-edge-lit text-said-soft transition-colors hover:text-said disabled:opacity-55 ${
+        className={`flex shrink-0 items-center gap-1.5 rounded-md border border-edge-lit text-said-soft transition-colors hover:border-said-faint hover:bg-ink hover:text-said disabled:opacity-55 disabled:hover:border-edge-lit disabled:hover:bg-transparent ${
           expanded ? "px-2 py-1 text-[12px]" : "px-1.5 leading-[1.5]"
         }`}
       >
@@ -138,7 +138,7 @@ export function RereadButton({
           // line and a refusal is the one thing here worth reading in full.
           title={note ?? undefined}
           className={`min-w-0 ${wrong ? "text-c4" : "text-said-faint"} ${
-            expanded ? "text-[12px] leading-[1.7]" : "truncate leading-[1.5]"
+            expanded ? "text-[12px] leading-[1.7] text-pretty" : "truncate leading-[1.5]"
           }`}
         >
           {note}

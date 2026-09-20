@@ -295,28 +295,28 @@ export function FilePreview({
         // not close the thing being read.
         if (event.target === event.currentTarget) onClose();
       }}
-      className="fixed inset-0 z-50 flex items-stretch justify-center bg-ink-sunk/85 p-0 sm:items-center sm:p-6"
+      className="fixed inset-0 z-50 flex items-stretch justify-center bg-ink-sunk/85 p-0 backdrop-blur-[2px] sm:items-center sm:p-6"
     >
       <div
         ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="relative flex h-full w-full min-w-0 flex-col overflow-hidden border-edge-lit bg-ink-raised sm:h-auto sm:max-h-[min(88vh,52rem)] sm:max-w-[64rem] sm:rounded-2xl sm:border"
+        className="relative flex h-full w-full min-w-0 flex-col overflow-hidden border-edge-lit bg-ink-raised sm:h-auto sm:max-h-[min(88vh,52rem)] sm:max-w-[64rem] sm:rounded-2xl sm:border-[0.8px] sm:shadow-[0_40px_80px_-32px_rgba(0,0,0,0.95)]"
       >
-        <header className="flex shrink-0 items-start gap-3 border-b border-edge px-4 py-3">
+        <header className="flex shrink-0 items-start gap-3 border-b-[0.8px] border-edge px-4 py-3">
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <p className="text-[12px] text-said-faint">{shape.word}</p>
+              <p className="label-kr text-[11px] text-said-faint">{shape.word}</p>
               {shape.language ? (
-                <span className="rounded border border-edge-lit px-1.5 py-px text-[11px] text-said-faint">
+                <span className="rounded border-[0.8px] border-edge-lit px-1.5 py-px font-mono text-[10px] text-said-faint">
                   {shape.language}
                 </span>
               ) : null}
             </div>
             <h2
               id={titleId}
-              className="mt-0.5 truncate text-[16px] font-semibold tracking-[-0.02em] text-said"
+              className="display-kr mt-1 truncate text-[17px] text-said"
               title={target.title}
             >
               {target.title}
@@ -336,7 +336,7 @@ export function FilePreview({
             ref={closeRef}
             type="button"
             onClick={onClose}
-            className="shrink-0 rounded-lg border border-edge-lit px-3 py-1.5 text-[13px] text-said-soft transition-colors hover:text-said"
+            className="shrink-0 rounded-lg border border-edge-lit px-3 py-1.5 text-[13px] text-said-soft transition-colors hover:border-said-faint hover:bg-ink hover:text-said"
           >
             닫기
           </button>
@@ -346,7 +346,7 @@ export function FilePreview({
           <Body view={view} shape={shape} focus={target.focus} onGithub={viewOnGithub} />
         </div>
 
-        <footer className="flex shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-1.5 border-t border-edge px-4 py-2.5">
+        <footer className="rule-t flex shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-1.5 px-4 py-2.5">
           {/*
             Only where it is true. On an uploaded folder there is no GitHub to
             have fetched anything from, and the body above has already said the
@@ -355,7 +355,7 @@ export function FilePreview({
             place this project has never been, is the sentence reading as boilerplate.
           */}
           {source === "github" ? (
-            <p className="text-[11px] leading-[1.7] text-said-faint">
+            <p className="text-[11px] leading-[1.7] text-said-faint text-pretty">
               {PREVIEW_MESSAGES.trust}
             </p>
           ) : (
@@ -420,7 +420,7 @@ function Body({
         */}
         <div className="flex h-full items-center justify-center p-8">
           <div className="max-w-[40ch] text-center">
-            <p className="text-[14px] leading-[1.8] text-said-soft">
+            <p className="text-[14px] leading-[1.8] text-said-soft text-pretty">
               이 브라우저에서는 PDF를 바로 펼쳐 보여드릴 수 없어요.
             </p>
             {onGithub ? (
@@ -446,7 +446,7 @@ function Refused({ message, onGithub }: { message: string; onGithub: string | nu
   return (
     <div className="flex h-full items-center justify-center overflow-y-auto p-8">
       <div className="max-w-[44ch] text-center">
-        <p className="text-[14px] leading-[1.85] text-said-soft">{message}</p>
+        <p className="text-[14px] leading-[1.85] text-said-soft text-pretty">{message}</p>
         {onGithub ? (
           <a
             href={onGithub}
@@ -523,7 +523,7 @@ function ImageBody({ url, size }: { url: string; size: number | null }) {
         />
       </div>
       <div className="flex shrink-0 items-center justify-between gap-3 px-4 pb-3">
-        <p className="text-[11px] text-said-faint">
+        <p className="text-[11px] text-said-faint tabular-nums">
           {natural ? `${natural.width}×${natural.height}` : "그림"}
           {size !== null ? ` · ${formatBytes(size)}` : ""}
         </p>
@@ -532,7 +532,7 @@ function ImageBody({ url, size }: { url: string; size: number | null }) {
             type="button"
             onClick={() => setActual((on) => !on)}
             aria-pressed={actual}
-            className="rounded-md border border-edge px-2 py-1 text-[11px] text-said-faint transition-colors hover:border-edge-lit hover:text-said-soft"
+            className="rounded-md border-[0.8px] border-edge px-2 py-1 text-[11px] text-said-faint transition-colors hover:border-edge-lit hover:bg-ink hover:text-said-soft"
           >
             {actual ? "화면에 맞추기" : "원래 크기로 보기"}
           </button>
@@ -585,7 +585,7 @@ function CodeBody({
   return (
     <div className="flex h-full min-h-0 flex-col">
       {window.clipped ? (
-        <p className="shrink-0 border-b border-edge px-4 py-2 text-[12px] leading-[1.7] text-said-soft">
+        <p className="shrink-0 border-b-[0.8px] border-edge px-4 py-2 text-[12px] leading-[1.7] text-said-soft tabular-nums text-pretty">
           파일이 길어서 {window.from.toLocaleString("ko-KR")}–
           {window.to.toLocaleString("ko-KR")}줄만 보여 드려요. 전체는{" "}
           {lines.length.toLocaleString("ko-KR")}줄이에요.
@@ -598,7 +598,7 @@ function CodeBody({
         tabIndex={0}
         role="region"
         aria-label="파일 내용"
-        className="min-h-0 flex-1 overflow-auto focus:outline-none focus-visible:ring-1 focus-visible:ring-lamp-dim"
+        className="min-h-0 flex-1 overflow-auto bg-ink-sunk focus:outline-none focus-visible:ring-1 focus-visible:ring-lamp-dim [scrollbar-color:var(--color-edge-lit)_transparent] [scrollbar-width:thin]"
       >
         <ol className="min-w-max py-2 font-mono text-[12.5px] leading-[1.7]">
           {shown.map((line, index) => {
@@ -611,12 +611,16 @@ function CodeBody({
               <li
                 key={number}
                 ref={lit && number === focus?.startLine ? firstFocusRef : undefined}
-                className={`flex gap-3 px-4 ${lit ? "bg-lamp/10" : ""}`}
+                className={`flex gap-3 px-4 ${
+                  lit ? "bg-lamp/10 shadow-[inset_2px_0_0_var(--color-lamp-dim)]" : ""
+                }`}
               >
                 <span
                   aria-hidden
                   style={{ width: `${gutter}ch` }}
-                  className={`shrink-0 select-none text-right ${lit ? "text-lamp" : "text-said-faint"}`}
+                  className={`shrink-0 select-none text-right tabular-nums ${
+                    lit ? "text-lamp" : "text-said-faint/70"
+                  }`}
                 >
                   {number}
                 </span>
@@ -627,7 +631,7 @@ function CodeBody({
         </ol>
       </div>
 
-      <p className="shrink-0 border-t border-edge px-4 py-2 text-[11px] text-said-faint">
+      <p className="rule-t shrink-0 px-4 py-2 text-[11px] text-said-faint tabular-nums">
         {lines.length.toLocaleString("ko-KR")}줄
         {size !== null ? ` · ${formatBytes(size)}` : ""}
         {shape.language ? ` · ${shape.language}` : ""}

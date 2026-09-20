@@ -51,11 +51,18 @@ export function WalkView({
   };
 
   return (
-    <section className="rounded-xl border border-edge bg-ink px-4 py-4">
-      <p className="text-[13px] leading-[1.7] text-said-soft">{session.question}</p>
+    <section className="hairline rounded-xl bg-ink px-4 py-4">
+      {/*
+        The question is set apart from the answer under it rather than being
+        the same 13px grey. It is the thing the rest of this card is about, and
+        it was previously indistinguishable from the account of answering it.
+      */}
+      <p className="text-[13px] leading-[1.7] text-said-soft text-pretty">
+        {session.question}
+      </p>
 
       {session.status === "failed" ? (
-        <p className="mt-3 text-[13px] leading-[1.8] text-said">{session.error}</p>
+        <p className="mt-3 text-[13px] leading-[1.8] text-said text-pretty">{session.error}</p>
       ) : null}
 
       {session.answer ? (
@@ -71,13 +78,13 @@ export function WalkView({
       )}
 
       {session.refused.length > 0 ? (
-        <div className="mt-4 border-t border-edge pt-3">
+        <div className="rule-t mt-4 pt-3">
           {/*
             Said plainly rather than hidden. A model that claimed something it
             could not point to is the exact failure this loop exists to catch,
             and a person who never sees it caught has only our word that it is.
           */}
-          <p className="text-[12px] text-said-faint">
+          <p className="text-[12px] leading-[1.7] text-said-faint tabular-nums text-pretty">
             근거를 찾지 못해서 빼놓은 이야기가 {session.refused.length}가지 있어요.
           </p>
           <ul className="mt-1.5 space-y-1">
@@ -162,8 +169,8 @@ function Walk({
   }
 
   return (
-    <div className="mt-4 border-t border-edge pt-3">
-      <p className="text-[12px] text-said-faint">이 순서로 따라가서 찾았어요.</p>
+    <div className="rule-t mt-4 pt-3">
+      <p className="label-kr text-[11px] text-said-faint">이 순서로 따라가서 찾았어요.</p>
 
       <ol className="mt-2 space-y-1">
         {trail.points.map((point, index) => {
@@ -205,7 +212,9 @@ function Walk({
                   evidence does.
                 */}
                 {point.critical ? (
-                  <span className="shrink-0 text-[11px] text-lamp">근거</span>
+                  <span className="shrink-0 rounded-[3px] bg-lamp/10 px-1.5 text-[11px] text-lamp">
+                    근거
+                  </span>
                 ) : null}
               </button>
             </li>
@@ -214,7 +223,7 @@ function Walk({
       </ol>
 
       {trail.unplaced.length > 0 ? (
-        <p className="mt-2 text-[11px] text-said-faint">
+        <p className="mt-2 text-[11px] leading-[1.7] text-said-faint tabular-nums text-pretty">
           이 가운데 {trail.unplaced.length}곳은 지도에서 어디인지 짚지 못했어요.
         </p>
       ) : null}

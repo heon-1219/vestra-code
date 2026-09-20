@@ -221,9 +221,9 @@ export function RightPanel({
   return (
     <aside
       aria-label="연결 패널"
-      className="flex h-full min-h-0 flex-col border-l border-edge bg-ink-raised"
+      className="flex h-full min-h-0 flex-col border-l-[0.8px] border-edge bg-ink-raised"
     >
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 [scrollbar-color:var(--color-edge-lit)_transparent] [scrollbar-width:thin]">
         {body}
 
         {/*
@@ -320,8 +320,20 @@ export function ConnectionsPanel({
   return (
     <div>
       <header>
-        <p className="text-[12px] text-said-faint">{KIND_WORDS[selected.kind]}</p>
-        <h2 className="mt-0.5 text-[18px] font-semibold tracking-[-0.02em] text-said">
+        <p className="label-kr text-[11px] text-said-faint">{KIND_WORDS[selected.kind]}</p>
+        {/*
+          `display-kr` rather than a weight and a tracking written here. The
+          panel's one real headline is the name of the thing you pointed at,
+          and this is the voice the product uses for a headline at this size —
+          the same one the history band's title and the empty centre use.
+        */}
+        {/*
+          `break-words` because the name can be a raw identifier. This column
+          drags down to 280px and a Latin identifier has no spaces in it to
+          wrap on, so without this one long `useCheckoutTotalsWithDiscount`
+          would run out through the side of the panel.
+        */}
+        <h2 className="display-kr mt-1 break-words text-[19px] text-said">
           {selected.label ? (
             displayName(selected)
           ) : (
@@ -337,7 +349,7 @@ export function ConnectionsPanel({
           map shows on hover, so pointing at a thing and choosing it never say
           two different things about it.
         */}
-        <p className="mt-2 text-[13px] leading-[1.8] text-said-soft">
+        <p className="mt-2 text-[13px] leading-[1.8] text-said-soft text-pretty">
           {described.get(selected.id)?.line ?? KIND_WORDS[selected.kind]}
         </p>
 
@@ -350,7 +362,14 @@ export function ConnectionsPanel({
           </p>
         ) : null}
 
-        <p className="mt-3 text-[13px] text-said-soft">
+        {/*
+          The one sentence the product is sold on, so it is not left reading as
+          a second line of the description above it. `text-said` rather than
+          `said-soft` and tabular figures on the count: this is the fact the
+          panel exists to deliver, and it was previously set in exactly the
+          same colour and size as the prose it follows.
+        */}
+        <p className="mt-3 text-[13px] text-said tabular-nums">
           {reachSentence(around.reach.places, around.reach.pages)}
         </p>
 
@@ -364,7 +383,7 @@ export function ConnectionsPanel({
           <button
             type="button"
             onClick={() => onOpen(selected.id)}
-            className="mt-3 rounded-lg border border-edge-lit px-3 py-1.5 text-[13px] text-said-soft transition-colors hover:text-said"
+            className="mt-3 rounded-lg border border-edge-lit px-3 py-1.5 text-[13px] text-said-soft transition-colors hover:border-said-faint hover:bg-ink hover:text-said"
           >
             {selected.kind === "file" || selected.startLine === null
               ? "파일 열어보기"
@@ -373,7 +392,7 @@ export function ConnectionsPanel({
         ) : null}
       </header>
 
-      <div className="mt-4 flex items-center gap-1 border-b border-edge pb-2">
+      <div className="mt-4 flex items-center gap-1 border-b-[0.8px] border-edge pb-2">
         <TabButton active={tab === "list"} onClick={() => onTabChange("list")}>
           목록
         </TabButton>
@@ -496,9 +515,19 @@ function HopControl({ hops, onChange }: { hops: number; onChange: (hops: number)
 
   return (
     <div className="mt-3 flex items-center gap-2">
-      <span className="text-[12px] text-said-faint">얼마나 멀리까지</span>
+      <span className="label-kr text-[11px] text-said-faint">얼마나 멀리까지</span>
 
-      <div className="flex items-center rounded-md border border-edge-lit">
+      {/*
+        Focus lives on the group, not on the bare field.
+
+        The input carried an unconditional `outline-none`, which took the
+        global `:focus-visible` amber outline off it in every state — a
+        keyboard user tabbing into the one editable number on this panel got no
+        indication at all. Putting it back on the input would ring a 36px box
+        sitting between two steppers; `focus-within` lights the whole control
+        instead, which is the object the person is actually operating.
+      */}
+      <div className="flex items-center rounded-md border border-edge-lit transition-colors focus-within:border-lamp-dim">
         <button
           type="button"
           onClick={() => step(-1)}
@@ -534,7 +563,7 @@ function HopControl({ hops, onChange }: { hops: number; onChange: (hops: number)
       </div>
 
       {/* The number and what it means, together. */}
-      <span className="text-[12px] text-said-soft">{distanceWord(hops)}</span>
+      <span className="text-[12px] text-said-soft text-pretty">{distanceWord(hops)}</span>
     </div>
   );
 }
@@ -564,7 +593,7 @@ function ConnectionList({
 
   return (
     <div className="mt-4">
-      <p className="text-[12px] leading-[1.7] text-said-faint">
+      <p className="text-[12px] leading-[1.7] text-said-faint text-pretty">
         연결된 것은 처음엔 모두 잠겨 있어요. 같이 고쳐도 되는 것만 열어 주세요.
       </p>
 
@@ -574,12 +603,12 @@ function ConnectionList({
       <Section title="여기를 쓰는 곳" rows={usedBy} locks={locks} onLockChange={onLockChange} onSelect={onSelect} />
 
       {cap ? (
-        <p className="mt-4 rounded-lg border border-edge bg-ink px-3 py-2.5 text-[12px] leading-[1.75] text-said-soft">
+        <p className="hairline mt-4 rounded-lg bg-ink px-3 py-2.5 text-[12px] leading-[1.75] text-said-soft tabular-nums text-pretty">
           {cap}
         </p>
       ) : null}
 
-      <CertaintyLegend className="mt-4 border-t border-edge pt-3" />
+      <CertaintyLegend className="rule-t mt-4 pt-3" />
     </div>
   );
 }
@@ -600,9 +629,18 @@ function Section({
   if (rows.length === 0) return null;
 
   return (
-    <section className="mt-4">
-      <h3 className="text-[12px] text-said-faint">
-        {title} {rows.length.toLocaleString("ko-KR")}
+    <section className="mt-5">
+      {/*
+        The same `label-kr` the file list's district headings use. These were
+        plain 12px body text, which made a heading and the row under it the
+        same object at a glance — the list read as one long run rather than as
+        four answers to four different questions.
+      */}
+      <h3 className="label-kr text-[11px] text-said-faint">
+        {title}{" "}
+        <span className="tabular-nums tracking-normal">
+          {rows.length.toLocaleString("ko-KR")}
+        </span>
       </h3>
       <ul className="mt-1">
         {rows.map((neighbour) => (
@@ -785,14 +823,16 @@ function NeighbourhoodGraph({
       </div>
 
       {hiddenInPicture > 0 ? (
-        <p className="mt-2 text-[12px] leading-[1.75] text-said-soft">
+        <p className="mt-2 text-[12px] leading-[1.75] text-said-soft tabular-nums text-pretty">
           그림이 좁아서 {hiddenInPicture.toLocaleString("ko-KR")}개는 그리지 못했어요. 목록 탭에는
           다 있어요.
         </p>
       ) : null}
 
       {capNotice(around) ? (
-        <p className="mt-2 text-[12px] leading-[1.75] text-said-soft">{capNotice(around)}</p>
+        <p className="mt-2 text-[12px] leading-[1.75] text-said-soft tabular-nums text-pretty">
+          {capNotice(around)}
+        </p>
       ) : null}
     </div>
   );
@@ -941,7 +981,7 @@ function RequestBox({
   }
 
   return (
-    <div className="shrink-0 border-t border-edge bg-ink-raised px-4 py-3">
+    <div className="rule-t shrink-0 bg-ink-raised px-4 py-3">
       {/*
         Above the box, because the mode changes what there is to type — a
         question, a change you want made, or nothing at all. Choosing after
@@ -1016,7 +1056,7 @@ function RequestBox({
          * sets `display: block` on img/svg/video and friends for exactly this
          * reason and does not cover textarea.
          */
-        className="block w-full resize-none rounded-xl border border-edge-lit bg-ink py-2.5 pl-3 pr-11 text-[14px] leading-[1.7] text-said placeholder:text-said-faint focus:border-lamp-dim focus:outline-none disabled:opacity-55"
+        className="block w-full resize-none rounded-xl border border-edge-lit bg-ink py-2.5 pl-3 pr-11 text-[14px] leading-[1.7] text-said transition-colors placeholder:text-said-faint focus:border-lamp-dim focus:outline-none disabled:opacity-55"
       />
 
       {/*
@@ -1033,7 +1073,16 @@ function RequestBox({
         disabled={disabled || !act || !enough}
         aria-label={words.name}
         title={words.name}
-        className="absolute bottom-2 right-2 grid h-7 w-7 place-items-center rounded-lg bg-paper text-ink transition-colors hover:bg-lamp disabled:bg-edge-lit disabled:text-said-faint"
+        /*
+          `active:scale-95` is the one press this panel had no feedback for.
+          Transform and colour only, which is the rule `globals.css` sets for
+          everything that moves here, and the global reduced-motion block
+          flattens the duration — so someone who asked for less motion gets the
+          same two states without the travel between them. `origin-center` so
+          the plane stays centred in the button while it presses; the mark is
+          drawn around its own centroid and a corner origin would undo that.
+        */
+        className="absolute bottom-2 right-2 grid h-7 w-7 origin-center place-items-center rounded-lg bg-paper text-ink transition duration-150 hover:bg-lamp active:scale-95 disabled:bg-edge-lit disabled:text-said-faint"
       >
         <SendMark />
       </button>
@@ -1067,7 +1116,7 @@ function RequestBox({
         person reading it has just chosen one of three things, and a sentence
         about the other two is not an answer to them.
       */}
-      <p className="mt-2 text-[12px] leading-[1.7] text-said-faint">
+      <p className="mt-2 text-[12px] leading-[1.7] text-said-faint text-pretty">
         {act ? words.promise : words.notYet}
       </p>
     </div>
@@ -1160,7 +1209,7 @@ function PanelLoading() {
   return (
     <div>
       <p className="text-[14px] text-said-soft">지도를 불러오는 중이에요.</p>
-      <p className="mt-1.5 text-[12px] text-said-faint">
+      <p className="mt-1.5 text-[12px] leading-[1.7] text-said-faint text-pretty">
         {CERTAINTY_WORDS.certain}와 {CERTAINTY_WORDS.inferred}를 구분해서 보여 드려요.
       </p>
     </div>

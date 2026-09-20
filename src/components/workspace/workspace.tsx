@@ -375,7 +375,7 @@ export function Workspace({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-4 border-b border-edge px-4 py-2.5">
+      <header className="flex shrink-0 items-center gap-4 border-b-[0.8px] border-edge px-4 py-2.5">
         <Link
           href="/app"
           className="shrink-0 text-[13px] text-said-faint transition-colors hover:text-said-soft"
@@ -390,9 +390,12 @@ export function Workspace({
           screen. Under the title it reads as the subtitle it always was.
         */}
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-[15px] font-semibold tracking-[-0.02em]">
-            {project.displayName}
-          </h1>
+          {/*
+            `display-kr`, the same voice the panel's headline and the band's
+            title now use, so the project's name is set the way this product
+            sets a name rather than in a weight and a tracking written here.
+          */}
+          <h1 className="display-kr truncate text-[15px]">{project.displayName}</h1>
           <p className="truncate text-[11px] text-said-faint">
             {project.source === "upload" ? (
               "내 컴퓨터에서 올린 폴더"
@@ -412,7 +415,7 @@ export function Workspace({
             type="button"
             onClick={start}
             disabled={starting}
-            className="shrink-0 rounded-lg border border-edge-lit px-3 py-1.5 text-[13px] text-said-soft transition-colors hover:text-said disabled:opacity-55"
+            className="shrink-0 rounded-lg border border-edge-lit px-3 py-1.5 text-[13px] text-said-soft transition-colors hover:border-said-faint hover:bg-ink-raised hover:text-said disabled:opacity-55"
           >
             {starting ? "시작하는 중…" : "다시 읽기"}
           </button>
@@ -484,7 +487,7 @@ export function Workspace({
         />
 
         <section className="flex min-h-0 min-w-0 flex-col overflow-hidden">
-          <div className="flex shrink-0 items-center gap-3 border-b border-edge px-4 py-2">
+          <div className="flex shrink-0 items-center gap-3 border-b-[0.8px] border-edge px-4 py-2">
             {/*
               The beam. Uncontrolled on purpose: React never writes a value back
               into this input, so a 한글 syllable that is mid-composition cannot
@@ -509,7 +512,7 @@ export function Workspace({
                 running ? "다 읽으면 찾아볼 수 있어요" : "찾고 싶은 것을 적어 보세요"
               }
               aria-label="지도에서 찾기"
-              className="min-w-0 flex-1 rounded-lg border border-edge bg-ink px-3 py-1.5 text-[13px] text-said placeholder:text-said-faint focus:border-edge-lit focus:outline-none disabled:opacity-55"
+              className="min-w-0 flex-1 rounded-lg border border-edge bg-ink px-3 py-1.5 text-[13px] text-said transition-colors placeholder:text-said-faint hover:border-edge-lit focus:border-lamp-dim focus:outline-none disabled:opacity-55"
             />
             {query ? (
               <button
@@ -550,11 +553,19 @@ export function Workspace({
             opened everything or there was no model to open anything.
           */}
           {!running && hasGraph && missed ? (
-            <div className="shrink-0 border-b border-edge px-4 py-2">
-              <p className="text-[12px] leading-[1.7] text-said-soft">
+            /*
+              The caveat is marked as a caveat rather than as a third toolbar.
+              It sat between two `border-b` rules in the same colour, so the one
+              qualification on the map read as another strip of chrome. The rail
+              gives it an edge of its own; `lamp-dim` because this is the
+              product speaking about the limits of what it did, which is the
+              same voice the focus ring and the send button use.
+            */
+            <div className="shrink-0 border-b-[0.8px] border-edge bg-ink-raised/40 px-4 py-2.5 shadow-[inset_2px_0_0_var(--color-lamp-dim)]">
+              <p className="text-[12px] leading-[1.7] text-said-soft tabular-nums text-pretty">
                 <span className="text-said">{missed.said}</span> {missed.because}
               </p>
-              <p className="mt-0.5 text-[12px] leading-[1.7] text-said-faint">
+              <p className="mt-0.5 text-[12px] leading-[1.7] text-said-faint text-pretty">
                 {missed.caution}
               </p>
             </div>
@@ -621,9 +632,9 @@ export function Workspace({
             {startError ? (
               <div
                 role="alert"
-                className="absolute inset-x-4 bottom-4 rounded-xl border border-edge bg-ink-raised p-4"
+                className="hairline absolute inset-x-4 bottom-4 rounded-xl bg-ink-raised p-4 shadow-[0_18px_40px_-20px_rgba(0,0,0,0.9)]"
               >
-                <p className="text-[13px] leading-[1.7] text-c4">{startError.message}</p>
+                <p className="text-[13px] leading-[1.7] text-c4 text-pretty">{startError.message}</p>
                 {startError.status === 401 ? (
                   <Link
                     href="/sign-in"
@@ -646,7 +657,7 @@ export function Workspace({
             {reloadError ? (
               <p
                 role="alert"
-                className="absolute inset-x-4 bottom-4 rounded-xl border border-edge bg-ink-raised p-4 text-[13px] leading-[1.7] text-c4"
+                className="hairline absolute inset-x-4 bottom-4 rounded-xl bg-ink-raised p-4 text-[13px] leading-[1.7] text-c4 shadow-[0_18px_40px_-20px_rgba(0,0,0,0.9)] text-pretty"
               >
                 {reloadError}
               </p>
@@ -728,7 +739,7 @@ export function Workspace({
       ) : null}
 
       <div
-        className="flex items-center gap-3 overflow-hidden border-t border-edge px-4 py-1.5 text-[11px] text-said-faint"
+        className="rule-t flex items-center gap-3 overflow-hidden bg-ink-raised px-4 py-1.5 text-[11px] text-said-faint"
         style={{
           flex:
             layout.maximized === "history"
@@ -807,7 +818,7 @@ function EmptyCentre({
         <h2 className="display-kr text-[21px]">
           {failed ? "지도를 그리다가 멈췄어요" : "아직 읽지 않은 프로젝트예요"}
         </h2>
-        <p className="mt-3 text-[14px] leading-[1.8] text-said-soft">
+        <p className="mt-3 text-[14px] leading-[1.8] text-said-soft text-pretty">
           {failed && error
             ? error
             : source === "upload"
@@ -827,7 +838,7 @@ function EmptyCentre({
           type="button"
           onClick={onStart}
           disabled={starting}
-          className="mt-6 rounded-lg bg-paper px-5 py-2.5 text-[14px] font-semibold text-ink transition-colors hover:bg-lamp disabled:opacity-55"
+          className="mt-6 rounded-lg bg-paper px-5 py-2.5 text-[14px] font-semibold text-ink transition duration-150 hover:bg-lamp active:scale-[0.98] disabled:opacity-55"
         >
           {starting ? "시작하는 중…" : failed ? "다시 해보기" : "지도 그리기"}
         </button>

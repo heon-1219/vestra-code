@@ -191,8 +191,16 @@ const Lines = memo(function Lines({
             cx={x(node.lane)}
             cy={y(node.row)}
             r={DOT_R}
+            /*
+              An unselected dot is filled with the band's own surface, so it
+              punches a hole in the line running behind it rather than sitting
+              on top of it as a disc of some other colour. That fill has to be
+              whatever the band is painted in: it was `ink` while the band
+              inherited the page, and the band is `ink-raised` now — the same
+              surface the file list and the connections panel stand on.
+            */
             fill={
-              selectedSha === node.sha ? "var(--color-lamp)" : "var(--color-ink)"
+              selectedSha === node.sha ? "var(--color-lamp)" : "var(--color-ink-raised)"
             }
             stroke={
               selectedSha === node.sha
@@ -256,8 +264,22 @@ function ChangeRow({
           .join(", ")}
         title={at ? `${exactWhen(at)} · ${change.title}` : change.title}
         style={{ paddingLeft: gutter }}
+        /*
+          The same two surfaces the file list uses for the same two states, so
+          the two lists on this screen highlight identically.
+
+          They used to be `bg-ink-raised` for both — a row you had chosen and a
+          row you were merely pointing at drawn as the same object — and the
+          band's own surface is `ink-raised` now, which would have left both of
+          them invisible. `edge` / `edge-lit` sit above that surface rather than
+          on it, and the rail carries the selection the way the dot on the lane
+          already does: the lane dot turns `lamp` when selected, so the row
+          wears the same colour on its edge.
+        */
         className={`flex h-full w-full flex-col justify-center gap-0.5 rounded-md pr-2 text-left transition-colors ${
-          selected ? "bg-ink-raised" : "hover:bg-ink-raised"
+          selected
+            ? "bg-edge-lit shadow-[inset_2px_0_0_var(--color-lamp)]"
+            : "hover:bg-edge"
         }`}
       >
         <span className="flex items-baseline gap-2">
@@ -272,7 +294,7 @@ function ChangeRow({
             <span className="shrink-0 text-[11px] text-said-faint">여는 중이에요…</span>
           ) : null}
         </span>
-        <span className="flex items-center gap-2 text-[11px] leading-[1.4] text-said-faint">
+        <span className="flex items-center gap-2 text-[11px] leading-[1.4] text-said-faint tabular-nums">
           <span className="truncate">{meta}</span>
           {/* The run's own sentence, reused rather than recomputed: 항목 12개가
               늘었어요 is `runHeadline`'s to say, here and in the list below. */}
@@ -281,7 +303,7 @@ function ChangeRow({
               {headline}
             </span>
           ) : null}
-          <code className="ml-auto hidden shrink-0 text-[10px] text-said-faint sm:inline">
+          <code className="ml-auto hidden shrink-0 text-[10px] text-said-faint/80 sm:inline">
             {shortChangeSha(change.sha)}
           </code>
         </span>

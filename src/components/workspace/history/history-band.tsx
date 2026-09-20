@@ -379,7 +379,7 @@ export function HistoryBand({
         <div className="flex shrink-0 items-start gap-3 pb-2">
           <div className="min-w-0 flex-1">
             <h2 className="display-kr text-[15px] text-said">변경 기록</h2>
-            <p className="mt-1 text-[12px] leading-[1.7] text-said-faint">
+            <p className="mt-1 max-w-[68ch] text-[12px] leading-[1.7] text-said-faint text-pretty">
               코드를 바꿔 온 기록과, 그때마다 그린 지도를 나란히 보여드려요. 하나를 고르면 무엇이 바뀌었는지 알려드리고, 그 자리를 지도에서 밝혀요.
             </p>
           </div>
@@ -393,10 +393,8 @@ export function HistoryBand({
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
-          <div className="min-h-0 flex-1 overflow-y-auto pr-2">
-            <h3 className="text-[12px] font-medium text-said-soft">
-              코드를 바꾼 기록
-            </h3>
+          <div className="min-h-0 flex-1 overflow-y-auto pr-2 [scrollbar-color:var(--color-edge-lit)_transparent] [scrollbar-width:thin]">
+            <h3 className="label-kr text-[11px] text-said-soft">코드를 바꾼 기록</h3>
             {changesNote ? (
               <p className="mt-1 text-[12px] leading-[1.7] text-said-faint">
                 {changesNote}
@@ -416,14 +414,12 @@ export function HistoryBand({
             )}
             {/* Why the oldest row above is not the project's first change. */}
             {changes?.truncated ? (
-              <p className="pt-2 text-[11px] text-said-faint">
+              <p className="pt-2 text-[11px] leading-[1.7] text-said-faint tabular-nums text-pretty">
                 최근 {changes.changes.length}번만 보여드려요. 그 아래로도 기록이 더 있어요.
               </p>
             ) : null}
 
-            <h3 className="mt-7 text-[12px] font-medium text-said-soft">
-              지도를 그린 기록
-            </h3>
+            <h3 className="label-kr mt-8 text-[11px] text-said-soft">지도를 그린 기록</h3>
             {note ? (
               <p className="mt-1 text-[12px] text-said-faint">{note}</p>
             ) : (
@@ -438,7 +434,7 @@ export function HistoryBand({
                 itself the first run. Rendered only when there is something to say,
                 so it never costs a line of an empty band. */}
             {loaded?.truncated || stale ? (
-              <p className="pt-2 text-[11px] text-said-faint">
+              <p className="pt-2 text-[11px] leading-[1.7] text-said-faint tabular-nums text-pretty">
                 {loaded?.truncated ? `최근 ${entries.length}번만 보여드려요. ` : null}
                 {stale ? STALE : null}
               </p>
@@ -448,10 +444,10 @@ export function HistoryBand({
           {open || detailError ? (
             <aside
               aria-label="고른 변경"
-              className="min-h-0 shrink-0 overflow-y-auto border-edge lg:w-[24rem] lg:border-l lg:pl-4"
+              className="min-h-0 shrink-0 overflow-y-auto border-edge [scrollbar-color:var(--color-edge-lit)_transparent] [scrollbar-width:thin] lg:w-[24rem] lg:border-l-[0.8px] lg:pl-4"
             >
               {detailError ? (
-                <p role="alert" className="text-[12px] leading-[1.7] text-c4">
+                <p role="alert" className="text-[12px] leading-[1.7] text-c4 text-pretty">
                   {detailError}
                 </p>
               ) : open ? (
@@ -473,7 +469,7 @@ export function HistoryBand({
       aria-label="변경 기록"
       className="flex min-w-0 flex-1 items-center gap-3 self-stretch overflow-hidden"
     >
-      <span className="shrink-0">변경 기록</span>
+      <span className="label-kr shrink-0 text-said-soft">변경 기록</span>
       {/*
         The one control the strip must carry.
 
@@ -492,7 +488,7 @@ export function HistoryBand({
         <button
           type="button"
           onClick={() => onLight?.(null)}
-          className="shrink-0 rounded-md border border-edge-lit px-2 leading-[1.5] text-said-soft transition-colors hover:text-said"
+          className="shrink-0 rounded-md border border-edge-lit px-2 leading-[1.5] text-said-soft transition-colors hover:border-said-faint hover:bg-ink hover:text-said"
         >
           고른 변경 지우기
         </button>
@@ -571,19 +567,19 @@ function ChangeDetailPanel({
   return (
     <div className="pb-2">
       <div className="flex items-start gap-2">
-        <h3 className="min-w-0 flex-1 text-[13px] leading-[1.6] text-said">
+        <h3 className="display-kr min-w-0 flex-1 text-[14px] leading-[1.35] text-said text-pretty">
           {detail.title}
         </h3>
         <button
           type="button"
           onClick={onClose}
-          className="shrink-0 text-[11px] text-said-faint transition-colors hover:text-said-soft"
+          className="-mr-1 shrink-0 rounded-md px-1.5 py-0.5 text-[11px] text-said-faint transition-colors hover:bg-ink hover:text-said-soft"
         >
           닫기
         </button>
       </div>
 
-      <p className="mt-1 text-[11px] leading-[1.7] text-said-faint">
+      <p className="mt-1 text-[11px] leading-[1.7] text-said-faint tabular-nums">
         {[at ? exactWhen(at) : null, at ? formatWhen(at, new Date(now)) : null, detail.authorName]
           .filter(Boolean)
           .join(" · ")}
@@ -593,33 +589,33 @@ function ChangeDetailPanel({
         // The person's own words, kept as they wrote them — line breaks and
         // all. Nothing here rewrites a commit message: we have no better
         // account of what they were doing than the one they left.
-        <p className="mt-2 whitespace-pre-wrap text-[12px] leading-[1.7] text-said-soft">
+        <p className="mt-2 whitespace-pre-wrap border-l-[0.8px] border-edge-lit pl-3 text-[12px] leading-[1.7] text-said-soft">
           {detail.body}
         </p>
       ) : null}
 
-      <p className="mt-3 text-[13px] leading-[1.6] text-said-soft">
+      <p className="mt-3 text-[13px] leading-[1.6] text-said tabular-nums text-pretty">
         {changeHeadline(detail)}
       </p>
       {facts.length > 0 ? (
-        <p className="mt-1 text-[11px] leading-[1.7] text-said-faint">
+        <p className="mt-1 text-[11px] leading-[1.7] text-said-faint tabular-nums">
           {facts.join(" · ")}
         </p>
       ) : null}
 
-      <p className="mt-2 text-[12px] leading-[1.7] text-said-faint">
+      <p className="mt-2 text-[12px] leading-[1.7] text-said-faint tabular-nums text-pretty">
         {litSentence(detail)}
       </p>
 
       {detail.fileListMissing ? (
-        <p className="mt-2 text-[11px] leading-[1.7] text-said-faint">{MISSING_NOTE}</p>
+        <p className="mt-2 text-[11px] leading-[1.7] text-said-faint text-pretty">{MISSING_NOTE}</p>
       ) : null}
       {detail.fileListTruncated ? (
-        <p className="mt-2 text-[11px] leading-[1.7] text-said-faint">{TRUNCATED_NOTE}</p>
+        <p className="mt-2 text-[11px] leading-[1.7] text-said-faint text-pretty">{TRUNCATED_NOTE}</p>
       ) : null}
 
       {shown.length > 0 ? (
-        <ul className="mt-3 border-t border-edge pt-2">
+        <ul className="rule-t mt-3 pt-2">
           {shown.map((file) => (
             <li
               key={`${file.path}-${file.status}`}
@@ -646,7 +642,7 @@ function ChangeDetailPanel({
         </ul>
       ) : null}
       {hidden > 0 ? (
-        <p className="mt-1 text-[11px] text-said-faint">
+        <p className="mt-1 text-[11px] text-said-faint tabular-nums">
           그 밖에 {hidden.toLocaleString("ko-KR")}개가 더 있어요.
         </p>
       ) : null}
@@ -679,7 +675,7 @@ function HistoryChip({ entry, now }: { entry: RunEntry; now: number }) {
       // padding take a third of that, so a chip on the default line height
       // would be clipped by the pane at exactly the size somebody drags it to
       // when they want it out of the way but still readable.
-      className="flex shrink-0 items-center gap-1.5 rounded-md border border-edge px-2 leading-[1.5]"
+      className="flex shrink-0 items-center gap-1.5 rounded-md border-[0.8px] border-edge bg-ink px-2 leading-[1.5]"
     >
       <Dot tone={runTone(entry.run)} />
       {at ? (
@@ -704,22 +700,22 @@ function HistoryRow({ entry, now }: { entry: RunEntry; now: number }) {
     .join(" · ");
 
   return (
-    <li className="flex gap-3 border-b border-edge py-2.5 last:border-b-0">
+    <li className="flex gap-3 border-b-[0.8px] border-edge py-2.5 last:border-b-0">
       <Dot tone={runTone(entry.run)} className="mt-[7px]" />
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
           {at ? (
-            <time dateTime={entry.at} className="text-[13px] text-said">
+            <time dateTime={entry.at} className="text-[13px] text-said tabular-nums">
               {formatWhen(at, new Date(now))}
             </time>
           ) : null}
-          <span className="text-[13px] leading-[1.6] text-said-soft">
+          <span className="text-[13px] leading-[1.6] text-said-soft tabular-nums">
             {runHeadline(entry)}
           </span>
         </div>
 
         {meta ? (
-          <p className="mt-1 text-[11px] leading-[1.7] text-said-faint">{meta}</p>
+          <p className="mt-1 text-[11px] leading-[1.7] text-said-faint tabular-nums">{meta}</p>
         ) : null}
 
         {sha ? (

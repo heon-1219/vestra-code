@@ -329,7 +329,17 @@ export function Divider({
         }
       }}
       onDoubleClick={onReset}
-      className={`group relative shrink-0 bg-edge transition-colors hover:bg-edge-lit focus-visible:bg-lamp-dim focus-visible:outline-none ${
+      /*
+        Three states, and the middle one is the one that was missing.
+        At rest the divider was `bg-edge` — the same token every hairline border
+        on this screen uses — so a 5px bar you can drag and a 0.8px rule you
+        cannot looked like the same object, one of them simply thicker. It now
+        rests on the seam colour and lights on hover, and `active:` gives it the
+        accent while it is actually being dragged, which is the feedback that
+        says the grab landed. `lamp` rather than a grey: this is a control, and
+        on this product lit means "you act here".
+      */
+      className={`group relative shrink-0 bg-edge transition-colors hover:bg-edge-lit focus-visible:bg-lamp-dim focus-visible:outline-none active:bg-lamp-dim ${
         vertical ? "cursor-col-resize" : "cursor-row-resize"
       }`}
     >
@@ -343,6 +353,28 @@ export function Divider({
       <span
         aria-hidden="true"
         className={`absolute ${vertical ? "-inset-x-[5px] inset-y-0" : "-inset-y-[5px] inset-x-0"}`}
+      />
+
+      {/*
+        The grip: a short mark across the middle of the bar, so a divider is
+        recognisable as one while the pointer is somewhere else entirely.
+
+        Visible at rest rather than revealed on hover — a control you can only
+        find by already having found it is not discoverable — and it brightens
+        with the bar. `pointer-events-none` because the bar and its oversized
+        grab area own the pointer; this is only ever a picture of a handle.
+
+        Centred with `left-1/2 -translate-x-1/2` on the vertical bar, which is
+        a transform on a 1px-wide element and therefore cannot drift the way a
+        margin would at fractional device pixel ratios.
+      */}
+      <span
+        aria-hidden="true"
+        className={`pointer-events-none absolute rounded-full bg-said-faint/35 transition-colors group-hover:bg-said-faint/70 ${
+          vertical
+            ? "left-1/2 top-1/2 h-6 w-px -translate-x-1/2 -translate-y-1/2"
+            : "left-1/2 top-1/2 h-px w-6 -translate-x-1/2 -translate-y-1/2"
+        }`}
       />
     </div>
   );
@@ -384,7 +416,18 @@ export function PaneChips({
 
   return (
     <div className="hidden shrink-0 items-center gap-1 md:flex">
-      <span className="mr-1 text-[11px] text-said-faint">화면 채우기</span>
+      {/*
+        `label-kr`, the same small-label voice the panels' section headings use,
+        so the one label in the header is not its own third treatment.
+
+        The lit chip stays `bg-paper` and is deliberately the loudest control on
+        this screen. It is the only thing that says a pane is filling the
+        workspace — the other panes are at zero width, not unmounted, and the
+        state is not persisted — so it is a status indicator wearing a button's
+        clothes, and quieting it into the panel's `bg-ink` toggle family would
+        cost the one signal that explains where everything went.
+      */}
+      <span className="label-kr mr-1 text-[11px] text-said-faint">화면 채우기</span>
       {panes.map((pane) => {
         const on = maximized === pane;
         return (
@@ -393,10 +436,17 @@ export function PaneChips({
             type="button"
             onClick={() => onToggle(pane)}
             aria-pressed={on}
+            /*
+              `bg-ink-raised` on hover, not `bg-ink`. The header has no surface
+              of its own, so it is painted in `ink` by the body — which is
+              exactly what the unlit chip was asking for on hover, and a chip
+              that hovers to the colour it is already sitting on has no hover
+              state at all. It has to go up from the header, not match it.
+            */
             className={`rounded-md px-2 py-1 text-[12px] transition-colors ${
               on
                 ? "bg-paper text-ink"
-                : "text-said-faint hover:bg-ink hover:text-said-soft"
+                : "text-said-faint hover:bg-ink-raised hover:text-said-soft"
             }`}
           >
             {PANE_LABELS[pane]}

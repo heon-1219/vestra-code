@@ -440,8 +440,8 @@ export function SpreadsheetBody({
         reasoning as D75.
       */}
       {sheets.length > 1 ? (
-        <div className="flex shrink-0 items-center gap-2 border-b border-edge px-4 py-2">
-          <label htmlFor={pickerId} className="shrink-0 text-[11px] text-said-faint">
+        <div className="flex shrink-0 items-center gap-2 border-b-[0.8px] border-edge px-4 py-2">
+          <label htmlFor={pickerId} className="label-kr shrink-0 text-[11px] text-said-faint">
             시트
           </label>
           <select
@@ -468,14 +468,14 @@ export function SpreadsheetBody({
               </option>
             ))}
           </select>
-          <span className="shrink-0 text-[11px] text-said-faint">
+          <span className="shrink-0 text-[11px] text-said-faint tabular-nums">
             {sheets.length.toLocaleString("ko-KR")}개 중 {sheetIndex + 1}번째
           </span>
         </div>
       ) : null}
 
       {notice ? (
-        <p className="shrink-0 border-b border-edge px-4 py-2 text-[12px] leading-[1.7] text-said-soft">
+        <p className="shrink-0 border-b-[0.8px] border-edge px-4 py-2 text-[12px] leading-[1.7] text-said-soft tabular-nums text-pretty">
           {notice}
         </p>
       ) : null}
@@ -490,7 +490,7 @@ export function SpreadsheetBody({
           tabIndex={0}
           role="region"
           aria-label="표 내용"
-          className="min-h-0 flex-1 overflow-auto focus:outline-none focus-visible:ring-1 focus-visible:ring-lamp-dim"
+          className="min-h-0 flex-1 overflow-auto bg-ink-sunk focus:outline-none focus-visible:ring-1 focus-visible:ring-lamp-dim [scrollbar-color:var(--color-edge-lit)_transparent] [scrollbar-width:thin]"
         >
           <table className="border-separate border-spacing-0 font-mono text-[12px] leading-[1.6]">
             <thead>
@@ -503,7 +503,7 @@ export function SpreadsheetBody({
                 */}
                 <th
                   scope="col"
-                  className="sticky left-0 top-0 z-30 border-b border-r border-edge bg-ink-raised px-2 py-1"
+                  className="sticky left-0 top-0 z-30 border-b-[0.8px] border-r-[0.8px] border-edge bg-ink-raised px-2 py-1"
                 >
                   <span className="sr-only">줄 번호</span>
                 </th>
@@ -511,7 +511,7 @@ export function SpreadsheetBody({
                   <th
                     key={column}
                     scope="col"
-                    className="sticky top-0 z-20 border-b border-r border-edge bg-ink-raised px-2 py-1 text-left font-normal text-said-faint"
+                    className="label-kr sticky top-0 z-20 border-b-[0.8px] border-r-[0.8px] border-edge bg-ink-raised px-2 py-1 text-left text-said-faint"
                   >
                     {columnLabel(column)}
                   </th>
@@ -523,7 +523,7 @@ export function SpreadsheetBody({
                 <tr key={index}>
                   <th
                     scope="row"
-                    className="sticky left-0 z-10 border-b border-r border-edge bg-ink-raised px-2 py-1 text-right align-top font-normal text-said-faint"
+                    className="sticky left-0 z-10 border-b-[0.8px] border-r-[0.8px] border-edge bg-ink-raised px-2 py-1 text-right align-top font-normal tabular-nums text-said-faint"
                   >
                     {index + 1}
                   </th>
@@ -533,7 +533,7 @@ export function SpreadsheetBody({
                       // `pre-wrap` because a cell can genuinely contain a line
                       // break, and the ceiling because one long cell would
                       // otherwise stretch its column past every other one.
-                      className="max-w-[24rem] whitespace-pre-wrap break-words border-b border-r border-edge px-2 py-1 align-top text-said-soft"
+                      className="max-w-[24rem] whitespace-pre-wrap break-words border-b-[0.8px] border-r-[0.8px] border-edge px-2 py-1 align-top tabular-nums text-said-soft"
                     >
                       {cell}
                     </td>
@@ -545,7 +545,7 @@ export function SpreadsheetBody({
         </div>
       )}
 
-      <p className="shrink-0 border-t border-edge px-4 py-2 text-[11px] text-said-faint">
+      <p className="rule-t shrink-0 px-4 py-2 text-[11px] text-said-faint tabular-nums">
         {count(table.totalRows)}줄 · {count(table.totalColumns)}칸
         {size !== null ? ` · ${formatBytes(size)}` : ""}
         {shape.language ? ` · ${shape.language}` : ""}
@@ -560,7 +560,7 @@ function Centred({ children }: { children: React.ReactNode }) {
     // one where it sits under a sheet picker. In a column flex parent the basis
     // wins, outside one the height does, so both are needed and neither is dead.
     <div className="flex h-full min-h-0 flex-1 items-center justify-center overflow-y-auto p-8">
-      <p className="max-w-[44ch] text-center text-[14px] leading-[1.85] text-said-soft">
+      <p className="max-w-[44ch] text-center text-[14px] leading-[1.85] text-said-soft text-pretty">
         {children}
       </p>
     </div>

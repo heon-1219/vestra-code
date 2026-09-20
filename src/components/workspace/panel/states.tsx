@@ -23,13 +23,13 @@ import { CertaintyMark, displayName } from "./connection-row";
 
 export function PanelHeading({ children }: { children: React.ReactNode }) {
   return (
-    <h2 className="text-[16px] font-semibold tracking-[-0.02em] text-said">{children}</h2>
+    <h2 className="display-kr text-[17px] text-said">{children}</h2>
   );
 }
 
 export function PanelNote({ children }: { children: React.ReactNode }) {
   return (
-    <p className="mt-2 text-[13px] leading-[1.8] text-said-soft">{children}</p>
+    <p className="mt-2 text-[13px] leading-[1.8] text-said-soft text-pretty">{children}</p>
   );
 }
 
@@ -176,7 +176,7 @@ export function AnalysisRunningState({
                   {PHASE_WORDS[phase][state]}
                 </p>
                 {counter ? (
-                  <p className="mt-0.5 text-[12px] text-said-faint">{counter}</p>
+                  <p className="mt-0.5 text-[12px] text-said-faint tabular-nums">{counter}</p>
                 ) : null}
               </div>
             </li>
@@ -188,7 +188,7 @@ export function AnalysisRunningState({
       )}
 
       {run.connections > 0 ? (
-        <div className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-edge pt-4 text-[12px] text-said-faint">
+        <div className="rule-t mt-5 flex flex-wrap items-center gap-x-4 gap-y-1.5 pt-4 text-[12px] text-said-faint tabular-nums">
           <span className="flex items-center gap-1.5">
             <CertaintyMark certainty="certain" />
             {CERTAINTY_WORDS.certain} {run.certain.toLocaleString("ko-KR")}
@@ -216,7 +216,7 @@ export function AnalysisRunningState({
         A native <details> so it opens without JavaScript and with a keyboard.
       */}
       {run.recent.length > 0 || run.skipped.length > 0 ? (
-        <details className="mt-4 border-t border-edge pt-3">
+        <details className="rule-t mt-4 pt-3">
           <summary className="cursor-pointer text-[13px] text-said-faint hover:text-said-soft">
             자세히
           </summary>
@@ -229,7 +229,7 @@ export function AnalysisRunningState({
           </ul>
           {run.skipped.length > 0 ? (
             <div className="mt-3">
-              <p className="text-[12px] text-said-soft">
+              <p className="text-[12px] text-said-soft tabular-nums">
                 읽지 못한 파일 {run.skipped.length.toLocaleString("ko-KR")}개
               </p>
               <ul className="mt-1 space-y-1">
@@ -264,7 +264,7 @@ function Counts({ run }: { run: RunProgress }) {
         { term: "연결", value: run.connections },
       ].map((cell) => (
         <div key={cell.term}>
-          <dt className="text-[12px] text-said-faint">{cell.term}</dt>
+          <dt className="label-kr text-[11px] text-said-faint">{cell.term}</dt>
           <dd className="mt-0.5 font-mono text-[17px] text-said">
             {cell.value.toLocaleString("ko-KR")}
           </dd>
@@ -324,7 +324,7 @@ export function RunFailedState({
         <button
           type="button"
           onClick={onRetry}
-          className="mt-4 rounded-lg bg-paper px-4 py-2 text-[14px] font-semibold text-ink transition-colors hover:bg-lamp"
+          className="mt-4 rounded-lg bg-paper px-4 py-2 text-[14px] font-semibold text-ink transition duration-150 hover:bg-lamp active:scale-[0.98]"
         >
           다시 해보기
         </button>
@@ -407,21 +407,21 @@ export function NothingSelectedState({
           <dl className="mt-5 grid grid-cols-2 gap-x-4 gap-y-3">
             {counts.map(({ kind, count }) => (
               <div key={kind}>
-                <dt className="text-[12px] text-said-faint">{KIND_WORDS[kind]}</dt>
-                <dd className="text-[19px] font-semibold tracking-[-0.02em] text-said">
+                <dt className="label-kr text-[11px] text-said-faint">{KIND_WORDS[kind]}</dt>
+                <dd className="text-[19px] font-semibold tracking-[-0.02em] text-said tabular-nums">
                   {count.toLocaleString("ko-KR")}
                 </dd>
               </div>
             ))}
             <div>
-              <dt className="text-[12px] text-said-faint">연결</dt>
-              <dd className="text-[19px] font-semibold tracking-[-0.02em] text-said">
+              <dt className="label-kr text-[11px] text-said-faint">연결</dt>
+              <dd className="text-[19px] font-semibold tracking-[-0.02em] text-said tabular-nums">
                 {view.connections.length.toLocaleString("ko-KR")}
               </dd>
             </div>
           </dl>
 
-          <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-edge pt-3 text-[12px] text-said-faint">
+          <div className="rule-t mt-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 pt-3 text-[12px] text-said-faint tabular-nums">
             <span className="flex items-center gap-1.5">
               <CertaintyMark certainty="certain" />
               {CERTAINTY_WORDS.certain} {certain.toLocaleString("ko-KR")}
@@ -434,21 +434,21 @@ export function NothingSelectedState({
 
           {busiest.length > 0 ? (
             <div className="mt-5">
-              <p className="text-[12px] text-said-faint">많이 쓰이는 것</p>
+              <p className="label-kr text-[11px] text-said-faint">많이 쓰이는 것</p>
               <ul className="mt-1.5 space-y-1">
                 {busiest.map((item) => (
                   <li key={item.id}>
                     <button
                       type="button"
                       onClick={() => onSelect(item.id)}
-                      className="truncate text-left text-[14px] text-said-soft hover:text-lamp"
+                      className="-mx-1.5 block w-[calc(100%+0.75rem)] truncate rounded-md px-1.5 py-1 text-left text-[14px] text-said-soft transition-colors hover:bg-ink hover:text-lamp"
                     >
                       {item.label ? (
                         displayName(item)
                       ) : (
                         <code className="text-[13px]">{item.name}</code>
                       )}
-                      <span className="ml-1.5 text-[12px] text-said-faint">
+                      <span className="ml-1.5 text-[12px] text-said-faint tabular-nums">
                         {item.usedBy}곳에서 쓰여요
                       </span>
                     </button>
@@ -462,7 +462,7 @@ export function NothingSelectedState({
       ) : null}
 
       {view.lastRun?.filesSkipped.length ? (
-        <details className="mt-5 border-t border-edge pt-3">
+        <details className="rule-t mt-5 pt-3">
           <summary className="cursor-pointer text-[13px] text-said-faint hover:text-said-soft">
             읽지 못한 파일 {view.lastRun.filesSkipped.length.toLocaleString("ko-KR")}개
           </summary>
@@ -491,9 +491,9 @@ export function NothingSelectedState({
  */
 export function NoKnownConnections() {
   return (
-    <div className="rounded-xl border border-edge bg-ink px-4 py-5">
+    <div className="hairline rounded-xl bg-ink px-4 py-5">
       <p className="text-[14px] font-medium text-said">아는 연결이 없어요</p>
-      <p className="mt-1.5 text-[13px] leading-[1.8] text-said-soft">
+      <p className="mt-1.5 text-[13px] leading-[1.8] text-said-soft text-pretty">
         지금까지 읽은 것 중에는 여기와 이어진 곳을 찾지 못했어요. 우리가 못 본
         연결이 있을 수도 있어요.
       </p>
@@ -529,7 +529,7 @@ export function AnswerState({
   onSelect: (id: string) => void;
 }) {
   return (
-    <div className="rounded-xl border border-edge bg-ink px-4 py-4">
+    <div className="hairline rounded-xl bg-ink px-4 py-4">
       <p className="whitespace-pre-wrap text-[14px] leading-[1.85] text-said">
         {answer.text}
         {answer.pending ? <span className="animate-pulse text-said-faint"> …</span> : null}
@@ -541,7 +541,7 @@ export function AnswerState({
               <button
                 type="button"
                 onClick={() => onSelect(citation.itemId)}
-                className="rounded-md border border-edge-lit px-2 py-1 text-[12px] text-said-soft transition-colors hover:border-lamp-dim hover:text-lamp"
+                className="rounded-md border border-edge-lit px-2 py-1 text-[12px] text-said-soft transition-colors hover:border-lamp-dim hover:bg-ink-raised hover:text-lamp"
               >
                 {citation.name}
               </button>
@@ -569,14 +569,14 @@ export function PromptState({ prompt }: { prompt: PanelPrompt }) {
   }
 
   return (
-    <div className="rounded-xl border border-edge bg-ink px-4 py-4">
-      <p className="text-[14px] leading-[1.85] text-said">{prompt.confirmation}</p>
+    <div className="hairline rounded-xl bg-ink px-4 py-4">
+      <p className="text-[14px] leading-[1.85] text-said text-pretty">{prompt.confirmation}</p>
 
       <div className="mt-3 flex items-center gap-2">
         <button
           type="button"
           onClick={copy}
-          className="rounded-lg bg-paper px-3 py-1.5 text-[13px] font-semibold text-ink transition-colors hover:bg-lamp"
+          className="rounded-lg bg-paper px-3 py-1.5 text-[13px] font-semibold text-ink transition duration-150 hover:bg-lamp active:scale-[0.98]"
         >
           {copied ? "복사했어요" : "복사하기"}
         </button>
@@ -586,7 +586,7 @@ export function PromptState({ prompt }: { prompt: PanelPrompt }) {
         <summary className="cursor-pointer text-[13px] text-said-faint hover:text-said-soft">
           프롬프트 보기
         </summary>
-        <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg border border-edge bg-ink-sunk p-3 font-mono text-[11px] leading-[1.7] text-said-soft">
+        <pre className="hairline mt-2 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-ink-sunk p-3 font-mono text-[11px] leading-[1.7] text-said-soft [scrollbar-color:var(--color-edge-lit)_transparent] [scrollbar-width:thin]">
           {prompt.prompt}
         </pre>
       </details>

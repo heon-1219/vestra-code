@@ -235,9 +235,9 @@ export function PlacesPanel({
   return (
     <nav
       aria-label="프로젝트 안의 것들"
-      className="flex h-full min-h-0 flex-col border-r border-edge bg-ink-raised"
+      className="flex h-full min-h-0 flex-col border-r-[0.8px] border-edge bg-ink-raised"
     >
-      <div className="flex shrink-0 gap-1 border-b border-edge px-3 py-2.5">
+      <div className="flex shrink-0 gap-1 border-b-[0.8px] border-edge px-3 py-2.5">
         <TabButton active={tab === "features"} onClick={() => setTab("features")}>
           기능
         </TabButton>
@@ -246,7 +246,13 @@ export function PlacesPanel({
         </TabButton>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3">
+      {/*
+        A thin, tinted scrollbar rather than the platform's own. The default is
+        a light chunky bar down the edge of a near-black panel — the brightest
+        thing in the column, next to the dimmest text on the screen. Colour
+        only, no width trickery: the bar stays a real scrollbar you can grab.
+      */}
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 py-3 [scrollbar-color:var(--color-edge-lit)_transparent] [scrollbar-width:thin]">
         {tab === "features" ? (
           <p className="px-2 text-[13px] leading-[1.8] text-said-faint">
             {hasFeatures
@@ -273,9 +279,21 @@ export function PlacesPanel({
 
             {sections.map(({ group, rows, revealed }) => (
               <section key={group.id} className="mb-3">
-                <h3 className="px-2 pb-1 text-[11px] font-semibold tracking-[0.02em] text-said-faint">
+                {/*
+                  `label-kr` rather than a weight and a tracking chosen here.
+                  It is the product's own small-label voice from `globals.css`,
+                  written for Hangul, and the same one the landing page uses —
+                  so the heading above a list reads as a label everywhere on the
+                  product rather than as small body text in four slightly
+                  different ways. The count resets the tracking, because open
+                  tracking on digits scatters a number that is meant to be read
+                  as one quantity.
+                */}
+                <h3 className="label-kr px-2 pb-1 text-[11px] text-said-faint">
                   {group.name}{" "}
-                  <span className="font-mono font-normal">{group.items.length}</span>
+                  <span className="font-mono font-normal tabular-nums tracking-normal">
+                    {group.items.length}
+                  </span>
                 </h3>
                 {/*
                   One flat list with `aria-level` rather than a nested
@@ -298,7 +316,7 @@ export function PlacesPanel({
                           key={row.key}
                           aria-level={row.depth + 1}
                           className={`rounded-md transition-colors hover:bg-edge ${
-                            dim ? "opacity-35" : ""
+                            dim ? "opacity-30" : ""
                           }`}
                         >
                           {/*
@@ -366,7 +384,11 @@ export function PlacesPanel({
 
                     // Dimmed, never hidden. A list that empties out as you type
                     // tells someone their project lost the file they were
-                    // looking at; the map next to it follows the same rule.
+                    // looking at; the map next to it follows the same rule —
+                    // and follows it at the same strength, `DIM` in
+                    // `map/render/scene.ts`, which is 30%. It used to be 35%
+                    // here, which is one light dimming the two halves of one
+                    // screen by two different amounts.
                     const dim = beam.active && !beam.matched.has(item.id);
                     const name = basename(item);
                     // A server address has no file of its own to open, and a
@@ -377,9 +399,20 @@ export function PlacesPanel({
                       <li
                         key={item.id}
                         aria-level={row.depth + 1}
+                        /*
+                          The chosen row carries a rail, not just a wash.
+                          Selected was `bg-edge-lit` and hover is `bg-edge` —
+                          two greys one step apart on a near-black panel, which
+                          is a difference you have to look for to find. The rail
+                          is an inset shadow rather than a border or a pseudo
+                          element so nothing reflows and the row keeps its
+                          indentation arithmetic exactly.
+                        */
                         className={`group flex items-center rounded-md transition-colors ${
-                          item.id === selectedId ? "bg-edge-lit" : "hover:bg-edge"
-                        } ${dim ? "opacity-35" : ""}`}
+                          item.id === selectedId
+                            ? "bg-edge-lit shadow-[inset_2px_0_0_var(--color-lamp-dim)]"
+                            : "hover:bg-edge"
+                        } ${dim ? "opacity-30" : ""}`}
                       >
                         <button
                           type="button"

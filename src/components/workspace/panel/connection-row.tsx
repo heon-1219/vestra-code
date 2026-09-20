@@ -86,7 +86,15 @@ export function ConnectionRow({
   const name = displayName(item);
 
   return (
-    <li className="group flex items-start gap-2 border-b border-edge last:border-b-0">
+    /*
+      The row has a hover surface now. It was a `group` whose only hover effect
+      was the name turning amber — a target two lines tall with nothing under
+      the pointer to say it was a target, sitting next to a file list where
+      every row lights. `bg-ink` at 60% rather than flat: this row carries a
+      switch on its right that has its own hover, and a fully opaque wash would
+      make the two read as one pressed object.
+    */
+    <li className="group flex items-start gap-2 border-b-[0.8px] border-edge transition-colors last:border-b-0 hover:bg-ink/60">
       <button
         type="button"
         onClick={() => onSelect(item.id)}
@@ -102,15 +110,37 @@ export function ConnectionRow({
             <span className="text-[13px] text-said-soft">{verb}</span>
           </span>
 
-          <span className="mt-0.5 block truncate text-[12px] text-said-faint">
-            {[
-              KIND_WORDS[item.kind],
-              hops > 1 ? distanceWord(hops) : null,
-              via ? `${displayName(via)} 거쳐서` : null,
-              CERTAINTY_WORDS[certainty],
-            ]
-              .filter(Boolean)
-              .join(" · ")}
+          {/*
+            The certainty word is lifted out of the dot-joined run.
+
+            It used to be the fourth item in `파일 · 한 다리 건너 · … · 확실해요`,
+            set in the same size and the same grey as everything beside it — so
+            the one claim on this row that the whole product rests on was
+            rendered as another attribute of the row, and the eye had nothing to
+            stop on. It now sits on its own at the end of the line, one step
+            brighter than the incidental facts in front of it.
+
+            **Both values get the identical treatment**, and that is the point.
+            Making 짐작이에요 quieter than 확실해요 would teach the eye to read the
+            guess as "less" rather than as "different" — the same mistake
+            `Swatch` in `analysis-screen.tsx` refuses when it keeps both
+            swatches one colour and lets only the texture carry the difference.
+            The difference is carried by `CertaintyMark` on the left, which is a
+            texture and survives being small, dim or projected; here it is
+            carried by the word itself, which is the other half of the same
+            redundancy.
+          */}
+          <span className="mt-0.5 flex min-w-0 items-baseline gap-1.5 text-[12px]">
+            <span className="min-w-0 truncate text-said-faint">
+              {[
+                KIND_WORDS[item.kind],
+                hops > 1 ? distanceWord(hops) : null,
+                via ? `${displayName(via)} 거쳐서` : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")}
+            </span>
+            <span className="shrink-0 text-said-soft">{CERTAINTY_WORDS[certainty]}</span>
           </span>
         </span>
       </button>

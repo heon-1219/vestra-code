@@ -192,14 +192,14 @@ export function AnalysisScreen({
       </div>
 
       <div className="relative w-full max-w-[620px]">
-        <p className="text-[13px] font-medium tracking-[-0.01em] text-said-faint">
-          {projectName}
-        </p>
+        <p className="label-kr text-[11px] text-said-faint">{projectName}</p>
 
         <div role="status" aria-live="polite" className="mt-2">
-          <h1 className="display-kr text-[27px] text-said">{headline(progress)}</h1>
+          <h1 className="display-kr text-[27px] text-said text-balance">
+            {headline(progress)}
+          </h1>
           {said ? (
-            <p className="mt-2.5 max-w-[46ch] text-[14px] leading-[1.8] text-said-soft">
+            <p className="mt-2.5 max-w-[46ch] text-[14px] leading-[1.8] text-said-soft text-pretty">
               {said}
             </p>
           ) : null}
@@ -226,7 +226,7 @@ export function AnalysisScreen({
             real work happening at this second. */}
         {reading && !completion && !failure ? (
           <p className="mt-3 flex items-baseline gap-2 text-[12px] text-said-faint">
-            <span className="shrink-0">지금 읽는 파일</span>
+            <span className="label-kr shrink-0 text-[11px]">지금 읽는 파일</span>
             <span className="truncate font-mono">{reading}</span>
           </p>
         ) : null}
@@ -257,7 +257,7 @@ export function AnalysisScreen({
         ) : null}
 
         {progress.stream === "retrying" && !completion && !failure ? (
-          <p className="mt-5 text-[13px] leading-[1.7] text-said-faint">
+          <p className="mt-5 max-w-[46ch] text-[13px] leading-[1.7] text-said-faint text-pretty">
             화면 연결이 잠깐 끊겼어요. 다시 잇는 중이고, 읽는 일은 계속되고 있어요.
           </p>
         ) : null}
@@ -286,7 +286,7 @@ function Counters({ progress }: { progress: AnalysisProgress }) {
     : progress.connectionsFound;
 
   return (
-    <dl className="mt-7 grid grid-cols-3 gap-3 border-y border-edge py-4">
+    <dl className="mt-7 grid grid-cols-3 gap-3 border-y-[0.8px] border-edge py-4">
       <Counter
         label="읽은 파일"
         value={files}
@@ -313,7 +313,7 @@ function Counter({
 }) {
   return (
     <div>
-      <dt className="text-[12px] tracking-[-0.005em] text-said-faint">{label}</dt>
+      <dt className="label-kr text-[11px] text-said-faint">{label}</dt>
       <dd className="mt-0.5 flex items-baseline gap-1">
         {/*
          * Keyed on the value so the element is replaced and the flash replays.
@@ -361,7 +361,7 @@ function Arrival({
 
   return (
     <div className="pointer-events-auto">
-      <p className="text-[16px] leading-[1.85] text-said">
+      <p className="text-[16px] leading-[1.85] text-said tabular-nums text-pretty">
         파일 {ko(completion.filesParsed)}개를 읽고 그 안에서 {ko(completion.itemCount)}개를
         찾았어요.{" "}
         {completion.connectionCount > 0
@@ -370,7 +370,7 @@ function Arrival({
       </p>
 
       {completion.connectionCount > 0 ? (
-        <p className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px] text-said-soft">
+        <p className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px] text-said-soft tabular-nums">
           {inferred === 0 ? (
             <span className="flex items-center gap-2">
               <Swatch kind="certain" />
@@ -399,12 +399,14 @@ function Arrival({
         has been told we read their whole project.
       */}
       {missed ? (
-        <div className="mt-4 rounded-xl border border-edge bg-ink-raised p-4">
-          <p className="text-[13px] leading-[1.8] text-said">{missed.said}</p>
-          <p className="mt-1.5 text-[13px] leading-[1.8] text-said-soft">
+        <div className="hairline mt-4 rounded-xl bg-ink-raised p-4 shadow-[inset_2px_0_0_var(--color-lamp-dim)]">
+          <p className="text-[13px] leading-[1.8] text-said tabular-nums text-pretty">
+            {missed.said}
+          </p>
+          <p className="mt-1.5 text-[13px] leading-[1.8] text-said-soft text-pretty">
             {missed.because}
           </p>
-          <p className="mt-1.5 text-[13px] leading-[1.8] text-said-soft">
+          <p className="mt-1.5 text-[13px] leading-[1.8] text-said-soft text-pretty">
             {missed.caution}
           </p>
         </div>
@@ -413,7 +415,7 @@ function Arrival({
       {completion.limits.length > 0 ? (
         <ul className="mt-3 space-y-1">
           {completion.limits.map((limit) => (
-            <li key={limit} className="text-[13px] leading-[1.75] text-said-faint">
+            <li key={limit} className="text-[13px] leading-[1.75] text-said-faint text-pretty">
               {limit}
             </li>
           ))}
@@ -424,7 +426,7 @@ function Arrival({
         <button
           type="button"
           onClick={onArrive}
-          className="mt-5 rounded-lg bg-paper px-5 py-2.5 text-[14px] font-semibold text-ink transition-colors hover:bg-lamp"
+          className="mt-5 rounded-lg bg-paper px-5 py-2.5 text-[14px] font-semibold text-ink transition duration-150 hover:bg-lamp active:scale-[0.98]"
         >
           지도 열기
         </button>
@@ -498,14 +500,14 @@ function Stopped({
   onRetry?: () => void;
 }) {
   return (
-    <div role="alert" className="mt-6 rounded-xl border border-edge bg-ink-raised p-5">
-      <p className="text-[15px] leading-[1.8] text-said">{message}</p>
+    <div role="alert" className="hairline mt-6 rounded-xl bg-ink-raised p-5">
+      <p className="text-[15px] leading-[1.8] text-said text-pretty">{message}</p>
 
       {onRetry ? (
         <button
           type="button"
           onClick={onRetry}
-          className="mt-4 rounded-lg bg-paper px-4 py-2 text-[14px] font-semibold text-ink transition-colors hover:bg-lamp"
+          className="mt-4 rounded-lg bg-paper px-4 py-2 text-[14px] font-semibold text-ink transition duration-150 hover:bg-lamp active:scale-[0.98]"
         >
           다시 시도하기
         </button>
@@ -520,7 +522,7 @@ function Stopped({
          * rows that predate the change. It says that, rather than the flat "we
          * do not have it" that is no longer true of anything we store today.
          */
-        <p className="mt-3 text-[13px] leading-[1.75] text-said-faint">
+        <p className="mt-3 text-[13px] leading-[1.75] text-said-faint text-pretty">
           이 프로젝트는 파일을 보관하기 전에 올리셔서, 폴더를 한 번 더
           골라주셔야 다시 읽을 수 있어요.
         </p>
@@ -541,7 +543,7 @@ function Details({ progress }: { progress: AnalysisProgress }) {
   if (recentFiles.length === 0 && skipped.length === 0) return null;
 
   return (
-    <div className="mt-6 border-t border-edge pt-4">
+    <div className="rule-t mt-6 pt-4">
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -555,7 +557,7 @@ function Details({ progress }: { progress: AnalysisProgress }) {
 
       {open ? (
         <div id="vc-analysis-details" className="mt-3">
-          <ul className="max-h-[168px] space-y-1 overflow-y-auto">
+          <ul className="max-h-[168px] space-y-1 overflow-y-auto [scrollbar-color:var(--color-edge-lit)_transparent] [scrollbar-width:thin]">
             {recentFiles.slice(0, 60).map((path, index) => (
               <li
                 key={`${path}-${index}`}
@@ -568,7 +570,7 @@ function Details({ progress }: { progress: AnalysisProgress }) {
 
           {skipped.length > 0 ? (
             <div className="mt-4">
-              <p className="text-[13px] text-said-soft">
+              <p className="text-[13px] text-said-soft tabular-nums">
                 넘어간 파일 {skipped.length.toLocaleString("ko-KR")}개
               </p>
               <ul className="mt-1.5 space-y-1">

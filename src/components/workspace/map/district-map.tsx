@@ -903,7 +903,7 @@ export function DistrictMap({
         ref={wrapRef}
         className={`flex h-full w-full items-center justify-center bg-ink-sunk ${className ?? ""}`}
       >
-        <p className="max-w-[26ch] text-center text-[14px] leading-[1.8] text-said-faint">
+        <p className="max-w-[26ch] text-center text-[14px] leading-[1.8] text-said-faint text-pretty">
           아직 지도에 올릴 게 없어요. 살펴보기가 끝나면 여기에 프로젝트 지도가 그려져요.
         </p>
       </div>
@@ -929,7 +929,7 @@ export function DistrictMap({
 
       {tooltip ? (
         <div
-          className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-[calc(100%+12px)] rounded-[6px] border border-edge-lit bg-ink px-2.5 py-1.5 shadow-lg"
+          className="pointer-events-none absolute z-10 -translate-x-1/2 -translate-y-[calc(100%+12px)] rounded-[6px] border-[0.8px] border-edge-lit bg-ink px-2.5 py-1.5 shadow-[0_12px_28px_-14px_rgba(0,0,0,0.95)]"
           style={{ left: tooltip.left, top: tooltip.top }}
         >
           <p className="text-[13px] leading-[1.5] text-said">{displayNameOf(tooltip.item)}</p>
@@ -938,7 +938,7 @@ export function DistrictMap({
             있어요" is a measurement; someone who cannot read code is looking
             at a name they did not choose and asking what the thing does.
           */}
-          <p className="max-w-[26ch] text-[11px] leading-[1.5] text-said-faint">
+          <p className="mt-0.5 max-w-[26ch] text-[11px] leading-[1.5] text-said-faint text-pretty">
             {descriptions.get(tooltip.item.id)?.line ?? KIND_WORDS[tooltip.item.kind]}
           </p>
           {/*
@@ -958,7 +958,7 @@ export function DistrictMap({
         and the arrowhead beside them — the direction is the whole meaning of a
         line, so it needs saying once rather than being left to be guessed.
       */}
-      <div className="pointer-events-none absolute bottom-3 left-3 flex gap-3 text-[11px] text-said-faint">
+      <div className="pointer-events-none absolute bottom-3 left-3 flex gap-3 rounded-lg border-[0.8px] border-edge bg-ink/80 px-2.5 py-1.5 text-[11px] text-said-faint backdrop-blur-[2px]">
         <span className="flex items-center gap-1.5">
           <span className="inline-block h-[3px] w-6 rounded-full bg-wire" />
           확실해요
@@ -1114,7 +1114,7 @@ function MapButton({
       aria-label={label}
       title={label}
       onClick={onClick}
-      className="flex h-7 min-w-7 items-center justify-center rounded-[5px] border border-edge bg-ink/80 text-[13px] text-said-soft transition-colors hover:border-edge-lit hover:text-said"
+      className="flex h-7 min-w-7 items-center justify-center rounded-[5px] border-[0.8px] border-edge bg-ink/80 text-[13px] text-said-soft backdrop-blur-[2px] transition-colors hover:border-edge-lit hover:bg-ink hover:text-said"
     >
       {children}
     </button>

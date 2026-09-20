@@ -107,9 +107,9 @@ export function GroupingControl({
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         aria-label={`묶는 기준: ${currentName}. 바꾸려면 누르세요`}
-        className="flex items-center gap-1.5 rounded-lg border border-edge px-2.5 py-1.5 text-[13px] text-said-soft transition-colors hover:border-edge-lit hover:text-said disabled:opacity-55"
+        className="flex items-center gap-1.5 rounded-lg border border-edge px-2.5 py-1.5 text-[13px] text-said-soft transition-colors hover:border-edge-lit hover:bg-ink-raised hover:text-said disabled:opacity-55"
       >
-        <span className="text-said-faint">묶는 기준</span>
+        <span className="label-kr text-[11px] text-said-faint">묶는 기준</span>
         <span className="text-said">{currentName}</span>
         <span aria-hidden className="text-[10px] text-said-faint">
           ▾
@@ -121,9 +121,9 @@ export function GroupingControl({
           id={panelId}
           role="group"
           aria-label="지도를 묶는 기준"
-          className="absolute right-0 top-[calc(100%+6px)] z-20 w-[19rem] max-w-[calc(100vw-2rem)] rounded-xl border border-edge bg-ink-raised p-1.5 shadow-[0_18px_40px_-20px_rgba(0,0,0,0.9)]"
+          className="hairline absolute right-0 top-[calc(100%+6px)] z-20 w-[19rem] max-w-[calc(100vw-2rem)] rounded-xl bg-ink-raised p-1.5 shadow-[0_18px_40px_-20px_rgba(0,0,0,0.9)]"
         >
-          <p className="px-2 pb-1 pt-1.5 text-[12px] text-said-faint">
+          <p className="label-kr px-2 pb-1 pt-1.5 text-[11px] text-said-faint">
             무엇끼리 묶어서 볼까요?
           </p>
 
@@ -184,7 +184,7 @@ export function GroupingControl({
             they will worry about is whether they just lost the file they had
             open. They did not.
           */}
-          <p className="border-t border-edge px-2 pb-1.5 pt-2 text-[11px] leading-[1.7] text-said-faint">
+          <p className="rule-t mt-1 px-2 pb-1.5 pt-2 text-[11px] leading-[1.7] text-said-faint text-pretty">
             기준을 바꿔도 고른 것은 그대로예요. 있던 것이 사라지지도 않아요.
           </p>
         </div>
