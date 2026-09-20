@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { FLOW_FORBIDDEN_EXTRA, FORBIDDEN_WORDS } from "./words";
+import { FORBIDDEN_WORDS } from "./words";
 
 /**
  * The model's reply, and every reason to throw a piece of it away.
@@ -329,29 +329,34 @@ export function hasHangul(text: string): boolean {
 }
 
 /**
- * Both lists, not just the first three.
+ * The three base words only. **`FLOW_FORBIDDEN_EXTRA` deliberately does not
+ * apply here, and the reason is a measurement.**
  *
- * Pass 2's output is not only read on the map. A `label` is the subject of
- * every row in 흐름 따라가기 and the words under every district, so a name this
- * pass coins is a sentence the flow shows — and the flow may not say 실행,
- * 추적 or 실시간, because we never ran anybody's code.
+ * The 흐름 따라가기 agent found `/api/projects/:id/events` named 실시간 상황 주소
+ * by this pass and asked for 실행·추적·실시간 to be refused in a label too,
+ * since a label is the subject of every row in that panel. It sounds right.
+ * Measured against the real database before applying it: the filter would
+ * have dropped **33 of 933 labels and 19 of 360 summaries**, and every one of
+ * them was accurate —
  *
- * **Found in production.** `/api/projects/:id/events` had been named
- * **실시간 상황 주소** by this pass and was appearing in the flow panel, on the
- * map and in the file list. Every other place a model writes Korean here
- * already refuses those three — `purpose/parse.ts` does, `flow.ts` does — and
- * this was the one door nobody was watching. Echoing a *user's* 추적 back to
- * them is fine; a word we chose ourselves is a claim.
+ *   pyproject.toml   이 프로그램을 실행하는 데 필요한 외부 도구와 설정 정보를 적어 둬요.
+ *   runs/route.ts    지금까지 분석을 실행했던 기록들을 가져와요.
  *
- * A dropped label costs the node its plain name and nothing else: it falls
- * back to what the code calls it, which is true, and D88's counters record
- * that it happened rather than hiding it.
+ * You cannot describe a dependency manifest without the word 실행, and a
+ * project *about* running things — a scheduler, a test runner, a CI tool — is
+ * exactly where naming matters most and where this would have silenced the
+ * most files.
+ *
+ * So the line is not "these words are dangerous" but **who is speaking**.
+ * D78 forbids them in sentences the product composes about its own behaviour,
+ * where they would claim we ran somebody's code; `flow.ts` and
+ * `purpose/parse.ts` enforce that and must keep enforcing it. A label or a
+ * summary is a translation of what the user's code says about itself, and
+ * censoring their subject matter to protect our claim would trade a true
+ * sentence for a missing one.
  */
 function hasForbidden(text: string): boolean {
-  return (
-    FORBIDDEN_WORDS.some((word) => text.includes(word)) ||
-    FLOW_FORBIDDEN_EXTRA.some((word) => text.includes(word))
-  );
+  return FORBIDDEN_WORDS.some((word) => text.includes(word));
 }
 
 function tidy(raw: string): string {
