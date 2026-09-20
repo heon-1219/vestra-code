@@ -12,6 +12,7 @@ import {
   buildLinks,
   focusOf,
   hubsOf,
+  nameRanks,
   NO_FOCUS,
   NO_TRAIL,
 } from "./scene";
@@ -167,6 +168,7 @@ function sceneWith(over: Partial<Scene> = {}): Scene {
     links: LINKS,
     itemsById: new Map(ITEMS.map((one) => [one.id, one])),
     hubs: hubsOf(LAYOUT, ITEMS),
+    nameRank: nameRanks(LAYOUT, ITEMS),
     grouped: true,
     beam: IDLE_BEAM,
     selection: NO_FOCUS,
@@ -336,6 +338,53 @@ describe("drawMap, the walk", () => {
     // line competing with the walk for the same glance.
     for (const label of labels) expect(label.text).toMatch(NUMBERED);
     expect(labels.length).toBeLessThan(quiet.length);
+  });
+
+  /**
+   * The seam the flow feature lands on, checked from the renderer's side.
+   *
+   * `FLOW_TRACKING.md` section 6 asks for a path-aware focus: an ordered set of
+   * *links* rather than a set of item ids, so that a path A → B → C on a graph
+   * that also holds A → C cannot draw the shortcut at the same brightness as
+   * the path. `Trail` is that shape and `scene.test.ts` proves the strengths.
+   * What is asserted here is the other half of the ask, which only the painter
+   * can show: the hop's **order number**, drawn in the gap `drawRelation` cuts,
+   * and exempt from the label budget that silences ordinary words.
+   */
+  it("numbers the hops in the order they were walked", () => {
+    const labels = relationLabels(paint(sceneWith({ trail: walkTrail() }), viewWith()));
+    const orders = labels
+      .map((one) => Number.parseInt(one.text, 10))
+      .filter((one) => Number.isFinite(one))
+      .sort((a, b) => a - b);
+    expect(orders).toEqual([1, 2]);
+  });
+
+  /**
+   * A hop that the graph has no edge for draws no line and no number.
+   *
+   * `route → file → symbol` collapses into one move for a reader, and the flow
+   * spec calls that a joint. **No edge in the graph has those two ends**, so a
+   * line there would be a connection the map invented — the same rule that
+   * stops `describe.ts` turning "we found no connections" into "nothing uses
+   * this". The renderer honours it by matching a hop to a link only when the
+   * hop says `connected`.
+   */
+  it("draws nothing for a hop the graph has no connection for", () => {
+    const joint = {
+      steps: [
+        { order: 1, fromId: "a", toId: "b", critical: false, connected: true },
+        // `a → h` exists in the fixture. Marked as a joint, it must not be
+        // drawn as a hop: no number on it, and no claim that the walk crossed
+        // that line.
+        { order: 2, fromId: "a", toId: "h", critical: false, connected: false },
+      ],
+      lit: new Set(["a", "b", "h"]),
+      critical: new Set<string>(),
+    };
+    const labels = relationLabels(paint(sceneWith({ trail: joint }), viewWith()));
+    expect(labels.length).toBeGreaterThan(0);
+    for (const label of labels) expect(label.text).toMatch(/^1( · .+)?$/);
   });
 
   it("stands the selection's neighbourhood down rather than drawing two answers", () => {

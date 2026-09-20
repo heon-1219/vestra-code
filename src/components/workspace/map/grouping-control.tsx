@@ -107,7 +107,12 @@ export function GroupingControl({
         aria-expanded={open}
         aria-controls={open ? panelId : undefined}
         aria-label={`묶는 기준: ${currentName}. 바꾸려면 누르세요`}
-        className="flex items-center gap-1.5 rounded-lg border border-edge px-2.5 py-1.5 text-[13px] text-said-soft transition-colors hover:border-edge-lit hover:bg-ink-raised hover:text-said disabled:opacity-55"
+        /*
+          44px on a phone, which is the smallest target a thumb reliably lands
+          on. `max-md:` rather than a media query of its own, because that is
+          how every other control in this product says it.
+        */
+        className="flex items-center gap-1.5 rounded-lg border border-edge px-2.5 py-1.5 text-[13px] text-said-soft transition-colors hover:border-edge-lit hover:bg-ink-raised hover:text-said disabled:opacity-55 max-md:min-h-11 max-md:px-3"
       >
         <span className="label-kr text-[11px] text-said-faint">묶는 기준</span>
         <span className="text-said">{currentName}</span>
@@ -141,7 +146,7 @@ export function GroupingControl({
                       onChange(option.id);
                       close(true);
                     }}
-                    className={`w-full rounded-lg px-2 py-2 text-left transition-colors ${
+                    className={`w-full rounded-lg px-2 py-2 text-left transition-colors max-md:min-h-11 ${
                       selected ? "bg-edge-lit" : "hover:bg-edge"
                     } ${option.available ? "" : "opacity-60"}`}
                   >

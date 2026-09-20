@@ -80,10 +80,62 @@ export type MapLayout = {
   byDistrictId: Map<string, PlacedDistrict>;
   /** The whole map's extent, for fitting it into a container. */
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
+  /**
+   * The area the items actually occupy, in world units squared.
+   *
+   * **Not the bounding box, and the difference is not small.** Every
+   * level-of-detail rule in `render/lod.ts` asks "how much of the map is on
+   * screen at this zoom", and answers it by dividing the viewport's area by the
+   * map's. Measured on a 1,442-item project, the bounding box is **3.9 times**
+   * the area the packing actually puts items in — districts are discs with gaps
+   * between them, sitting inside a rectangle. So every density estimate was
+   * nearly four times too optimistic, and every budget derived from one was
+   * overshot by the same factor: 36 names became 139 on screen, and 28 relation
+   * words became 786.
+   *
+   * Summed from the packing's own footprint rather than measured from the
+   * placed items, so it is exact, costs nothing, and cannot drift from where
+   * the items were actually put.
+   */
+  itemArea: number;
 };
 
 /** How many hues the renderer has. Districts past this reuse them. */
 export const DISTRICT_HUE_COUNT = 6;
+
+/**
+ * Below this many members a territory has no hub.
+ *
+ * A hub is "the busiest thing in a crowd"; with three items there is no crowd,
+ * and drawing one of them at nearly twice the size would be claiming an
+ * importance the numbers do not support.
+ *
+ * It lives here rather than in `render/scene.ts`, where it was, for one
+ * measured reason: **the packing has to know which item will be drawn large, or
+ * it cannot leave room for it.** See `HUB_BOOST`.
+ */
+export const HUB_MIN_MEMBERS = 4;
+
+/**
+ * The extra reach a district's busiest item is drawn with.
+ *
+ * The reference overview the founder sent is eight neighbourhoods, each one a
+ * large node with dozens of small ones around it. Ours earns that shape rather
+ * than decorating it: the large node is the most-connected thing in the
+ * territory, and because the boost applies to the radius the alpha rule is fed,
+ * it is also the last item to fade as you zoom out.
+ *
+ * **It is a layout constant, not a drawing one, and that was the bug.** It used
+ * to live in `render/lod.ts` and be applied at draw time to a slot the packing
+ * had sized for the unboosted radius, so the hub's circle simply grew over its
+ * neighbours. Measured on a 1,442-item project at the resting zoom: **seven
+ * pairs of overlapping dots with hubs and zero without** — every single
+ * item-on-item overlap on the map was this constant, and none of it was the
+ * packing. The packing now reserves the room, and the hub sits in the middle of
+ * its territory with a clear ring around it, which is what the reference
+ * picture has anyway.
+ */
+export const HUB_BOOST = 1.9;
 
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
@@ -304,9 +356,67 @@ function itemRadius(item: GraphItem): number {
   return ITEM_R_MIN + t * (ITEM_R_MAX - ITEM_R_MIN);
 }
 
-function districtRadius(count: number): number {
-  const core = ITEM_SPACING * Math.sqrt(Math.max(count, 1));
-  return Math.max(DISTRICT_MIN_R, core + ITEM_R_MAX + DISTRICT_PAD);
+/**
+ * The first sunflower slot a hub's neighbours may use.
+ *
+ * Solved from the constants rather than picked, because picking is how the
+ * overlap got here. The hub sits at the middle of the packing and is drawn at
+ * `ITEM_R_MAX * HUB_BOOST`; the nearest neighbour is drawn at up to
+ * `ITEM_R_MAX`; so the first ring has to stand at least the sum of those, plus
+ * a pixel of daylight, away from the middle. The **squashed** distance is what
+ * counts — the band is compressed vertically, so a neighbour directly above the
+ * hub is `ITEM_BAND_SQUASH` of the way out that a neighbour beside it is, and
+ * sizing against the unsquashed radius would leave the ring clear to the sides
+ * and overlapping top and bottom.
+ */
+const HUB_CLEARANCE = ITEM_R_MAX * HUB_BOOST + ITEM_R_MAX + 1;
+const HUB_FIRST_SLOT = (() => {
+  let slot = 1;
+  while (ITEM_SPACING * Math.sqrt(slot + 0.5) * ITEM_BAND_SQUASH < HUB_CLEARANCE) slot++;
+  return slot;
+})();
+
+/**
+ * How many sunflower slots a territory uses, which is more than its member
+ * count when it has a hub to leave room around.
+ */
+function slotsFor(count: number, hasHub: boolean): number {
+  return hasHub ? HUB_FIRST_SLOT + Math.max(count - 1, 0) : count;
+}
+
+/** How far out the outermost item in a territory sits. */
+function packRadius(count: number, hasHub: boolean): number {
+  return ITEM_SPACING * Math.sqrt(Math.max(slotsFor(count, hasHub), 1));
+}
+
+function districtRadius(count: number, hasHub: boolean): number {
+  return Math.max(
+    DISTRICT_MIN_R,
+    packRadius(count, hasHub) + ITEM_R_MAX + DISTRICT_PAD,
+  );
+}
+
+/**
+ * Which member of a territory is drawn as its hub.
+ *
+ * By `usedBy + uses`, ties to the lower id — **the same rule, written the same
+ * way, as `hubsOf` in `render/scene.ts`**, because the packing reserves the room
+ * and the renderer spends it, and two rules that disagree would put the boosted
+ * circle somewhere no room was left. A territory below `HUB_MIN_MEMBERS` has no
+ * hub and therefore needs no room, which is the same threshold on both sides.
+ */
+function hubIndexOf(members: readonly GraphItem[]): number {
+  if (members.length < HUB_MIN_MEMBERS) return -1;
+  let best = 0;
+  let bestDegree = members[0].usedBy + members[0].uses;
+  for (let i = 1; i < members.length; i++) {
+    const degree = members[i].usedBy + members[i].uses;
+    if (degree > bestDegree || (degree === bestDegree && members[i].id < members[best].id)) {
+      best = i;
+      bestDegree = degree;
+    }
+  }
+  return best;
 }
 
 /**
@@ -362,8 +472,12 @@ export function layoutMap(
   const districts: PlacedDistrict[] = [];
   const placedItems: PlacedItem[] = [];
 
+  let itemArea = 0;
+
   for (const group of ordered) {
-    const r = districtRadius(group.members.length);
+    const hubIndex = hubIndexOf(group.members);
+    const hasHub = hubIndex >= 0;
+    const r = districtRadius(group.members.length, hasHub);
     const spot = findSpot(districts, r);
     const district: PlacedDistrict = {
       ...group.info,
@@ -376,11 +490,21 @@ export function layoutMap(
     };
     districts.push(district);
 
+    /*
+     * Sunflower packing: even density, no gaps, no two items on top of each
+     * other, and a slot's place does not depend on any other item's size.
+     *
+     * The hub takes the middle and the rest start at `HUB_FIRST_SLOT`, leaving
+     * the boosted circle a clear ring. Order is otherwise untouched — the k-th
+     * remaining member is still the k-th in canonical order — so the picture is
+     * the same picture, with the busiest thing moved to the middle of its own
+     * territory where the reference overview puts it.
+     */
+    let slot = hasHub ? HUB_FIRST_SLOT : 0;
     for (const [k, item] of group.members.entries()) {
-      // Sunflower packing: even density, no gaps, no two items on top of each
-      // other, and the k-th item's place does not depend on any other item.
-      const angle = k * GOLDEN_ANGLE;
-      const radius = ITEM_SPACING * Math.sqrt(k + 0.5);
+      const mine = hasHub && k === hubIndex ? 0 : slot++;
+      const angle = mine * GOLDEN_ANGLE;
+      const radius = ITEM_SPACING * Math.sqrt(mine + 0.5);
       const placed: PlacedItem = {
         id: item.id,
         districtId: district.id,
@@ -390,6 +514,12 @@ export function layoutMap(
       };
       placedItems.push(placed);
     }
+
+    // The ellipse the packing above actually fills, which is what every density
+    // rule in `render/lod.ts` has to divide by. An empty territory contributes
+    // nothing, because nothing is in it.
+    const pack = packRadius(group.members.length, hasHub);
+    itemArea += Math.PI * pack * pack * ITEM_BAND_SQUASH;
   }
 
   const bounds = boundsOf(districts);
@@ -400,6 +530,7 @@ export function layoutMap(
     byItemId: new Map(placedItems.map((item) => [item.id, item])),
     byDistrictId: new Map(districts.map((district) => [district.id, district])),
     bounds,
+    itemArea,
   };
 }
 

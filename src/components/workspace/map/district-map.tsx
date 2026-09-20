@@ -27,7 +27,15 @@ import {
 } from "./grouping";
 import { layoutMap, type PlacedDistrict } from "./layout";
 import { HUB_BOOST, itemAlphaFor, MAX_SCALE, MIN_SCALE } from "./render/lod";
-import { drawMap, displayNameOf, type Camera, type Road, type Scene } from "./render/paint";
+import {
+  drawMap,
+  displayNameOf,
+  heldBackSentence,
+  type Camera,
+  type FrameReport,
+  type Road,
+  type Scene,
+} from "./render/paint";
 import { FALLBACK, readPalette, type Palette } from "./render/palette";
 import {
   buildAdjacency,
@@ -35,6 +43,7 @@ import {
   colourCarriesGrouping,
   focusOf,
   hubsOf,
+  nameRanks,
   NO_FOCUS,
 } from "./render/scene";
 import { trailFrom } from "./render/walk";
@@ -153,6 +162,18 @@ export type DistrictMapProps = {
 };
 
 const FIT_PADDING = 56;
+
+function sayWhatWasHeldBack(
+  element: HTMLParagraphElement | null,
+  report: FrameReport,
+): void {
+  if (!element) return;
+  const sentence = heldBackSentence(report);
+  // Compared before writing: a `textContent` assignment is a DOM mutation and
+  // this runs on every frame of a drag.
+  if (element.textContent !== sentence) element.textContent = sentence;
+  element.hidden = sentence === "";
+}
 
 const TWEEN_MS = 260;
 
@@ -295,6 +316,13 @@ export function DistrictMap({
   const links = useMemo(() => buildLinks(items, connections, layout), [items, connections, layout]);
   const adjacency = useMemo(() => buildAdjacency(links), [links]);
   const hubs = useMemo(() => hubsOf(layout, items), [layout, items]);
+  /**
+   * The order items get their names in when there is not room for all of them.
+   *
+   * Memoised on the layout rather than computed per frame: it is a fact about
+   * the graph and the grouping, and a pan or a zoom changes neither.
+   */
+  const nameRank = useMemo(() => nameRanks(layout, items), [layout, items]);
 
   const beamIndex = useMemo(() => buildBeamIndex(items), [items]);
   /*
@@ -314,6 +342,21 @@ export function DistrictMap({
     () => (highlighting && highlight ? beamOf(highlight) : runBeam(beamIndex, query)),
     [highlighting, highlight, beamIndex, query],
   );
+
+  /**
+   * Where the map says how much it held back.
+   *
+   * Written straight into the DOM from the draw pass rather than through
+   * React state, and that is not an optimisation — it is the only way the
+   * sentence can be *true*. The counts belong to a frame, and frames happen
+   * under a dragging hand at sixty a second; routing them through `setState`
+   * would put a React render inside every one of those frames, which is the
+   * whole budget (the same measurement that made `MapOutline` a memo).
+   *
+   * Not a live region. It changes while the user pans, and a live region would
+   * read the number aloud on every frame of the drag.
+   */
+  const heldRef = useRef<HTMLParagraphElement>(null);
 
   const cameraRef = useRef<Camera>({ x: 0, y: 0, scale: 1 });
   const tweenRef = useRef<{ from: Camera; to: Camera; started: number } | null>(null);
@@ -374,6 +417,7 @@ export function DistrictMap({
     links,
     itemsById,
     hubs,
+    nameRank,
     grouped,
     beam,
     selection: NO_FOCUS,
@@ -392,6 +436,7 @@ export function DistrictMap({
       links,
       itemsById,
       hubs,
+      nameRank,
       grouped,
       beam,
       selection,
@@ -446,7 +491,7 @@ export function DistrictMap({
       if (t >= 1) tweenRef.current = null;
     }
 
-    drawMap(ctx, scene, {
+    const report = drawMap(ctx, scene, {
       width,
       height,
       dpr,
@@ -455,6 +500,7 @@ export function DistrictMap({
       font: fontRef.current,
       fitScale: fitScaleRef.current,
     });
+    sayWhatWasHeldBack(heldRef.current, report);
 
     // The only thing that ever asks for another frame. When the tween ends the
     // loop stops completely, which is what "idle at rest" means here.
@@ -657,15 +703,88 @@ export function DistrictMap({
 
   const dragRef = useRef<{ id: number; x: number; y: number; moved: boolean } | null>(null);
 
-  const onPointerDown = useCallback((event: ReactPointerEvent<HTMLCanvasElement>) => {
-    if (event.button !== 0) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    dragRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
-    tweenRef.current = null;
+  /**
+   * Every finger currently on the canvas, and the pinch between two of them.
+   *
+   * A phone has no wheel, so without this the only way to zoom a map is the
+   * two buttons in the corner — and a map is a thing people zoom constantly.
+   * The pointer events are already being delivered (`touch-none` on the canvas
+   * means the browser does not take them for page scrolling), so what was
+   * missing was only the arithmetic.
+   */
+  const pointersRef = useRef(new Map<number, { x: number; y: number }>());
+  const pinchRef = useRef<{ distance: number; x: number; y: number } | null>(null);
+
+  /** The gap between two fingers and the point halfway between them. */
+  const pinchOf = useCallback(() => {
+    const [a, b] = [...pointersRef.current.values()];
+    if (!a || !b) return null;
+    return {
+      distance: Math.max(Math.hypot(a.x - b.x, a.y - b.y), 1),
+      x: (a.x + b.x) / 2,
+      y: (a.y + b.y) / 2,
+    };
   }, []);
+
+  const onPointerDown = useCallback(
+    (event: ReactPointerEvent<HTMLCanvasElement>) => {
+      if (event.button !== 0) return;
+      event.currentTarget.setPointerCapture(event.pointerId);
+      pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      tweenRef.current = null;
+
+      if (pointersRef.current.size >= 2) {
+        // A second finger ends the pan rather than fighting it, and the release
+        // then selects nothing — a pinch is not a tap that went on too long.
+        dragRef.current = null;
+        pinchRef.current = pinchOf();
+        changeHover(null);
+        return;
+      }
+      dragRef.current = { id: event.pointerId, x: event.clientX, y: event.clientY, moved: false };
+    },
+    [changeHover, pinchOf],
+  );
+
+  /**
+   * Two fingers: the gap between them sets the zoom, the point between them
+   * stays under them, and moving both together pans.
+   *
+   * Anchored exactly the way the wheel is, on the point the gesture is centred
+   * on rather than on the middle of the canvas, because a map that zoomed away
+   * from the thing you were pinching would be unusable with one hand.
+   */
+  const applyPinch = useCallback(() => {
+    const now = pinchOf();
+    const before = pinchRef.current;
+    const canvas = canvasRef.current;
+    const measured = sceneRef.current.size;
+    if (!now || !before || !canvas || !measured) return;
+
+    const rect = canvas.getBoundingClientRect();
+    const camera = cameraRef.current;
+    const next = clamp(camera.scale * (now.distance / before.distance), MIN_SCALE, MAX_SCALE);
+    const pointerX = now.x - rect.left - measured.width / 2;
+    const pointerY = now.y - rect.top - measured.height / 2;
+    cameraRef.current = {
+      scale: next,
+      x: camera.x + pointerX / camera.scale - pointerX / next - (now.x - before.x) / next,
+      y: camera.y + pointerY / camera.scale - pointerY / next - (now.y - before.y) / next,
+    };
+    pinchRef.current = now;
+    userMovedRef.current = true;
+    requestDraw();
+  }, [pinchOf, requestDraw]);
 
   const onPointerMove = useCallback(
     (event: ReactPointerEvent<HTMLCanvasElement>) => {
+      if (pointersRef.current.has(event.pointerId)) {
+        pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      }
+      if (pinchRef.current && pointersRef.current.size >= 2) {
+        applyPinch();
+        return;
+      }
       const drag = dragRef.current;
       if (drag && drag.id === event.pointerId) {
         const dx = event.clientX - drag.x;
@@ -689,7 +808,7 @@ export function DistrictMap({
       if (!world) return;
       changeHover(itemAt(world.x, world.y));
     },
-    [changeHover, itemAt, requestDraw, toWorld],
+    [applyPinch, changeHover, itemAt, requestDraw, toWorld],
   );
 
   const zoomToDistrict = useCallback(
@@ -722,6 +841,15 @@ export function DistrictMap({
 
   const onPointerUp = useCallback(
     (event: ReactPointerEvent<HTMLCanvasElement>) => {
+      pointersRef.current.delete(event.pointerId);
+      if (pointersRef.current.size < 2) pinchRef.current = null;
+      // A finger lifted from a pinch leaves the other one on the glass. It must
+      // not become a pan that starts from wherever that finger happens to be,
+      // and it must not select whatever is under it.
+      if (pointersRef.current.size >= 1) {
+        dragRef.current = null;
+        return;
+      }
       const drag = dragRef.current;
       dragRef.current = null;
       if (!drag || drag.moved) return;
@@ -922,6 +1050,7 @@ export function DistrictMap({
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
         onDoubleClick={onDoubleClick}
         onPointerLeave={() => changeHover(null)}
         onKeyDown={onKeyDown}
@@ -958,27 +1087,60 @@ export function DistrictMap({
         and the arrowhead beside them — the direction is the whole meaning of a
         line, so it needs saying once rather than being left to be guessed.
       */}
-      <div className="pointer-events-none absolute bottom-3 left-3 flex gap-3 rounded-lg border-[0.8px] border-edge bg-ink/80 px-2.5 py-1.5 text-[11px] text-said-faint backdrop-blur-[2px]">
-        <span className="flex items-center gap-1.5">
-          <span className="inline-block h-[3px] w-6 rounded-full bg-wire" />
-          확실해요
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span
-            className="inline-block h-[7px] w-6"
-            style={{
-              backgroundImage:
-                "repeating-linear-gradient(90deg, var(--color-guess) 0 1px, transparent 1px 5px)",
-            }}
-          />
-          짐작이에요
-        </span>
-        <span className="flex items-center gap-1.5">
-          <span aria-hidden className="text-said-soft">
-            →
+      {/*
+        The two corners of the canvas share one row at the bottom, and at 375px
+        they were measured overlapping by 45 × 28 pixels — the legend running
+        from 12 to 316 and the zoom controls from 271 to 363. That is the
+        founder's 겹침, on the one screen with no room to hide it.
+
+        Fixed by giving this column the width that is actually left over rather
+        than all of it, and letting the legend wrap inside it. Both numbers are
+        the same number said twice: the zoom group is three 44px buttons and two
+        4px gaps, which is 140, plus the 12px it sits in from the right edge and
+        a gap of its own.
+      */}
+      <div className="pointer-events-none absolute bottom-3 left-3 flex max-w-[calc(100%-10.75rem)] flex-col items-start gap-1.5 md:max-w-[calc(100%-7rem)]">
+        {/*
+          What the picture is not showing, and why.
+
+          Two mechanisms in the renderer decline to draw things on purpose: the
+          link budget holds back lines that would make the picture unreadable,
+          and the label field drops a word rather than laying it over another
+          word. Both are right, and both would be a quiet lie without this line
+          — a map that omits in silence tells someone their project has fewer
+          connections than it has. It is the same promise the connections panel
+          keeps when it prints "N개는 줄였어요", and it ends by saying what to do
+          about it, because a number with no remedy is just bad news.
+
+          Filled by the draw pass through `heldRef`; empty and hidden otherwise.
+        */}
+        <p
+          ref={heldRef}
+          hidden
+          className="max-w-[34ch] rounded-lg border-[0.8px] border-edge bg-ink/80 px-2.5 py-1.5 text-[11px] leading-[1.6] text-said-faint backdrop-blur-[2px] text-pretty"
+        />
+        <div className="flex flex-wrap gap-x-3 gap-y-1 rounded-lg border-[0.8px] border-edge bg-ink/80 px-2.5 py-1.5 text-[11px] text-said-faint backdrop-blur-[2px]">
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-[3px] w-6 rounded-full bg-wire" />
+            확실해요
           </span>
-          화살표 쪽으로 이어져요
-        </span>
+          <span className="flex items-center gap-1.5">
+            <span
+              className="inline-block h-[7px] w-6"
+              style={{
+                backgroundImage:
+                  "repeating-linear-gradient(90deg, var(--color-guess) 0 1px, transparent 1px 5px)",
+              }}
+            />
+            짐작이에요
+          </span>
+          <span className="flex items-center gap-1.5">
+            <span aria-hidden className="text-said-soft">
+              →
+            </span>
+            화살표 쪽으로 이어져요
+          </span>
+        </div>
       </div>
 
       <div className="absolute bottom-3 right-3 flex items-center gap-1">
@@ -1114,7 +1276,12 @@ function MapButton({
       aria-label={label}
       title={label}
       onClick={onClick}
-      className="flex h-7 min-w-7 items-center justify-center rounded-[5px] border-[0.8px] border-edge bg-ink/80 text-[13px] text-said-soft backdrop-blur-[2px] transition-colors hover:border-edge-lit hover:bg-ink hover:text-said"
+      /*
+        28px is a comfortable target for a mouse and too small for a thumb.
+        `max-md:` takes it to 44, which is the size every other control in this
+        product uses on a phone, and leaves the desktop picture alone.
+      */
+      className="flex h-7 min-w-7 items-center justify-center rounded-[5px] border-[0.8px] border-edge bg-ink/80 text-[13px] text-said-soft backdrop-blur-[2px] transition-colors hover:border-edge-lit hover:bg-ink hover:text-said max-md:h-11 max-md:min-w-11"
     >
       {children}
     </button>

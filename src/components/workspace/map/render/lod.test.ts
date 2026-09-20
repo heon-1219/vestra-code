@@ -5,10 +5,10 @@ import {
   itemAlphaFor,
   itemScreenRadius,
   labelFits,
-  scaleForBudget,
   thresholdsFor,
   viewFraction,
   MAX_SCALE,
+  LINK_BUDGET,
   NAME_BUDGET,
   RELATION_BUDGET,
   type LodInput,
@@ -17,36 +17,12 @@ import {
 const CROWDED: LodInput = {
   linkCount: 700,
   itemCount: 300,
-  mapArea: 1800 * 1800,
+  itemArea: 1800 * 1800,
   viewWidth: 900,
   viewHeight: 700,
   fitScale: 0.39,
+  names: { median: 47 },
 };
-
-describe("scaleForBudget", () => {
-  it("asks for no zoom at all when there is already little enough to show", () => {
-    expect(scaleForBudget(10, 28, 1_000_000, 600_000)).toBe(0);
-    expect(scaleForBudget(28, 28, 1_000_000, 600_000)).toBe(0);
-  });
-
-  it("lands exactly where the budget's worth is expected on screen", () => {
-    const mapArea = 1800 * 1800;
-    const screenArea = 900 * 700;
-    const scale = scaleForBudget(700, RELATION_BUDGET, mapArea, screenArea);
-    const expected = 700 * (screenArea / (scale * scale * mapArea));
-    expect(expected).toBeCloseTo(RELATION_BUDGET, 6);
-  });
-
-  it("asks for more zoom the more there is to hide", () => {
-    const a = scaleForBudget(200, 28, 1e6, 6e5);
-    const b = scaleForBudget(2000, 28, 1e6, 6e5);
-    expect(b).toBeGreaterThan(a);
-  });
-
-  it("does not divide by a map with no extent", () => {
-    expect(Number.isFinite(scaleForBudget(700, 28, 0, 6e5))).toBe(true);
-  });
-});
 
 describe("thresholdsFor", () => {
   it("never lets words appear before the line they sit on", () => {
@@ -59,53 +35,60 @@ describe("thresholdsFor", () => {
   it("holds names back until two packed neighbours have room for both", () => {
     // A project small enough that the budget alone would let every name
     // through at any zoom. The pitch between packed items is what stops it.
-    const tiny = thresholdsFor({ ...CROWDED, itemCount: 8, mapArea: 200 * 200 });
+    const tiny = thresholdsFor({ ...CROWDED, itemCount: 8, itemArea: 200 * 200 });
     expect(tiny.nameScale).toBeGreaterThan(0);
   });
 
   /**
    * A threshold past the maximum zoom is a feature that does not exist.
-   * Measured on the 300-item fixture in a 1400×900 pane, the density rule alone
-   * asked for a zoom of 6.81 against a ceiling of 6 — so the relation words
-   * would never have appeared on a large screen, and nothing would have said so.
+   * Measured on the 300-item fixture in a 1400×900 pane, the density rule that
+   * used to live here asked for a zoom of 6.81 against a ceiling of 6 — so the
+   * relation words would never have appeared on a large screen, and nothing
+   * would have said so. The rule is gone (`ceilingFor` spends the budget by
+   * rank instead), and what is left still has to stay inside the wheel.
    */
   it("never puts a threshold where the wheel cannot reach it", () => {
     const huge = thresholdsFor({
       linkCount: 40_000,
       itemCount: 12_000,
-      mapArea: 4000 * 3000,
+      itemArea: 4000 * 3000,
       viewWidth: 1400,
       viewHeight: 900,
       fitScale: 0.08,
+      names: { median: 400 },
     });
-    expect(huge.relationScale).toBeLessThan(MAX_SCALE);
     expect(huge.nameScale).toBeLessThan(MAX_SCALE);
 
-    const measured = thresholdsFor({
-      linkCount: 626,
-      itemCount: 300,
-      mapArea: 997 * 610,
-      viewWidth: 1400,
-      viewHeight: 900,
-      fitScale: 1.291,
-    });
-    expect(measured.relationScale).toBeLessThan(MAX_SCALE);
+    // The names rule is the one that can still run away, because a project is
+    // free to have very long names.
+    const wordy = thresholdsFor({ ...CROWDED, names: { median: 10_000 } });
+    expect(wordy.nameScale).toBeLessThan(MAX_SCALE);
   });
 
-  it("makes a 300-item project earn its words and a small one not", () => {
-    const dense = thresholdsFor(CROWDED);
+  /**
+   * Words arrive with the lines they sit on, on a project of any size.
+   *
+   * This is what the removed density term cost the demo: measured on the real
+   * 68-item graph, relation words used to arrive at 3.0 with the lines and the
+   * density rule pushed them to 4.5 — for a density the demo does not have,
+   * because the rule clamped to the same 4.5 on every project it was given.
+   * How MANY words is now `ceilingFor`'s job, and it does it at every zoom.
+   */
+  it("brings the words on with the lines, at every size", () => {
     const small = thresholdsFor({
-      linkCount: 121,
+      linkCount: 103,
       itemCount: 68,
-      mapArea: 800 * 600,
-      viewWidth: 900,
-      viewHeight: 700,
-      fitScale: 1.12,
+      itemArea: 25_228,
+      viewWidth: 1400,
+      viewHeight: 900,
+      fitScale: 1.36,
+      names: { median: 47 },
     });
-    expect(dense.relationScale).toBeGreaterThan(dense.linkScale);
-    // On the demo-sized graph the density threshold is already met by the time
-    // the lines themselves are drawn, so words arrive with the lines.
     expect(small.relationScale).toBeCloseTo(small.linkScale, 6);
+    expect(thresholdsFor(CROWDED).relationScale).toBeCloseTo(
+      thresholdsFor(CROWDED).linkScale,
+      6,
+    );
   });
 });
 
@@ -150,9 +133,39 @@ describe("detailAt", () => {
 
   it("lets more links be eligible for words the further in you go", () => {
     const thresholds = thresholdsFor(CROWDED);
-    const near = detailAt(thresholds, 1).rankCeiling;
-    const far = detailAt(thresholds, 4).rankCeiling;
+    const near = detailAt(thresholds, 1).relationCeiling;
+    const far = detailAt(thresholds, 4).relationCeiling;
     expect(far).toBeGreaterThan(near);
+  });
+
+  /**
+   * The identity the whole budget mechanism rests on, and the one nobody
+   * checked before: a ceiling of `budget / viewFraction` puts exactly `budget`
+   * of them on screen. What was there instead was a constant of 220 divided by
+   * the same fraction, which is the same shape and 7.9x the documented number
+   * — a budget of 28 that admitted 786.
+   */
+  it("spends exactly the budget at every zoom, and not a multiple of it", () => {
+    const thresholds = thresholdsFor(CROWDED);
+    for (const scale of [1, 2, 3.5, 5, 6]) {
+      const detail = detailAt(thresholds, scale);
+      const fraction = viewFraction(thresholds, scale);
+      expect(detail.relationCeiling * fraction).toBeCloseTo(RELATION_BUDGET, 6);
+      expect(detail.nameCeiling * fraction).toBeCloseTo(NAME_BUDGET, 6);
+      expect(detail.linkCeiling * fraction).toBeCloseTo(LINK_BUDGET, 6);
+    }
+  });
+
+  /**
+   * The flicker rule, stated about the ceilings rather than about the
+   * thresholds: a ceiling reads the zoom and nothing else, so dragging the map
+   * cannot change which things are eligible to speak.
+   */
+  it("gives the same ceilings wherever the map has been dragged to", () => {
+    const thresholds = thresholdsFor(CROWDED);
+    const a = detailAt(thresholds, 3);
+    const b = detailAt(thresholds, 3);
+    expect(a).toEqual(b);
   });
 });
 
@@ -182,6 +195,25 @@ describe("itemScreenRadius", () => {
 
   it("draws a hub larger than its neighbours", () => {
     expect(itemScreenRadius(5, 2, true)).toBeGreaterThan(itemScreenRadius(5, 2, false));
+  });
+});
+
+describe("names, measured rather than assumed", () => {
+  /**
+   * The constant this replaced was 52 pixels, written as "a name is drawn under
+   * its dot at 11px, so about 52px of pitch". That is a Latin sentence about a
+   * Korean-first product: the median name on a real 1,442-item project measures
+   * roughly twice it, so names were being let on at half the zoom they need.
+   */
+  it("holds names back further when the project's own names are wider", () => {
+    const narrow = thresholdsFor({ ...CROWDED, names: { median: 30 } });
+    const wide = thresholdsFor({ ...CROWDED, names: { median: 110 } });
+    expect(wide.nameScale).toBeGreaterThan(narrow.nameScale);
+  });
+
+  it("still refuses to put the threshold past the wheel", () => {
+    const enormous = thresholdsFor({ ...CROWDED, names: { median: 4000 } });
+    expect(enormous.nameScale).toBeLessThan(MAX_SCALE);
   });
 });
 

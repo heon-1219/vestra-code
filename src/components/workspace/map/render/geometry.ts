@@ -139,6 +139,18 @@ export type LabelAnchor = {
  * either side that reverses, and those are drawn the same way up regardless.
  */
 export function labelAnchor(span: Span): LabelAnchor {
+  return labelAnchorAt(span, 0.5);
+}
+
+/**
+ * The same, at any fraction along the line.
+ *
+ * The midpoint is where a word belongs by default, and it is not always free:
+ * the label field may have to slide it a little to keep it off a word already
+ * placed. Sliding along the line it labels is the only move that keeps the word
+ * attached to the right statement, so this is the only freedom it is given.
+ */
+export function labelAnchorAt(span: Span, t: number): LabelAnchor {
   // `atan2` answers in (-π, π], so a half turn is subtracted above the quarter
   // turn and added below it. Adding it in both directions is the bug this
   // comment is here to stop coming back: for an angle just past +π/2 that lands
@@ -148,8 +160,8 @@ export function labelAnchor(span: Span): LabelAnchor {
   const half = Math.PI / 2;
   const upright = angle > half ? angle - Math.PI : angle < -half ? angle + Math.PI : angle;
   return {
-    x: (span.x0 + span.x1) / 2,
-    y: (span.y0 + span.y1) / 2,
+    x: span.x0 + span.ux * span.length * t,
+    y: span.y0 + span.uy * span.length * t,
     angle: upright,
   };
 }
@@ -236,4 +248,112 @@ export function onScreen(
   return (
     maxX >= -slack && minX <= width + slack && maxY >= -slack && minY <= height + slack
   );
+}
+
+/**
+ * A rectangle of words, which may be turned to lie along a line.
+ *
+ * In screen pixels like everything else here, and held as a centre plus half
+ * extents plus an angle rather than as four corners: a label is decided by
+ * where it wants to sit and how big it is, and turning that into corners is a
+ * detail only the overlap test needs.
+ */
+export type OrientedBox = {
+  cx: number;
+  cy: number;
+  width: number;
+  height: number;
+  /** Radians. Zero for a name under a dot; the line's angle for a word on a line. */
+  angle: number;
+};
+
+export function cornersOf(box: OrientedBox): [number, number][] {
+  const cos = Math.cos(box.angle);
+  const sin = Math.sin(box.angle);
+  const hw = box.width / 2;
+  const hh = box.height / 2;
+  return [
+    [box.cx - hw * cos + hh * sin, box.cy - hw * sin - hh * cos],
+    [box.cx + hw * cos + hh * sin, box.cy + hw * sin - hh * cos],
+    [box.cx + hw * cos - hh * sin, box.cy + hw * sin + hh * cos],
+    [box.cx - hw * cos - hh * sin, box.cy - hw * sin + hh * cos],
+  ];
+}
+
+/** The upright box that contains a turned one. What the grid buckets on. */
+export function boundsOfBox(
+  box: OrientedBox,
+): { minX: number; minY: number; maxX: number; maxY: number } {
+  const cos = Math.abs(Math.cos(box.angle));
+  const sin = Math.abs(Math.sin(box.angle));
+  const halfWidth = (box.width * cos + box.height * sin) / 2;
+  const halfHeight = (box.width * sin + box.height * cos) / 2;
+  return {
+    minX: box.cx - halfWidth,
+    minY: box.cy - halfHeight,
+    maxX: box.cx + halfWidth,
+    maxY: box.cy + halfHeight,
+  };
+}
+
+/**
+ * Whether two boxes touch, by the separating axis theorem.
+ *
+ * Four axes rather than two, because a word on a line is turned and an upright
+ * test against it would claim a collision wherever the two bounding boxes
+ * happen to overlap — which for a word lying along a diagonal is most of the
+ * time. A label wrongly refused is a label the reader does not get, so the
+ * exact test is the cheap one.
+ */
+export function boxesOverlap(a: OrientedBox, b: OrientedBox): boolean {
+  const ca = cornersOf(a);
+  const cb = cornersOf(b);
+  for (const corners of [ca, cb]) {
+    for (let i = 0; i < 2; i++) {
+      const [x0, y0] = corners[i];
+      const [x1, y1] = corners[i + 1];
+      const ax = -(y1 - y0);
+      const ay = x1 - x0;
+      const length = Math.hypot(ax, ay);
+      if (length === 0) continue;
+      const nx = ax / length;
+      const ny = ay / length;
+      let minA = Infinity;
+      let maxA = -Infinity;
+      let minB = Infinity;
+      let maxB = -Infinity;
+      for (const [px, py] of ca) {
+        const projection = px * nx + py * ny;
+        if (projection < minA) minA = projection;
+        if (projection > maxA) maxA = projection;
+      }
+      for (const [px, py] of cb) {
+        const projection = px * nx + py * ny;
+        if (projection < minB) minB = projection;
+        if (projection > maxB) maxB = projection;
+      }
+      if (maxA <= minB || maxB <= minA) return false;
+    }
+  }
+  return true;
+}
+
+/** Whether a dot touches a box. The closest-point test, done in the box's frame. */
+export function circleTouchesBox(
+  cx: number,
+  cy: number,
+  r: number,
+  box: OrientedBox,
+): boolean {
+  const cos = Math.cos(-box.angle);
+  const sin = Math.sin(-box.angle);
+  const dx = cx - box.cx;
+  const dy = cy - box.cy;
+  const lx = dx * cos - dy * sin;
+  const ly = dx * sin + dy * cos;
+  const hw = box.width / 2;
+  const hh = box.height / 2;
+  const nearestX = clamp(lx, -hw, hw);
+  const nearestY = clamp(ly, -hh, hh);
+  return Math.hypot(lx - nearestX, ly - nearestY) < r;
 }

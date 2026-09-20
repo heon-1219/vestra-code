@@ -4,10 +4,22 @@ import type {
   GraphConnection,
   GraphItem,
 } from "@/lib/graph/view";
+/*
+ * The one ranking, imported rather than restated.
+ *
+ * It used to be a private copy here with the same seven numbers in it, and
+ * `flow.ts` now reads the same order to decide which way a walk turns. Two
+ * rankings for one idea is exactly the D69 failure — `usedBy` counted one way
+ * in `load.ts` and another in the panel, and the product told someone `kv` was
+ * used in 7 places where the parser had measured 6. `flow.test.ts` pins this by
+ * measuring the order `buildLinks` actually sorts into, so a drift between the
+ * map and the walk now fails a test instead of quietly disagreeing on screen.
+ */
+import { RELATION_RANK } from "@/lib/graph/view";
 
 import type { BeamResult } from "../beam";
 import type { GroupingOption } from "../grouping";
-import type { MapLayout } from "../layout";
+import { HUB_MIN_MEMBERS, type MapLayout } from "../layout";
 
 /**
  * Everything the map needs to know about a graph before it can draw one frame,
@@ -48,36 +60,8 @@ export type MapLink = {
   crossing: boolean;
 };
 
-/**
- * Which connections are worth a word first.
- *
- * Ordered by how much the line tells you that the picture does not already.
- * `fetches` crosses the gap between the screens and the server and is the one
- * connection a non-developer asks about by name; `contains` is last because the
- * map has already said it — a piece sits inside the same territory as the file
- * it was cut out of, and writing 가지고 있어요 on that line says it twice.
- */
-const RELATION_RANK: Record<ConnectionRelation, number> = {
-  fetches: 0,
-  renders: 1,
-  belongs_to: 2,
-  calls: 3,
-  imports: 4,
-  uses_package: 5,
-  contains: 6,
-};
-
 /** Screen pixels between two lanes. Just wide enough to read as two lines at 11px text. */
 const LANE_STEP = 3.4;
-
-/**
- * Below this many members a territory has no hub.
- *
- * A hub is "the busiest thing in a crowd"; with three items there is no crowd,
- * and drawing one of them at nearly twice the size would be claiming an
- * importance the numbers do not support.
- */
-const HUB_MIN_MEMBERS = 4;
 
 /** What the map dims to. Never zero — D59: a map that goes black says the project vanished. */
 export const DIM = 0.3;
@@ -442,4 +426,92 @@ export function colourCarriesGrouping(
 ): boolean {
   if (!option || !option.available) return false;
   return districtCount >= 2;
+}
+
+/**
+ * The order items get their names, when there is not room for every name.
+ *
+ * ## Why there has to be an order at all
+ *
+ * `lod.ts` caps how many names may be expected on screen, and the cap is only
+ * meaningful if *which* names are eligible is fixed — decided by the zoom and
+ * the graph, never by what is currently in the viewport. Otherwise panning
+ * towards a crowd changes the answer and every word on screen strobes, which is
+ * the failure `lod.ts` is written to prevent.
+ *
+ * ## Why it is not simply "busiest first"
+ *
+ * That was the obvious answer and it is wrong in a way that only shows at
+ * scale. Global degree order concentrates the whole allowance in whichever
+ * territories happen to hold the busy things: on a 1,442-item project the top
+ * three hundred by degree are almost all in two districts, so zooming into any
+ * of the other thirteen shows a field of dots with **no names at all**, at a
+ * zoom whose entire purpose is to let you read them. The user's reasonable
+ * conclusion is that the map does not know what those things are called.
+ *
+ * ## The order, and the one correction it needed
+ *
+ * The order is **by how far up its own territory an item stands**: an item at
+ * the thirtieth percentile of its district, by importance, ranks alongside
+ * every other district's thirtieth percentile. Any prefix of that order holds
+ * the same *share* of every territory, so zooming into any of them finds it
+ * named to the same depth.
+ *
+ * The obvious version of that — plain round robin, the busiest thing in every
+ * district, then the second busiest in every district — is wrong at scale, and
+ * measurably. It gives every territory the same **number** of names rather than
+ * the same share, and a district's share of the map's area is its share of the
+ * items. So on a 1,442-item project zoomed into a territory holding 420 of
+ * them, fourteen fifteenths of the name allowance was being spent on
+ * territories that were not on screen: **12 names drawn against a budget of
+ * 36**, with the rest of the allowance sitting off the edge of the canvas.
+ * Weighting by the district's own size is the whole fix.
+ *
+ * Ranks are then handed out by position in one total order — percentile first,
+ * then the district's placed index, then the id — so no two items share a rank
+ * and the answer is the same on every render, which is the promise `layout.ts`
+ * and `buildLinks` make.
+ */
+export function nameRanks(
+  layout: MapLayout,
+  items: readonly GraphItem[],
+): Map<string, number> {
+  const degree = new Map<string, number>();
+  for (const item of items) degree.set(item.id, item.usedBy + item.uses);
+
+  const order = new Map<string, number>();
+  layout.districts.forEach((district, index) => order.set(district.id, index));
+
+  const perDistrict = new Map<string, string[]>();
+  for (const placed of layout.items) {
+    const list = perDistrict.get(placed.districtId);
+    if (list) list.push(placed.id);
+    else perDistrict.set(placed.districtId, [placed.id]);
+  }
+
+  const everyone: { id: string; share: number; lane: number }[] = [];
+  for (const [districtId, members] of perDistrict) {
+    members.sort((a, b) => {
+      const byDegree = (degree.get(b) ?? 0) - (degree.get(a) ?? 0);
+      if (byDegree !== 0) return byDegree;
+      return a < b ? -1 : a > b ? 1 : 0;
+    });
+    const lane = order.get(districtId) ?? 0;
+    // How far up its own territory this item stands, in [0, 1). A district of
+    // ten and a district of four hundred both run the whole range, which is
+    // what makes a prefix of the final order proportional rather than equal.
+    members.forEach((id, place) =>
+      everyone.push({ id, share: (place + 0.5) / members.length, lane }),
+    );
+  }
+
+  everyone.sort((a, b) => {
+    if (a.share !== b.share) return a.share - b.share;
+    if (a.lane !== b.lane) return a.lane - b.lane;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
+
+  const ranks = new Map<string, number>();
+  everyone.forEach((one, rank) => ranks.set(one.id, rank));
+  return ranks;
 }
