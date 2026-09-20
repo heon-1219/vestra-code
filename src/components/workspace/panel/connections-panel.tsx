@@ -32,6 +32,7 @@ import {
   type Neighbour,
   type Neighbourhood,
 } from "./neighbourhood";
+import type { AskSession } from "@/lib/ask/session";
 import { describeAll } from "@/lib/graph/describe";
 
 import { DEFAULT_PANEL_MODE, MODE_WORDS, type PanelMode } from "./mode";
@@ -44,6 +45,7 @@ import {
   type PanelRequest,
 } from "./model";
 import { ModelSelect } from "./model-select";
+import { WalkView } from "./walk-view";
 import { previewTargetFor } from "../preview/file-preview";
 import {
   AnalysisRunningState,
@@ -115,6 +117,16 @@ export type RightPanelProps = {
    */
   models?: readonly ModelChoice[];
   answer?: PanelAnswer | null;
+  /**
+   * The question being answered, and how it is being answered.
+   *
+   * Separate from `answer` rather than folded into it, because it is a
+   * different thing: `answer` is a result, and this is the account of getting
+   * there — the steps as they happen, and afterwards the walk with the same
+   * numbers the map is drawing. A person who cannot read code has no way to
+   * check a verdict, and the account is the whole of what makes it checkable.
+   */
+  walk?: AskSession | null;
   prompt?: PanelPrompt | null;
   /** How many connections one direction may show before the panel says it capped. */
   limit?: number;
@@ -147,6 +159,7 @@ export function RightPanel({
   onExplain,
   models = NO_MODELS,
   answer = null,
+  walk = null,
   prompt = null,
   limit = DEFAULT_LIMIT,
   showRunSteps = true,
@@ -165,6 +178,15 @@ export function RightPanel({
   const [model, setModel] = useState<ProviderId | null>(null);
   const [effort, setEffort] = useState<PanelEffort>(DEFAULT_PANEL_EFFORT);
   const requestRef = useRef<RequestBoxHandle>(null);
+
+  // Built once per graph rather than per render: the walk names places by id
+  // and this panel sits next to a canvas that repaints while the answer streams
+  // in, so a lookup rebuilt on every frame would walk every item in the project
+  // several times a second.
+  const itemsById = useMemo(
+    () => new Map((view?.items ?? []).map((item) => [item.id, item])),
+    [view],
+  );
 
   const selected = view?.items.find((item) => item.id === selectedId) ?? null;
   const running = run?.status === "running";
@@ -219,6 +241,17 @@ export function RightPanel({
     >
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5">
         {body}
+
+        {/*
+          Above `answer`, because it contains the answer once there is one and
+          the account of reaching it either way. They are not both shown: a
+          screen wiring `walk` does not wire `answer`.
+        */}
+        {walk ? (
+          <div className="mt-5">
+            <WalkView session={walk} itemsById={itemsById} onSelect={onSelect} />
+          </div>
+        ) : null}
 
         {answer ? (
           <div className="mt-5">
