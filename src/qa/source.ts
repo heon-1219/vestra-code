@@ -49,9 +49,69 @@ export type SourceRefusal =
   /** The network, the token, an unreachable host. Worth trying again later. */
   | "unavailable";
 
+/**
+ * What the place we just read from says is left of our allowance.
+ *
+ * GitHub puts `x-ratelimit-remaining` on every answer it gives, including the
+ * ones that refuse, and a search that knows the number can size its sweep to
+ * it instead of walking into the wall and reporting the wall as an absence
+ * (D112). Optional everywhere: a reader that has no such notion — an uploaded
+ * project read out of our own database — simply never sets it, and nothing
+ * above here has to know which kind it holds.
+ */
+export type SourceQuota = {
+  /** Requests left in the current window. */
+  remaining: number;
+  /** When the window resets, in seconds since the epoch, where it is known. */
+  reset: number | null;
+};
+
 export type SourceResult =
-  | { ok: true; text: string }
-  | { ok: false; reason: SourceRefusal };
+  | { ok: true; text: string; quota?: SourceQuota }
+  | { ok: false; reason: SourceRefusal; quota?: SourceQuota };
+
+/** One line of one file, found without the caller having opened it. */
+export type SourceSearchMatch = SourceMatch & { path: string };
+
+export type SourceSearchResult = {
+  /** In the order `paths` was given, then by line. */
+  matches: SourceSearchMatch[];
+  /**
+   * How many of the files asked about were actually looked inside.
+   *
+   * Never the number asked for. A file the upload never kept, one over the
+   * reader's ceiling, one whose bytes are not text: none of those were looked
+   * inside, and the difference is what the caller says it could not open
+   * rather than what it did not find (D112).
+   */
+  searched: number;
+};
+
+/**
+ * Looking inside every file at once, where the source is somewhere that can do
+ * that.
+ *
+ * Only an uploaded project has one: its bytes are rows in our own database, so
+ * one query searches the whole project. A GitHub project stores no source and
+ * must keep storing none (D77), so it has no `searchAll` and its search stays
+ * a sweep of fetches — which is precisely why that sweep has to size itself to
+ * the quota it has left.
+ *
+ * `paths` is both the permission and the ranking: the map is the authority for
+ * what may be read, and the order it is given in is the order matches come
+ * back in.
+ */
+export type SourceSearch = (
+  needle: string,
+  options: {
+    paths: readonly string[];
+    /** Most matched lines overall. */
+    limit: number;
+    /** Most matched lines from any one file. */
+    perFile: number;
+    prefix?: string;
+  },
+) => Promise<SourceSearchResult>;
 
 /**
  * How this project's source is reached, decided by the caller and never here.
@@ -66,10 +126,19 @@ export type SourceResult =
  * cannot reach still has a graph, and the loop degrades to `inferred`-only
  * findings rather than pretending it read something.
  */
-export type SourceReader = (
-  path: string,
-  signal?: AbortSignal,
-) => Promise<SourceResult>;
+export type SourceReader = {
+  (path: string, signal?: AbortSignal): Promise<SourceResult>;
+  /**
+   * Present only where every file can be looked inside in one go.
+   *
+   * A property on the reader rather than a second thing to thread through the
+   * loop, because it is not a second source: it is the same bytes, reached the
+   * way that source can reach all of them at once. Everything above still takes
+   * one `SourceReader`, every fake in the tests is still a plain function, and
+   * a caller that has one and does not use it is only slower.
+   */
+  searchAll?: SourceSearch;
+};
 
 export const SOURCE_MAX_BYTES = 512 * 1024;
 export const MAX_LINE_CHARS = 200;
@@ -261,16 +330,25 @@ export function matchesIn(
   for (let n = 0; n < all.length && out.length < limit; n += 1) {
     const raw = all[n];
     if (!raw.toLowerCase().includes(wanted)) continue;
-    const body = raw.trim();
-    out.push({
-      line: n + 1,
-      text:
-        body.length > MATCH_LINE_CHARS
-          ? `${body.slice(0, MATCH_LINE_CHARS)} …(줄임)`
-          : body,
-    });
+    out.push({ line: n + 1, text: matchText(raw) });
   }
   return out;
+}
+
+/**
+ * One matched line as it is shown, wherever the match was found.
+ *
+ * Its own function because a match can now be found in two places — here, over
+ * text we fetched, and in the database over an uploaded project's stored bytes
+ * — and a line that looked different depending on which found it would be two
+ * answers to one question. The finding is done twice because the two sources
+ * are genuinely different; the presentation is done once.
+ */
+export function matchText(raw: string): string {
+  const body = raw.trim();
+  return body.length > MATCH_LINE_CHARS
+    ? `${body.slice(0, MATCH_LINE_CHARS)} …(줄임)`
+    : body;
 }
 
 /**

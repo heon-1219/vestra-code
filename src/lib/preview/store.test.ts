@@ -1,14 +1,25 @@
-import { describe, expect, it } from "vitest";
+import { randomUUID } from "node:crypto";
+
+import { config } from "dotenv";
+import { eq, like } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { Db } from "@/db";
+import * as schema from "@/db/schema";
+import { projects, user } from "@/db/schema";
 
 import {
+  escapeBytes,
   listProjectFiles,
   readProjectFiles,
+  searchProjectFiles,
   STORE_BUDGET_BYTES,
   STORE_MAX_ROWS,
   storeDecision,
   storeProjectFiles,
+  unescapeBytes,
   type StorableFile,
   type StoredFile,
 } from "./store";
@@ -233,4 +244,286 @@ describe("reading files back", () => {
     // One bound parameter per path against Postgres' ceiling of 65,535.
     expect(asked).toHaveLength(3);
   });
+});
+
+describe("the spelling Postgres uses for bytes", () => {
+  it("escapes what encode(bytea, 'escape') escapes, and nothing else", () => {
+    // Verified against the production database rather than remembered: NUL, a
+    // backslash and the high bit, while a tab and a newline go through raw.
+    // `byteaout` escapes control characters too and this encoder does not.
+    expect(escapeBytes(Buffer.from([0x41, 0x09, 0x0a]))).toBe("A\t\n");
+    expect(escapeBytes(Buffer.from([0x5c]))).toBe("\\\\");
+    expect(escapeBytes(Buffer.from([0x00]))).toBe("\\000");
+    expect(escapeBytes(Buffer.from("결제", "utf8"))).toBe("\\352\\262\\260\\354\\240\\234");
+  });
+
+  it("reads its own spelling back, byte for byte", () => {
+    for (const word of ["결제", "stop_loss", "a\\b", "탭\there", ""]) {
+      expect(unescapeBytes(escapeBytes(Buffer.from(word, "utf8")))).toBe(word);
+    }
+  });
+});
+
+/**
+ * The search, against a real Postgres, because there is nothing else it could
+ * be tested against.
+ *
+ * Every way this can go wrong is SQL: `encode(bytea, 'escape')` spelling bytes
+ * the way `escapeBytes` above believes it does, `string_to_array` numbering
+ * lines the way an editor does, `array_position` carrying the caller's ranking
+ * through, and a count that survives a search that matched nothing. A mock
+ * database would agree with whatever this code believes and prove none of it.
+ *
+ *   VESTRA_DB=1 npm test -- src/lib/preview/store.test.ts
+ */
+config({ path: ".env.local", quiet: true });
+
+const withDb = process.env.VESTRA_DB ? describe : describe.skip;
+
+const TEST_USER_ID = "vestra-test-store-user";
+const TEST_PROJECT_PREFIX = "vestra-test-store-";
+
+withDb("searchProjectFiles against a real database", () => {
+  let pool: Pool;
+  let db: Db;
+  let projectId: string;
+
+  const remove = async () => {
+    await db.delete(projects).where(like(projects.id, `${TEST_PROJECT_PREFIX}%`));
+    await db.delete(user).where(eq(user.id, TEST_USER_ID));
+  };
+
+  const kept: StorableFile[] = [
+    {
+      path: "src/checkout.py",
+      content: Buffer.from(
+        ["import stripe", "", "def pay():", '    # 결제를 여기서 해요', "    return STOP_LOSS", ""].join("\n"),
+        "utf8",
+      ),
+    },
+    {
+      // CRLF, because a line number that is off by one on a Windows upload is
+      // a citation that points at the wrong line.
+      path: "src/loud.ts",
+      content: Buffer.from(
+        Array.from({ length: 8 }, (_, i) => `const stripe${i} = 1;`).join("\r\n"),
+        "utf8",
+      ),
+    },
+    {
+      // Bytes, not text: a PNG with NUL in it that happens to contain the word.
+      path: "public/logo.png",
+      content: Buffer.concat([
+        Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00]),
+        Buffer.from("stripe", "utf8"),
+        Buffer.from([0x00, 0xff]),
+      ]),
+    },
+  ];
+
+  beforeAll(async () => {
+    pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 4 });
+    db = drizzle(pool, { schema });
+    await remove();
+    await db.insert(user).values({
+      id: TEST_USER_ID,
+      name: "store test",
+      email: "store-test@vestra.invalid",
+      emailVerified: false,
+    });
+    projectId = `${TEST_PROJECT_PREFIX}${randomUUID()}`;
+    await db.insert(projects).values({
+      id: projectId,
+      userId: TEST_USER_ID,
+      repoOwner: null,
+      repoName: null,
+      repoUrl: null,
+      defaultBranch: null,
+      displayName: "store fixture",
+      kind: "python",
+      source: "upload",
+    });
+    await storeProjectFiles(db, projectId, kept);
+  }, 60_000);
+
+  afterAll(async () => {
+    await remove();
+    await pool.end();
+  }, 60_000);
+
+  const paths = kept.map((f) => f.path);
+
+  it("finds a word in the bytes and says which line it is on", async () => {
+    const found = await searchProjectFiles(db, projectId, "import stripe", { paths });
+    expect(found.matches).toContainEqual({
+      path: "src/checkout.py",
+      line: 1,
+      text: "import stripe",
+    });
+  });
+
+  it("finds Korean, which is four bytes Postgres never sees as text", async () => {
+    const found = await searchProjectFiles(db, projectId, "결제", { paths });
+    expect(found.matches).toEqual([
+      { path: "src/checkout.py", line: 4, text: "    # 결제를 여기서 해요" },
+    ]);
+  });
+
+  it("does not care about case, the way the loop's own matcher does not", async () => {
+    const found = await searchProjectFiles(db, projectId, "stop_loss", { paths });
+    expect(found.matches.map((m) => m.line)).toEqual([5]);
+  });
+
+  it("counts lines the way an editor does, through a CRLF file", async () => {
+    const found = await searchProjectFiles(db, projectId, "stripe7", { paths });
+    // Line 8 of eight, and no stray carriage return riding on the text.
+    expect(found.matches).toEqual([
+      { path: "src/loud.ts", line: 8, text: "const stripe7 = 1;" },
+    ]);
+  });
+
+  it("never looks inside a file that is not text, whatever its bytes say", async () => {
+    const found = await searchProjectFiles(db, projectId, "stripe", { paths });
+    expect(found.matches.some((m) => m.path === "public/logo.png")).toBe(false);
+    // And it is not counted as looked-inside either, so the caller can say how
+    // many it could not open rather than implying it saw them all.
+    expect(found.searched).toBe(2);
+  });
+
+  it("keeps one loud file from crowding out the quiet ones", async () => {
+    const found = await searchProjectFiles(db, projectId, "stripe", {
+      paths,
+      perFile: 3,
+      limit: 10,
+    });
+    expect(found.matches.filter((m) => m.path === "src/loud.ts")).toHaveLength(3);
+    expect(found.matches.some((m) => m.path === "src/checkout.py")).toBe(true);
+  });
+
+  it("ranks the matches in the order the caller asked for them", async () => {
+    const forward = await searchProjectFiles(db, projectId, "stripe", { paths });
+    const backward = await searchProjectFiles(db, projectId, "stripe", {
+      paths: [...paths].reverse(),
+    });
+    expect(forward.matches[0].path).toBe("src/checkout.py");
+    expect(backward.matches[0].path).toBe("src/loud.ts");
+  });
+
+  it("says how many files it looked inside even when it found nothing", async () => {
+    // The case where the number matters most: "없었어요" is only allowed to
+    // mean "not in the two files I opened".
+    const found = await searchProjectFiles(db, projectId, "zzz-not-here", { paths });
+    expect(found.matches).toEqual([]);
+    expect(found.searched).toBe(2);
+  });
+
+  it("narrows to a folder without treating the prefix as a pattern", async () => {
+    const found = await searchProjectFiles(db, projectId, "stripe", {
+      paths,
+      prefix: "src/",
+    });
+    expect(found.matches.every((m) => m.path.startsWith("src/"))).toBe(true);
+    expect(found.searched).toBe(2);
+
+    // `%` is a wildcard in LIKE and a plain character in a path.
+    const none = await searchProjectFiles(db, projectId, "stripe", {
+      paths,
+      prefix: "s%c/",
+    });
+    expect(none.searched).toBe(0);
+  });
+
+  it("asks nothing at all when there is nothing to look inside", async () => {
+    await expect(
+      searchProjectFiles(db, projectId, "stripe", { paths: [] }),
+    ).resolves.toEqual({ matches: [], searched: 0 });
+  });
+
+  it("looks only inside the files it was handed", async () => {
+    const found = await searchProjectFiles(db, projectId, "stripe", {
+      paths: ["src/checkout.py"],
+    });
+    expect(found.searched).toBe(1);
+    expect(found.matches.every((m) => m.path === "src/checkout.py")).toBe(true);
+  });
+
+  /**
+   * The claim this module makes, measured rather than argued.
+   *
+   * Its own switch because it writes a real project's worth of rows to a real
+   * database and then deletes them, which is not something an ordinary test
+   * run should do:
+   *
+   *   VESTRA_DB=1 VESTRA_DB_MEASURE=1 npm test -- src/lib/preview/store.test.ts
+   *
+   * Best of several on both sides, and the machine this runs on is busy — the
+   * number to look at is the ratio, not the milliseconds.
+   */
+  it.skipIf(!process.env.VESTRA_DB_MEASURE)(
+    "searches a whole project for less than sixty files cost to fetch",
+    async () => {
+      // Real-sized files, because the sweep's cost is mostly bytes on the wire
+      // and a fixture of one-line modules would flatter it into looking fine.
+      // About 10 KB each, which is what a module in this repository weighs.
+      const body = Array.from(
+        { length: 200 },
+        (_, line) => `  const value${line} = compute(${line}); // 값을 계산해요`,
+      ).join("\n");
+      const many = Array.from({ length: 200 }, (_, i) => ({
+        path: `bulk/mod${String(i).padStart(3, "0")}.ts`,
+        content: Buffer.from(
+          [
+            `// 파일 ${i}`,
+            "import { pay } from './pay';",
+            i === 175 ? "const stop_loss = 0.02;" : "const rate = 0.01;",
+            "export function run() {",
+            body,
+            "  return pay(rate);",
+            "}",
+            "",
+          ].join("\n"),
+          "utf8",
+        ),
+      }));
+      await storeProjectFiles(db, projectId, many);
+      const paths = many.map((f) => f.path);
+
+      const best = async (runs: number, work: () => Promise<unknown>) => {
+        let ms = Infinity;
+        for (let run = 0; run < runs; run += 1) {
+          const at = Date.now();
+          await work();
+          ms = Math.min(ms, Date.now() - at);
+        }
+        return ms;
+      };
+
+      // Before: what the sweep does on an upload — sixty files, one query per
+      // file, six at a time.
+      const sweep = await best(3, async () => {
+        for (let at = 0; at < 60; at += 6) {
+          await Promise.all(
+            paths.slice(at, at + 6).map((p) => readProjectFiles(db, projectId, [p])),
+          );
+        }
+      });
+
+      let found = { matches: [] as { path: string }[], searched: 0 };
+      const query = await best(5, async () => {
+        found = await searchProjectFiles(db, projectId, "stop_loss", { paths });
+      });
+
+      console.log(
+        `[measure] 60 files fetched: ${sweep}ms | all ${found.searched} searched: ${query}ms`,
+      );
+      // The one match is the 176th file by path, which the sixty-file sweep
+      // could never have reached at all.
+      expect(found.matches.map((m) => m.path)).toEqual(["bulk/mod175.ts"]);
+      expect(found.searched).toBeGreaterThanOrEqual(200);
+      // Not a millisecond budget: the whole project, searched, against sixty
+      // files fetched, on the same connection in the same run.
+      expect(query).toBeLessThan(sweep);
+    },
+    120_000,
+  );
 });

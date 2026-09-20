@@ -1,8 +1,15 @@
 import type { Db } from "@/db";
-import { fetchRawFile } from "@/lib/github/raw";
-import { readProjectFiles } from "@/lib/preview/store";
+import { fetchRawFile, type RateLimit } from "@/lib/github/raw";
+import { readProjectFiles, searchProjectFiles } from "@/lib/preview/store";
 
-import { asText, SOURCE_MAX_BYTES, type SourceReader, type SourceResult } from "./source";
+import {
+  asText,
+  matchText,
+  SOURCE_MAX_BYTES,
+  type SourceQuota,
+  type SourceReader,
+  type SourceResult,
+} from "./source";
 
 /**
  * The two ways this product can reach a file, and there are exactly two.
@@ -29,13 +36,51 @@ import { asText, SOURCE_MAX_BYTES, type SourceReader, type SourceResult } from "
 
 /** Files an uploaded project kept. */
 export function storedSourceReader(db: Db, projectId: string): SourceReader {
-  return async (path) => {
+  const read: SourceReader = async (path) => {
     const [file] = await readProjectFiles(db, projectId, [path]);
     // Not an error: a file over its kind's ceiling, or one of a kind we cannot
     // draw, was described in the map and never stored (`lib/preview/store`).
     if (!file) return { ok: false, reason: "not_found" };
     return asText(file.content);
   };
+
+  /*
+   * An upload can be searched where it lives, and that is the whole difference.
+   *
+   * Pulling the files out to look inside them bounded the content search at
+   * sixty, because sixty reads is what fits in the time somebody will wait: on
+   * a real upload's worth of files, measured, sixty single-path reads cost
+   * 16.4 s and looked inside 60 of 284. This asks the database instead — one
+   * query, 95–141 ms, all 284 — and only the lines it is going to show come
+   * back over the wire.
+   *
+   * The map's own file list is what is handed down, in the order the caller
+   * ranked it. That is deliberately the same authority `read_source` uses: a
+   * path the model produced is a request, not a permission, and a search that
+   * reached rows the map does not hold would put a line in the citation ledger
+   * that nothing else in the product would open.
+   */
+  read.searchAll = async (needle, options) => {
+    const found = await searchProjectFiles(db, projectId, needle, {
+      paths: options.paths,
+      prefix: options.prefix,
+      limit: options.limit,
+      perFile: options.perFile,
+      maxBytes: SOURCE_MAX_BYTES,
+    });
+    return {
+      searched: found.searched,
+      matches: found.matches.map((match) => ({
+        path: match.path,
+        line: match.line,
+        // The same line the fetch-and-scan path would have shown, cut by the
+        // same rule, because they are two ways of answering one question.
+        text: matchText(match.text),
+      })),
+    };
+  };
+
+  return read;
 }
 
 export type GithubSource = {
@@ -68,9 +113,23 @@ export function githubSourceReader(source: GithubSource): SourceReader {
       signal,
     });
 
+    /*
+     * What GitHub said is left, carried up with the answer either way.
+     *
+     * It rides on the refusals as well as on the successes, which is the half
+     * that matters: the response that says "no" is the one that says how long
+     * it will keep saying it. `search_source` sizes its sweep from this rather
+     * than asking for sixty fetches whether six hundred requests remain or six.
+     */
+    const quota = quotaOf(result.rate);
+
     if (!result.ok) {
-      if (result.error === "too_large") return { ok: false, reason: "too_large" };
-      if (result.error === "not_found") return { ok: false, reason: "not_found" };
+      if (result.error === "too_large") {
+        return { ok: false, reason: "too_large", quota };
+      }
+      if (result.error === "not_found") {
+        return { ok: false, reason: "not_found", quota };
+      }
       /*
        * Rate limiting is carried through rather than folded in with the rest.
        *
@@ -84,15 +143,30 @@ export function githubSourceReader(source: GithubSource): SourceReader {
        * failure the product will meet.
        */
       if (result.error === "rate_limited") {
-        return { ok: false, reason: "rate_limited" };
+        return { ok: false, reason: "rate_limited", quota };
       }
       // Private, unreachable, a dropped socket: all "try again later" to the
       // person asking, and none of them a reason to invent an answer instead.
-      return { ok: false, reason: "unavailable" };
+      return { ok: false, reason: "unavailable", quota };
     }
 
-    return collect(result.value.body);
+    const collected = await collect(result.value.body);
+    return collected.ok
+      ? { ok: true, text: collected.text, quota }
+      : { ok: false, reason: collected.reason, quota };
   };
+}
+
+/**
+ * GitHub's numbers, or nothing at all.
+ *
+ * A missing header means we do not know, and "we do not know" must not become
+ * "none left" — a search told there was nothing left would narrow itself to
+ * nothing on a repository it could have read perfectly well.
+ */
+function quotaOf(rate: RateLimit): SourceQuota | undefined {
+  if (rate.remaining === null) return undefined;
+  return { remaining: rate.remaining, reset: rate.reset };
 }
 
 /**

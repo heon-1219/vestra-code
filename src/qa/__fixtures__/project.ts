@@ -161,6 +161,43 @@ export function fixtureReader(
   };
 }
 
+/**
+ * A reader that can also look inside every file at once — an uploaded project,
+ * whose bytes are rows we can ask one question of.
+ *
+ * It keeps the promises the real one keeps, because those are what the tool
+ * above it depends on: matches come back in the order `paths` was given, at
+ * most `perFile` from any one file and `limit` overall, and `searched` counts
+ * only the files it actually looked inside. A path with no bytes is one it
+ * could not open, which is a different number from one it looked in and did
+ * not find the word.
+ */
+export function searchableFixtureReader(
+  files: Record<string, string> = SOURCE,
+): SourceReader {
+  const read = fixtureReader(files);
+  read.searchAll = async (needle, options) => {
+    const wanted = needle.toLowerCase();
+    const matches: { path: string; line: number; text: string }[] = [];
+    let searched = 0;
+    for (const path of options.paths) {
+      if (options.prefix && !path.startsWith(options.prefix)) continue;
+      const text = files[path];
+      if (text === undefined) continue;
+      searched += 1;
+      let taken = 0;
+      const lines = text.split("\n");
+      for (let n = 0; n < lines.length && taken < options.perFile; n += 1) {
+        if (!lines[n].toLowerCase().includes(wanted)) continue;
+        taken += 1;
+        matches.push({ path, line: n + 1, text: lines[n].trim() });
+      }
+    }
+    return { matches: matches.slice(0, options.limit), searched };
+  };
+  return read;
+}
+
 // --- A model that does exactly what the test says ---------------------------
 
 export function call(

@@ -277,3 +277,233 @@ export async function readProjectFiles(
   }
   return files;
 }
+
+/**
+ * Where a word is written inside an uploaded project — asked of the database,
+ * once, instead of pulling the files out one at a time to look.
+ *
+ * The Q&A loop's content search used to fetch files and scan them in this
+ * process, which bounded it at sixty files: on a two-hundred-file upload it
+ * searched sixty and had to say so. Measured against a real upload's worth of
+ * files (284 files, 2.9 MB) on the production database: sixty single-path
+ * reads in waves of six cost **16.4 s** and looked inside 60 of them; this one
+ * query costs **95–141 ms** and looks inside all 284. The difference is almost
+ * entirely bytes on the wire — reading ten matched files whole costs 1.9–2.7 s
+ * on the same link, and the only thing that comes back here is the ten lines
+ * we are going to show.
+ *
+ * ## Bytes, not text
+ *
+ * `content` is `bytea`, and an upload keeps whatever the person had in the
+ * folder: a PNG sits beside the code (D77). `convert_from(content, 'UTF8')`
+ * throws on the first byte sequence that is not valid UTF-8, and one such file
+ * would take down the whole query rather than the one row — so the match is
+ * done over `encode(content, 'escape')`, which is **total**: every byte has a
+ * spelling, no input can fail it, and it is a per-byte map, so a substring of
+ * the bytes is still a substring of the escaping. The needle is spelled the
+ * same way here in `escapeBytes`, which is the whole trick — the comparison is
+ * byte-for-byte even though Postgres is comparing two `text` values.
+ *
+ * Two consequences, both deliberate:
+ *
+ *   - **Case folding is ASCII.** `encode` turns every byte over 127 into octal
+ *     digits, so `lower()` folds `A`–`Z` and nothing else. The needle is
+ *     lowercased in JavaScript first, where folding *is* Unicode-aware, so
+ *     searching `CAFÉ` finds `café`; the reverse does not. For Korean, which
+ *     has no case, this is no difference at all.
+ *   - **A file with a NUL byte is not searched.** That is `asText`'s own test
+ *     for "these bytes are not source", and a search that quietly matched
+ *     inside a PNG would hand the answer a line number nobody can open. It is
+ *     excluded from `searched` too, so it lands in the caller's count of files
+ *     it could not look inside rather than in the count it may say "not there"
+ *     about.
+ *
+ * ## What comes back, and what it is allowed to support
+ *
+ * Path, line number, and the text of that line — the three things the Q&A
+ * citation ledger needs to let a finding stand as `certain` (D110). The bytes
+ * of that line really did come back; the lines around it did not, and the
+ * ledger entry the caller writes says so.
+ *
+ * `paths` is the caller's own list **in the order it wants the matches
+ * ranked**, which is how the map's ranking survives a trip through SQL:
+ * `array_position` is the rank, so the ten lines that come back are the ten
+ * the caller would have picked. It is also the security boundary — the map is
+ * the authority for what may be read, here exactly as in `read_source`.
+ */
+export type ProjectFileMatch = {
+  path: string;
+  /** 1-based, counting the way an editor does. */
+  line: number;
+  /** The whole line as stored, minus a trailing CR. Untrimmed, uncut. */
+  text: string;
+};
+
+export type ProjectSearchResult = {
+  matches: ProjectFileMatch[];
+  /**
+   * How many rows were actually looked inside.
+   *
+   * The only number an absence may rest on (D112). A path the caller named
+   * that has no row, or one too big, or one that is not text, is not counted
+   * here — the caller can subtract and say how many it could not look at.
+   */
+  searched: number;
+};
+
+export type ProjectSearchOptions = {
+  /** The files to look inside, in the order matches should be ranked. */
+  paths?: readonly string[];
+  /** Only files under this path. A plain prefix, never a pattern. */
+  prefix?: string;
+  /** Most matched lines to return, over all files. */
+  limit?: number;
+  /** Most matched lines from any one file, so one loud file cannot crowd out nine quiet ones. */
+  perFile?: number;
+  /** Files bigger than this are not looked inside. */
+  maxBytes?: number;
+};
+
+const SEARCH_LIMIT = 10;
+const SEARCH_PER_FILE = 3;
+/** The same ceiling `SOURCE_MAX_BYTES` puts on reading one file. */
+const SEARCH_MAX_BYTES = 512 * 1024;
+
+/**
+ * One byte, spelled the way `encode(bytea, 'escape')` spells it.
+ *
+ * Postgres escapes exactly three things and leaves every other byte alone:
+ * NUL, a backslash, and anything with the high bit set. Verified against the
+ * production database rather than remembered — `byteaout` escapes control
+ * characters too and this encoder does not, and getting that wrong would mean
+ * a needle with a tab in it never matching anything.
+ */
+export function escapeBytes(bytes: Uint8Array): string {
+  let out = "";
+  for (const byte of bytes) {
+    if (byte === 0x00) out += "\\000";
+    else if (byte === 0x5c) out += "\\\\";
+    else if (byte >= 0x80) out += "\\" + byte.toString(8).padStart(3, "0");
+    else out += String.fromCharCode(byte);
+  }
+  return out;
+}
+
+/** The same spelling, read back into the text it stood for. */
+export function unescapeBytes(escaped: string): string {
+  const bytes: number[] = [];
+  for (let at = 0; at < escaped.length; ) {
+    if (escaped.charCodeAt(at) === 0x5c) {
+      if (escaped.charCodeAt(at + 1) === 0x5c) {
+        bytes.push(0x5c);
+        at += 2;
+        continue;
+      }
+      const octal = escaped.slice(at + 1, at + 4);
+      if (/^[0-7]{3}$/.test(octal)) {
+        bytes.push(parseInt(octal, 8));
+        at += 4;
+        continue;
+      }
+    }
+    bytes.push(escaped.charCodeAt(at) & 0xff);
+    at += 1;
+  }
+  // Bytes that are not valid UTF-8 come back as replacement characters rather
+  // than as an exception: the line is shown as what it is, and the file it
+  // came from was already one the caller offered as text.
+  return Buffer.from(bytes).toString("utf8");
+}
+
+export async function searchProjectFiles(
+  db: Db,
+  projectId: string,
+  needle: string,
+  options: ProjectSearchOptions = {},
+): Promise<ProjectSearchResult> {
+  const wanted = needle.toLowerCase();
+  if (wanted === "") return { matches: [], searched: 0 };
+  // Nothing to look inside is a legitimate question with a legitimate answer,
+  // and it keeps an empty array out of the SQL.
+  if (options.paths && options.paths.length === 0) return { matches: [], searched: 0 };
+
+  const target = escapeBytes(Buffer.from(wanted, "utf8"));
+  const limit = options.limit ?? SEARCH_LIMIT;
+  const perFile = options.perFile ?? SEARCH_PER_FILE;
+  const maxBytes = options.maxBytes ?? SEARCH_MAX_BYTES;
+
+  const paths = options.paths ? sql`${sql.param([...options.paths])}::text[]` : null;
+  const under = options.prefix
+    ? sql` and starts_with(${projectFiles.path}, ${options.prefix})`
+    : sql``;
+  const named = paths ? sql` and ${projectFiles.path} = any(${paths})` : sql``;
+  // The caller's own order, or the file system's. `array_position` is O(n) per
+  // row, which is nothing against the number of rows that reach it: only the
+  // files that matched are ordered at all.
+  const rank = paths
+    ? sql`array_position(${paths}, scanned.path)`
+    : sql`scanned.path`;
+
+  const found = await db.execute<{
+    searched: number;
+    path: string | null;
+    line: number | null;
+    text: string | null;
+  }>(sql`
+    with scanned as materialized (
+      select
+        ${projectFiles.path} as path,
+        strpos(lower(encode(${projectFiles.content}, 'escape')), ${target}) > 0 as hit
+      from ${projectFiles}
+      where ${projectFiles.projectId} = ${projectId}
+        and ${projectFiles.size} <= ${maxBytes}
+        and position(decode('00', 'hex') in ${projectFiles.content}) = 0${under}${named}
+    ),
+    tally as (select count(*)::int as searched from scanned),
+    -- The files whose lines will be cut, and no more of them than could
+    -- possibly be shown: every one of these contributes at least one line, so
+    -- taking the best few can never come up short. Without it, a word written
+    -- in every file of a large upload would have every one of them escaped
+    -- and split apart to produce ten lines.
+    top as (
+      select scanned.path as path, ${rank} as at
+      from scanned where scanned.hit order by 2 limit ${limit}
+    )
+    select tally.searched, hits.path, hits.line, hits.text
+    from tally
+    left join lateral (
+      select top.path as path, found.n::int as line, found.txt as text
+      from top
+      join ${projectFiles} on ${projectFiles.projectId} = ${projectId}
+        and ${projectFiles.path} = top.path
+      cross join lateral (
+        select line.n, line.txt
+        from unnest(
+          string_to_array(encode(${projectFiles.content}, 'escape'), chr(10))
+        ) with ordinality as line(txt, n)
+        where strpos(lower(line.txt), ${target}) > 0
+        order by line.n
+        limit ${perFile}
+      ) as found
+      order by top.at, found.n
+      limit ${limit}
+    ) as hits on true
+  `);
+
+  const rows = found.rows;
+  return {
+    // `tally` always has exactly one row, so the count survives a search that
+    // matched nothing — which is the case where saying how many files were
+    // looked inside matters most.
+    searched: Number(rows[0]?.searched ?? 0),
+    matches: rows
+      .filter((row) => row.path !== null && row.line !== null)
+      .map((row) => ({
+        path: row.path as string,
+        line: Number(row.line),
+        // Split on the newline alone, so a CRLF file keeps a stray CR that
+        // belongs to the line ending rather than to the line.
+        text: unescapeBytes(row.text ?? "").replace(/\r$/, ""),
+      })),
+  };
+}

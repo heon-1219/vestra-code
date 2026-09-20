@@ -2,9 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { GraphItem } from "@/lib/graph/view";
 
-import { fixtureReader, GRAPH, SOURCE } from "./__fixtures__/project";
+import {
+  fixtureReader,
+  GRAPH,
+  searchableFixtureReader,
+  SOURCE,
+} from "./__fixtures__/project";
 import { checkFindings } from "./answer";
-import type { SourceReader } from "./source";
+import type { SourceReader, SourceResult } from "./source";
 import {
   createToolContext,
   QA_TOOL_SPECS,
@@ -529,6 +534,281 @@ describe("search_source", () => {
     // A forty-file sweep through an eight-file cache must not throw away the
     // file the investigation has been reading.
     expect(read.mock.calls.length).toBe(before);
+  });
+});
+
+describe("search_source on a project that can be searched where it lives", () => {
+  /** An upload: the bytes are rows, so one question reaches all of them. */
+  function upload(count: number, needleIn: number[] = []) {
+    const graph = manyFiles(count);
+    const source: Record<string, string> = {};
+    for (const [index, item] of graph.items.entries()) {
+      source[item.path ?? ""] = needleIn.includes(index)
+        ? ["const a = 1;", "const stop_loss = 2;", "const b = 3;"].join("\n")
+        : "const x = 1;\n";
+    }
+    return { graph, source };
+  }
+
+  it("looks inside every file rather than the first sixty", async () => {
+    // The limitation this replaces: on a two-hundred-file upload the sweep
+    // searched sixty and had to say so. Measured on the production database,
+    // the sweep cost 16.4 s for those sixty and this costs about a tenth of a
+    // second for all of them.
+    const { graph, source } = upload(200, [150]);
+    const outcome = await run(
+      "search_source",
+      { why: "", words: "stop_loss" },
+      context(graph, searchableFixtureReader(source)),
+    );
+    expect(outcome.text).toContain("파일 200개를 들여다봤어요");
+    expect(outcome.text).not.toContain("중 60개");
+    // And it found the one match that the sixty-file sweep would have missed.
+    expect(outcome.text).toContain("src/mod150.ts:2|");
+  });
+
+  it("registers exactly the lines it printed, and nothing around them", async () => {
+    const { graph, source } = upload(20, [3]);
+    const outcome = await run(
+      "search_source",
+      { why: "", words: "stop_loss" },
+      context(graph, searchableFixtureReader(source)),
+    );
+    expect(outcome.ledger).toEqual([
+      { path: "src/mod003.ts", startLine: 2, endLine: 2, read: true },
+    ]);
+
+    // A claim about that one line stands as `certain`...
+    const kept = checkFindings(
+      [
+        {
+          claim: "이 줄에서 stop_loss를 정해요.",
+          certainty: "certain",
+          citations: [{ path: "src/mod003.ts", startLine: 2, endLine: 2 }],
+        },
+      ],
+      outcome.ledger,
+    );
+    expect(kept.kept).toHaveLength(1);
+    expect(kept.refused).toHaveLength(0);
+
+    // ...and a claim about the lines around it does not. The rule is about the
+    // bytes, not about which tool fetched them.
+    const wider = checkFindings(
+      [
+        {
+          claim: "이 파일 전체가 stop_loss를 다뤄요.",
+          certainty: "certain",
+          citations: [{ path: "src/mod003.ts", startLine: 1, endLine: 3 }],
+        },
+      ],
+      outcome.ledger,
+    );
+    expect(wider.kept).toHaveLength(0);
+    expect(wider.refused[0].reason).toBe("unread_citation");
+  });
+
+  it("counts the files it could not look inside apart from the ones it did", async () => {
+    // An upload keeps what it can: a file over its kind's ceiling is on the
+    // map and has no bytes. That is a file we could not look inside, and it
+    // must never be counted as one we looked inside and did not find the word.
+    const { graph, source } = upload(10, [1]);
+    delete source["src/mod004.ts"];
+    delete source["src/mod005.ts"];
+    const outcome = await run(
+      "search_source",
+      { why: "", words: "stop_loss" },
+      context(graph, searchableFixtureReader(source)),
+    );
+    expect(outcome.text).toContain("파일 10개 중 8개를 들여다봤어요");
+    expect(outcome.text).toContain("2개는 열어보지 못했어요");
+  });
+
+  it("never turns a project it could not look inside into an absence", async () => {
+    const { graph } = upload(10);
+    const outcome = await run(
+      "search_source",
+      { why: "", words: "stop_loss" },
+      // Every file on the map, not one byte kept: an upload that hit its
+      // storage cap. Saying "없었어요" here is a false claim about somebody's
+      // own code.
+      context(graph, searchableFixtureReader({})),
+    );
+    expect(outcome.text).toContain("있는지 없는지 말할 수 없어요");
+    expect(outcome.text).not.toContain("없었어요");
+    expect(outcome.ledger).toEqual([]);
+  });
+
+  it("bounds what it shows the same way the sweep does", async () => {
+    const { graph, source } = upload(20, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+    const outcome = await run(
+      "search_source",
+      { why: "", words: "stop_loss" },
+      context(graph, searchableFixtureReader(source)),
+    );
+    expect(outcome.ledger).toHaveLength(10);
+    // Twelve files matched and ten lines came back, so there really are more.
+    expect(outcome.text).toContain("더 있을 수 있어요");
+  });
+
+  it("narrows to a folder when asked, and says so in the count", async () => {
+    const graph = manyFiles(10, "src/");
+    const other = manyFiles(4, "tests/");
+    const source: Record<string, string> = {};
+    for (const item of [...graph.items, ...other.items]) {
+      source[item.path ?? ""] = "const stop_loss = 1;\n";
+    }
+    const outcome = await run(
+      "search_source",
+      { why: "", words: "stop_loss", where: "tests/" },
+      context(
+        { items: [...graph.items, ...other.items], connections: [] },
+        searchableFixtureReader(source),
+      ),
+    );
+    expect(outcome.text).toContain('"tests/" 아래 파일 4개를 들여다봤어요');
+    expect(outcome.ledger.every((entry) => entry.path.startsWith("tests/"))).toBe(true);
+  });
+
+  it("shows the ranked matches, not the first ones by path", async () => {
+    // `find_items`' own ordering: a file whose path carries the word comes
+    // first, however far down the folder listing it sits.
+    const { graph, source } = upload(20, [0, 19]);
+    const items = [...graph.items];
+    items[19] = { ...items[19], name: "src/stop_loss.ts", path: "src/stop_loss.ts" };
+    source["src/stop_loss.ts"] = source["src/mod019.ts"];
+    const outcome = await run(
+      "search_source",
+      { why: "", words: "stop_loss" },
+      context({ items, connections: [] }, searchableFixtureReader(source)),
+    );
+    expect(outcome.ledger[0].path).toBe("src/stop_loss.ts");
+  });
+});
+
+describe("a search that knows how much GitHub allowance is left", () => {
+  /** A reader that answers, and says what is left afterwards. */
+  function metered(
+    quota: { remaining: number; reset: number | null },
+    answer: SourceResult = { ok: true, text: "const x = 1;\n" },
+  ) {
+    const read = vi.fn(async () => ({ ...answer, quota }));
+    return read as unknown as SourceReader & { mock: { calls: unknown[] } };
+  }
+
+  it("stops at the wave that tells it the allowance is gone", async () => {
+    // The measurement this exists for: with GitHub rate limiting every read,
+    // the search spent sixty round trips being refused sixty times and then
+    // reported the wall as an absence. The first wave now teaches it the
+    // number and the sweep stops on it.
+    const graph = manyFiles(60);
+    const read = metered({ remaining: 0, reset: null }, {
+      ok: false,
+      reason: "rate_limited",
+    });
+    const outcome = await run(
+      "search_source",
+      { why: "", words: "stop_loss" },
+      createToolContext(graph, read),
+    );
+    expect(read.mock.calls).toHaveLength(6);
+    expect(outcome.text).toContain("있는지 없는지 말할 수 없어요");
+    expect(outcome.text).not.toContain("없었어요");
+  });
+
+  it("does not start a sweep it cannot pay for", async () => {
+    const graph = manyFiles(60, "src/");
+    const read = metered({ remaining: 3, reset: null });
+    const ctx = createToolContext(graph, read);
+    // Told by something other than this search — a read two steps ago — and
+    // with nothing in hand, there is nothing it can honestly do but say so.
+    ctx.quota.remaining = 3;
+
+    const outcome = await runTool(ctx, "search_source", { why: "", words: "stop_loss" });
+    expect(read.mock.calls).toHaveLength(0);
+    expect(outcome.text).toContain("요청 한도");
+    expect(outcome.text).toContain("있는지 없는지 말할 수 없어요");
+    expect(outcome.ledger).toEqual([]);
+  });
+
+  it("still looks inside what it already holds, and says how little that was", async () => {
+    const graph = manyFiles(60, "src/");
+    const read = metered({ remaining: 3, reset: null });
+    const ctx = createToolContext(graph, read);
+    // One read teaches the context the number and leaves one file in hand.
+    await runTool(ctx, "read_source", { why: "", path: "src/mod000.ts" });
+    const before = read.mock.calls.length;
+
+    const outcome = await runTool(ctx, "search_source", { why: "", words: "stop_loss" });
+    // Not one more request, and not one word more than it can support: it says
+    // it looked in one file of sixty and why, and the absence it reports is
+    // about that one file rather than about the project.
+    expect(read.mock.calls.length).toBe(before);
+    expect(outcome.text).toContain("파일 60개 중 1개를 들여다봤어요");
+    expect(outcome.text).toContain("요청 한도");
+    expect(outcome.text).toContain("들여다본 파일에는");
+  });
+
+  it("says the search was narrowed and why, rather than a bare 없었어요", async () => {
+    const graph = manyFiles(200);
+    const read = metered({ remaining: 20, reset: null });
+    const outcome = await run(
+      "search_source",
+      { why: "", words: "stop_loss" },
+      createToolContext(graph, read),
+    );
+    // Twenty left, eight held back to read what it finds: twelve files.
+    expect(read.mock.calls).toHaveLength(12);
+    expect(outcome.text).toContain("파일 200개 중 12개를 들여다봤어요");
+    expect(outcome.text).toContain("요청 한도");
+    // The absence is still bounded by what it opened, as it always was.
+    expect(outcome.text).toContain("들여다본 파일에는");
+  });
+
+  it("says when the allowance comes back, if GitHub said", async () => {
+    const graph = manyFiles(60);
+    const reset = Math.floor((Date.now() + 10 * 60_000) / 1000);
+    const read = metered({ remaining: 0, reset }, { ok: false, reason: "rate_limited" });
+    const outcome = await run(
+      "search_source",
+      { why: "", words: "stop_loss" },
+      createToolContext(graph, read),
+    );
+    expect(outcome.text).toMatch(/약 \d+분 뒤에 다시 물어봐 주세요/);
+  });
+
+  it("does not narrow on an allowance nobody has told it about", async () => {
+    // A number we do not have must never be read as a number that is small.
+    const graph = manyFiles(200);
+    const source: Record<string, string> = {};
+    for (const item of graph.items) source[item.path ?? ""] = "const x = 1;\n";
+    const outcome = await run(
+      "search_source",
+      { why: "", words: "stop_loss" },
+      context(graph, fixtureReader(source)),
+    );
+    expect(outcome.text).toContain("200개 중 60개");
+    expect(outcome.text).not.toContain("요청 한도");
+  });
+
+  it("does not count against the allowance files it did not have to fetch", async () => {
+    // D114 made the second search of a project free. A ceiling that counted
+    // files rather than requests would take that back the moment the allowance
+    // got low, for a cost nobody paid.
+    const graph = manyFiles(20);
+    const read = metered({ remaining: 40, reset: null });
+    const ctx = createToolContext(graph, read);
+    await runTool(ctx, "search_source", { why: "", words: "결제" });
+    const first = read.mock.calls.length;
+    expect(first).toBe(20);
+
+    // The allowance has since collapsed, and the second search still looks
+    // inside all twenty, because all twenty are already in hand.
+    ctx.quota.remaining = 2;
+    const outcome = await runTool(ctx, "search_source", { why: "", words: "주문" });
+    expect(read.mock.calls.length).toBe(first);
+    expect(outcome.text).toContain("파일 20개를 들여다봤어요");
+    expect(outcome.text).not.toContain("요청 한도");
   });
 });
 

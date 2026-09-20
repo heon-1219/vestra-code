@@ -240,6 +240,62 @@ describe("fetchRawFile", () => {
     expect(result.error).toBe("unavailable");
   });
 
+  it("says what is left of the allowance, off the answer it just got", async () => {
+    const result = await fetchRawFile({
+      ...BASE,
+      fetchImpl: async () =>
+        new Response(bodyOf([new TextEncoder().encode("ok")]), {
+          status: 200,
+          headers: {
+            "content-length": "2",
+            "x-ratelimit-remaining": "4993",
+            "x-ratelimit-reset": "1758400000",
+          },
+        }),
+    });
+    expect(result.rate).toEqual({ remaining: 4993, reset: 1758400000 });
+  });
+
+  it("says it on the refusal too, which is the one that needs saying", async () => {
+    // A 403 is where the number matters: it is the answer that explains
+    // itself, and a search that reads it can decline to spend fifty-four more
+    // requests finding out the same thing.
+    const result = await fetchRawFile({
+      ...BASE,
+      fetchImpl: async () =>
+        new Response("no", {
+          status: 403,
+          headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": "1758400000" },
+        }),
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe("rate_limited");
+    expect(result.rate.remaining).toBe(0);
+  });
+
+  it("says nothing rather than zero when GitHub did not say", async () => {
+    // Unknown is not none left. A caller that read the two alike would stop
+    // looking at a repository it could read perfectly well.
+    const noHeaders = await fetchRawFile({
+      ...BASE,
+      fetchImpl: async () =>
+        new Response(bodyOf([new TextEncoder().encode("ok")]), {
+          status: 200,
+          headers: { "content-length": "2" },
+        }),
+    });
+    expect(noHeaders.rate).toEqual({ remaining: null, reset: null });
+
+    const noAnswer = await fetchRawFile({
+      ...BASE,
+      fetchImpl: async () => {
+        throw new Error("ECONNRESET");
+      },
+    });
+    expect(noAnswer.rate).toEqual({ remaining: null, reset: null });
+  });
+
   it("has a sentence for every failure it can return", () => {
     for (const key of [
       "not_found",

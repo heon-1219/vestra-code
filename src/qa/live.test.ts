@@ -123,3 +123,81 @@ describe.skipIf(!live || !keyed)("the investigation loop, against a real model",
     expect(investigation.spent.inputTokens).toBeGreaterThan(0);
   }, 180_000);
 });
+
+/**
+ * The sweep against real GitHub, with whatever allowance this machine has left.
+ *
+ *   VESTRA_GITHUB_LIVE=1 npx vitest run src/qa/live.test.ts
+ *
+ * Its own switch because it spends requests out of a public allowance of sixty
+ * an hour, which is the very thing it is measuring. It asserts almost nothing:
+ * what it is for is the pair of numbers it prints — how many fetches the sweep
+ * spent, and what it said afterwards — because the failure this replaces was
+ * "sixty fetches, all refused, reported as an absence" and that is only
+ * visible against a real rate limiter.
+ */
+const githubLive = process.env.VESTRA_GITHUB_LIVE === "1";
+
+describe.skipIf(!githubLive)("search_source against real GitHub", () => {
+  it("sizes its sweep to the allowance it has left", async () => {
+    const { githubSourceReader } = await import("./readers");
+    const { createToolContext, runTool } = await import("./tools");
+    // Real files first, so the sweep has something to actually open, then a
+    // long tail it will only reach if the allowance lets it.
+    const paths = [
+      "package.json",
+      "readme.md",
+      "license.md",
+      "contributing.md",
+      ".editorconfig",
+      ".prettierignore",
+      ...Array.from(
+        { length: 54 },
+        (_, i) => `packages/next/src/build/${String(i).padStart(3, "0")}.ts`,
+      ),
+    ];
+    const items = paths.map((path, index) => ({
+      id: `f${index}`,
+      kind: "file" as const,
+      shape: null,
+      name: path,
+      label: null,
+      summary: null,
+      path,
+      startLine: null,
+      endLine: null,
+      fromUser: false,
+      usedBy: 0,
+      uses: 0,
+    }));
+
+    let fetches = 0;
+    const reader = githubSourceReader({
+      owner: "vercel",
+      repo: "next.js",
+      ref: "canary",
+      token: null,
+    });
+    const counted = async (path: string, signal?: AbortSignal) => {
+      fetches += 1;
+      return reader(path, signal);
+    };
+
+    const context = createToolContext({ items, connections: [] }, counted);
+    const outcome = await runTool(context, "search_source", {
+      why: "",
+      words: "stop_loss",
+    });
+
+    console.log(`[qa] fetches spent: ${fetches} of a possible ${paths.length}`);
+    console.log(`[qa] allowance left afterwards: ${JSON.stringify(context.quota)}`);
+    console.log(`[qa] said: ${outcome.text}`);
+
+    // The one thing that is true whatever the allowance happens to be: a
+    // search that could not look inside anything never reports an absence.
+    if (!outcome.text.includes("들여다봤어요")) {
+      expect(outcome.text).toContain("말할 수 없어요");
+    }
+    expect(fetches).toBeLessThanOrEqual(paths.length);
+  }, 120_000);
+});

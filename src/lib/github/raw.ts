@@ -35,9 +35,39 @@ export type RawFile = {
   size: number | null;
 };
 
+/**
+ * What GitHub says is left of our hourly allowance, off the answer it just
+ * gave us.
+ *
+ * Free: it rides on a response we were making anyway, on the refusals as well
+ * as on the successes. It is here because of a measured failure — a content
+ * search asks for sixty files whether six hundred requests remain or six, and
+ * with the limit exhausted it spent sixty round trips discovering that and
+ * then reported the wall as an absence (D112). A search that can read this
+ * number can decline to walk into it, and say that it narrowed and why.
+ *
+ * Both are null when GitHub did not say, which happens: a cached response, a
+ * proxy in between, a network failure before any head arrived. Null means
+ * "unknown", never "none left" — a caller that treated the two alike would
+ * stop looking on a repository that was perfectly readable.
+ */
+export type RateLimit = {
+  remaining: number | null;
+  /** Seconds since the epoch, as GitHub counts them. */
+  reset: number | null;
+};
+
+export const NO_RATE_LIMIT: RateLimit = { remaining: null, reset: null };
+
 export type RawResult =
-  | { ok: true; value: RawFile }
-  | { ok: false; error: RawFailure; status?: number; size?: number | null };
+  | { ok: true; value: RawFile; rate: RateLimit }
+  | {
+      ok: false;
+      error: RawFailure;
+      status?: number;
+      size?: number | null;
+      rate: RateLimit;
+    };
 
 const GITHUB_API = "https://api.github.com";
 
@@ -95,7 +125,25 @@ function classify(status: number): GithubFailure {
 export function declaredSize(response: {
   headers: { get(name: string): string | null };
 }): number | null {
-  const raw = response.headers.get("content-length");
+  return wholeHeader(response, "content-length");
+}
+
+/** What is left of the allowance, off the headers of the answer we just got. */
+export function rateLimitOf(response: {
+  headers: { get(name: string): string | null };
+}): RateLimit {
+  return {
+    remaining: wholeHeader(response, "x-ratelimit-remaining"),
+    reset: wholeHeader(response, "x-ratelimit-reset"),
+  };
+}
+
+/** A header that is a count, or null when it is missing or is not one. */
+function wholeHeader(
+  response: { headers: { get(name: string): string | null } },
+  name: string,
+): number | null {
+  const raw = response.headers.get(name);
   if (raw === null) return null;
   const parsed = Number(raw);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
@@ -157,14 +205,25 @@ export async function fetchRawFile(args: FetchRawArgs): Promise<RawResult> {
       signal: args.signal,
     });
   } catch {
-    return { ok: false, error: "unavailable" };
+    // Nothing came back at all, so there is nothing to say about the
+    // allowance. Unknown, which is not the same as none left.
+    return { ok: false, error: "unavailable", rate: NO_RATE_LIMIT };
   }
+
+  // Read off every answer, including the ones that refuse — a 403 carries the
+  // number that explains it, and that is the one a caller most needs.
+  const rate = rateLimitOf(response);
 
   if (!response.ok) {
     // Nothing is going to read this body, and an unread body holds a socket
     // open until the runtime gives up on it.
     await discard(response);
-    return { ok: false, error: classify(response.status), status: response.status };
+    return {
+      ok: false,
+      error: classify(response.status),
+      status: response.status,
+      rate,
+    };
   }
 
   const size = declaredSize(response);
@@ -172,16 +231,20 @@ export async function fetchRawFile(args: FetchRawArgs): Promise<RawResult> {
   // The gate. Before a single byte of the body is pulled.
   if (size !== null && size > args.maxBytes) {
     await discard(response);
-    return { ok: false, error: "too_large", size };
+    return { ok: false, error: "too_large", size, rate };
   }
 
   if (!response.body) {
     // A 200 with no body at all: an empty file reaches us this way in some
     // runtimes, and an empty file is an answer rather than a failure.
-    return { ok: true, value: { body: emptyStream(), size: size ?? 0 } };
+    return { ok: true, value: { body: emptyStream(), size: size ?? 0 }, rate };
   }
 
-  return { ok: true, value: { body: capped(response.body, args.maxBytes), size } };
+  return {
+    ok: true,
+    value: { body: capped(response.body, args.maxBytes), size },
+    rate,
+  };
 }
 
 async function discard(response: Response): Promise<void> {

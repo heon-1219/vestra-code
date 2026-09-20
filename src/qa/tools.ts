@@ -29,8 +29,10 @@ import {
   windowOf,
   WHOLE_FILE_CHARS,
   WHOLE_FILE_LINES,
+  type SourceMatch,
   type SourceReader,
   type SourceResult,
+  type SourceSearch,
 } from "./source";
 import type { QaToolName } from "./types";
 
@@ -214,6 +216,16 @@ export type ToolContext = {
    * one file at a time.
    */
   unreadable: { run: number };
+  /**
+   * What the source last said is left of our allowance, or nulls.
+   *
+   * Only GitHub has such a thing to say, and it says it on every answer
+   * including the ones that refuse. Kept here because the tool that needs it
+   * is not the one that learns it: a read tells us the number, and the search
+   * two steps later is the thing that must not ask for sixty fetches when six
+   * remain. Null is "we have not been told", never "none left".
+   */
+  quota: { remaining: number | null; reset: number | null };
 };
 
 /** How many files one investigation may hold text for at a time. */
@@ -230,9 +242,15 @@ const LIST_LIMIT = 30;
  * The content search, bounded four ways, and each bound is a different way it
  * could go wrong.
  *
+ * Three of the four are about **fetching** files, which is what a GitHub
+ * project makes us do. An uploaded project is searched in the database instead
+ * — one query, every file, nothing fetched — so only the last two apply to it.
+ *
  * **Files looked inside.** The only bound that costs wall clock: on a GitHub
  * project every one of these is a round trip, and the loop is inside a request
- * somebody is watching. Sixty at six at a time is a second or two.
+ * somebody is watching. Sixty at six at a time is a second or two. It is a
+ * ceiling and not a plan: the sweep asks for fewer when GitHub has told us the
+ * allowance is nearly spent, and says so when it does.
  *
  * **Bytes pulled.** Sixty files is cheap until one of them is a 400 KB
  * generated module. The byte ceiling stops early and the result says so.
@@ -254,6 +272,15 @@ const SEARCH_MATCHES = 10;
 const SEARCH_PER_FILE = 3;
 /** Fetched in waves of this size, in ranked order, so the result is the same twice. */
 const SEARCH_AT_ONCE = 6;
+/**
+ * Requests a sweep leaves behind for the rest of the investigation.
+ *
+ * The same number as the read cache holds, and for the same reason: a search
+ * that spends the last request has found a line that nobody can then open, and
+ * the step it cost bought nothing. Eight is enough to read what a search of
+ * this shape can find.
+ */
+const QUOTA_RESERVE = 8;
 /**
  * How much scanned text one investigation may hold, and how many files.
  *
@@ -320,7 +347,23 @@ export function createToolContext(
     held: new Map(),
     heldBytes: { total: 0 },
     unreadable: { run: 0 },
+    quota: { remaining: null, reset: null },
   };
+}
+
+/**
+ * Remember what the last answer said is left, if it said anything.
+ *
+ * Every result that came back from the source passes through here, successes
+ * and refusals alike, because GitHub puts the number on both and the refusal
+ * is the one that matters most. A result with nothing to say leaves the number
+ * where it was: one uninformative answer is not evidence that the allowance
+ * changed.
+ */
+function noteQuota(context: ToolContext, result: SourceResult): void {
+  if (!result.quota) return;
+  context.quota.remaining = result.quota.remaining;
+  context.quota.reset = result.quota.reset;
 }
 
 function push<T>(map: Map<string, T[]>, key: string, value: T): void {
@@ -402,7 +445,10 @@ const LIST_SPEC = spec(
 
 const SEARCH_SPEC = spec(
   "search_source",
-  `파일 **안의 글자**를 찾아요. 이름이 아니라 코드에 실제로 적힌 말을 찾을 때 쓰세요. 예: stripe, checkout, TODO, 환불. 한 번에 파일 ${SEARCH_FILES}개까지 들여다보고, 찾은 줄 ${SEARCH_MATCHES}개까지 보여드려요.`,
+  // How many files one call can look inside depends on where this project's
+  // source lives, so the number is not promised here — the result says how
+  // many it actually opened, every time.
+  `파일 **안의 글자**를 찾아요. 이름이 아니라 코드에 실제로 적힌 말을 찾을 때 쓰세요. 예: stripe, checkout, TODO, 환불. 찾은 줄 ${SEARCH_MATCHES}개까지 보여드리고, 파일 몇 개를 들여다봤는지 결과에 적어드려요.`,
   {
     words: {
       type: "string",
@@ -1079,14 +1125,36 @@ function listTree(
  * second question, and it is the one thing a curious reader could not do here
  * at all.
  *
- * ## What it costs, and what it keeps
+ * ## Two ways to look, decided by where the source is
  *
- * Every file it looks inside is a fetch — a round trip to GitHub, or a row out
- * of `project_files` for an upload. What it scans is held in memory for the
- * rest of the question (`ToolContext.held`, bounded by bytes and by count) so
- * that a second search does not fetch the same files again; on a GitHub
- * project that was ninety-six requests against a limit of sixty an hour, and
- * it left the whole rest of the investigation unable to read anything.
+ * **An uploaded project is searched where it lives.** Its bytes are rows in
+ * our own database, so one query looks inside every file and brings back only
+ * the lines it is going to show. Measured on a real upload's worth of files
+ * (284 files, 2.9 MB) against the production database: the sweep below cost
+ * **16.4 s and looked inside 60 of them**; the query costs **95–141 ms and
+ * looks inside all 284**. The sixty-file ceiling is simply gone there, and so
+ * is the sentence that had to admit it.
+ *
+ * **A GitHub project is swept, one fetch at a time.** It stores no source and
+ * must keep storing none (D77), so there is nothing to ask a question of —
+ * only files to fetch. That is the path every bound below is for.
+ *
+ * ## What the sweep costs, and what it keeps
+ *
+ * Every file it looks inside is a round trip. What it scans is held in memory
+ * for the rest of the question (`ToolContext.held`, bounded by bytes and by
+ * count) so that a second search does not fetch the same files again; without
+ * it that was ninety-six requests against a limit of sixty an hour, and it
+ * left the whole rest of the investigation unable to read anything.
+ *
+ * And the sweep sizes itself to what is left. GitHub says how much allowance
+ * remains on every answer it gives, refusals included, and `ToolContext.quota`
+ * carries the last such number: asking for sixty fetches with six requests
+ * left is how an investigation spends its whole budget being told no. When the
+ * sweep is cut short for that reason the result says so in words — a search
+ * that looked at twelve files of two hundred because the allowance was nearly
+ * spent must never come back as a bare "없었어요", which is D112's defect
+ * wearing a different hat.
  *
  * Nothing is written anywhere and nothing outlives the request. That is the
  * same bargain `read_source` already makes — the eight-file read cache could
@@ -1095,12 +1163,14 @@ function listTree(
  *
  * ## Why the order is what it is
  *
- * Sixty files out of three hundred is a real limit, so which sixty matters.
- * Files whose own path contains the word come first, because a search for
- * `broker` on a project with a `broker.py` should not depend on luck. Then by
- * reach, the same ordering `find_items` uses — the thing named in a complaint
- * is usually the one many places touch. Then by path, so two runs of one
- * question look inside the same sixty files.
+ * Sixty files out of three hundred is a real limit on the sweep, so which
+ * sixty matters. Files whose own path contains the word come first, because a
+ * search for `broker` on a project with a `broker.py` should not depend on
+ * luck. Then by reach, the same ordering `find_items` uses — the thing named
+ * in a complaint is usually the one many places touch. Then by path, so two
+ * runs of one question look inside the same sixty files. The database path
+ * takes the very same ranked list and ranks its matches by it, so which ten
+ * lines come back does not depend on which way the bytes were reached.
  */
 async function searchSource(
   context: ToolContext,
@@ -1112,7 +1182,8 @@ async function searchSource(
       `파일 안에서 찾을 글자가 필요해요. 두 글자 이상으로 적어 주세요. (${issuesOf(parsed.error)})`,
     );
   }
-  if (!context.read) {
+  const read = context.read;
+  if (!read) {
     return refusal(
       "이 프로젝트는 파일을 직접 열어볼 수 없어서 안쪽 글자는 찾을 수 없어요. find_items로 이름을 찾아보세요.",
     );
@@ -1153,32 +1224,331 @@ async function searchSource(
     if (inA !== inB) return inA ? -1 : 1;
     return byReach(a, b);
   });
-  const candidates = ranked.slice(0, SEARCH_FILES);
 
-  const hits: { file: GraphItem; matches: { line: number; text: string }[] }[] =
-    [];
+  const sweep = read.searchAll
+    ? await searchInPlace(context, read.searchAll, words, ranked, where)
+    : await sweepForWords(context, words, ranked);
+  if (sweep.refusal) return refusal(sweep.refusal);
+
+  const scope = one ? `"${where}"` : where === "" ? "프로젝트" : `"${where}" 아래`;
+  const coverage =
+    sweep.opened < eligible.length
+      ? `${scope} 파일 ${eligible.length}개 중 ${sweep.opened}개를 들여다봤어요.`
+      : `${scope} 파일 ${sweep.opened}개를 들여다봤어요.`;
+  const unopened = sweep.closed > 0 ? ` ${sweep.closed}개는 열어보지 못했어요.` : "";
+  // Why it is smaller than the project, when it is. Said on every result and
+  // not only on the empty one: a person reading "세 줄 찾았어요" also needs to
+  // know the search stopped a third of the way through.
+  const narrowed = narrowingWords(context, sweep.narrowed);
+
+  /*
+   * Nothing opened is not the same as nothing found, and saying the second
+   * when the first happened is a false statement about somebody's code.
+   *
+   * This was real: with GitHub rate limiting every read, the search reported
+   * `"stop_loss"를 파일 48개에서 찾아봤는데 없었어요` on a project that
+   * contains it. The model believed it, and so would the person reading the
+   * trace. A tool may say what it saw; it may never turn what it could not see
+   * into an absence.
+   */
+  if (sweep.opened === 0) {
+    return refusal(
+      `${scope} 파일을 하나도 열어보지 못해서 "${words}"가 있는지 없는지 말할 수 없어요. ${sweep.closed}개를 열어보려 했어요.${narrowed} 지금은 지도에 있는 이름과 연결만으로 답해 주세요.`,
+    );
+  }
+
+  if (sweep.hits.length === 0) {
+    return {
+      // "들여다본 파일에는 없었어요" — bounded by what was opened, on purpose.
+      text: `들여다본 파일에는 "${words}"가 적힌 줄이 없었어요. ${coverage}${unopened}${narrowed}`,
+      note: `"${words}"를 파일 ${sweep.opened}개에서 찾아봤는데 없었어요.`,
+      ledger: [],
+      items: [],
+      hops: [],
+    };
+  }
+
+  const rows: string[] = [];
+  const ledger: LedgerEntry[] = [];
+  const items: string[] = [];
+  let shown = 0;
+
+  for (const hit of sweep.hits) {
+    const path = hit.file.path ?? "";
+    let listed = false;
+    for (const match of hit.matches) {
+      if (shown >= SEARCH_MATCHES) break;
+      shown += 1;
+      // The file first, then what is written on the line — the same order
+      // `read_source` puts on the trail, so the map animates them the same way.
+      if (!listed) {
+        items.push(hit.file.id);
+        listed = true;
+      }
+      rows.push(`${path}:${match.line}| ${match.text}`);
+      /*
+       * One line, and exactly the one whose text came back.
+       *
+       * The bytes of this line were returned to the model, so a claim about
+       * this line is a claim about something it read — the same standard
+       * `read_source` meets, whichever way the line was reached. The range is
+       * the single line and not a neighbourhood of it: `coverageOf` demands
+       * containment, so a model that wants to say something about the three
+       * lines around this one has to go and read them, which is the correct
+       * amount of work.
+       */
+      ledger.push({ path, startLine: match.line, endLine: match.line, read: true });
+      items.push(
+        ...touched(context, path, { startLine: match.line, endLine: match.line }).map(
+          (item) => item.id,
+        ),
+      );
+    }
+    if (shown >= SEARCH_MATCHES) break;
+  }
+
+  const notes: string[] = [];
+  // Only when there really are more matches than came back. Why the search was
+  // smaller than the project, if it was, is already in the line above, with
+  // the remedy that fits that reason rather than this one.
+  if (sweep.more) notes.push("더 있을 수 있어요. where로 폴더를 좁혀서 다시 찾아보세요.");
+
+  return {
+    text: [
+      `"${words}"가 적힌 줄 ${shown}개를 찾았어요. ${coverage}${unopened}${narrowed}`,
+      ...rows,
+      ...notes,
+    ].join("\n"),
+    note: `"${words}"를 파일 ${sweep.opened}개에서 찾아 ${shown}줄을 봤어요.`,
+    ledger,
+    // The file each match sits in, and whatever the map draws on that line.
+    // A match is a place the loop was genuinely put in front of — unlike a
+    // listing, it came back with the bytes.
+    items: [...new Set(items)],
+    hops: [],
+  };
+}
+
+/** One file that matched, and the lines of it that did. */
+type SearchHit = { file: GraphItem; matches: SourceMatch[] };
+
+/**
+ * What one search actually managed to do, in the numbers the sentences need.
+ *
+ * `opened` and `closed` are the pair D112 turns on: a file whose bytes came
+ * back, and a file that would not open. They are counted apart here so that
+ * nothing downstream can accidentally add them together and call the sum "what
+ * I searched".
+ */
+type Sweep = {
+  hits: SearchHit[];
+  opened: number;
+  closed: number;
+  /** True when there were more matches than came back. */
+  more: boolean;
+  /** Why this looked at less than the whole project, if it did. */
+  narrowed: "files" | "bytes" | "quota" | null;
+  /** Set when the search could not honestly be run at all. */
+  refusal?: string;
+};
+
+/**
+ * One query, the whole project.
+ *
+ * The ranked list goes down as-is: it is both the permission — the map decides
+ * what may be read, here exactly as in `read_source` — and the ranking, since
+ * the matches come back in the order the paths were given. One more line than
+ * we will show is asked for, which is how "더 있을 수 있어요" becomes something
+ * we know rather than something we guess.
+ *
+ * Nothing is held afterwards, on purpose. `held` exists because a GitHub
+ * project's allowance is sixty an hour and a re-fetch can cost the whole rest
+ * of the investigation; a database has no such limit, and holding would mean
+ * pulling the matched files whole — measured at 1.9–2.7 s for ten of them,
+ * against the 133 ms a later `read_source` pays for the one file it actually
+ * wants.
+ */
+async function searchInPlace(
+  context: ToolContext,
+  searchAll: SourceSearch,
+  words: string,
+  ranked: GraphItem[],
+  where: string,
+): Promise<Sweep> {
+  const paths = ranked.map((file) => file.path ?? "").filter((path) => path !== "");
+  let found;
+  try {
+    found = await searchAll(words, {
+      paths,
+      limit: SEARCH_MATCHES + 1,
+      perFile: SEARCH_PER_FILE,
+      // Redundant against `paths` and worth sending anyway: a cheap prefix on
+      // an indexed column narrows the rows before the membership test does.
+      prefix: where === "" ? undefined : where,
+    });
+  } catch {
+    return {
+      hits: [],
+      opened: 0,
+      closed: paths.length,
+      more: false,
+      narrowed: null,
+      refusal: `지금은 파일 안쪽을 찾아볼 수 없어요. "${words}"가 있는지 없는지 말할 수 없어요. 지금은 지도에 있는 이름과 연결만으로 답해 주세요.`,
+    };
+  }
+
+  const byPath = new Map<string, SearchHit>();
+  const hits: SearchHit[] = [];
+  for (const match of found.matches.slice(0, SEARCH_MATCHES)) {
+    const file = context.files.get(match.path);
+    // A path the map does not hold cannot be cited, so it is not shown either.
+    // It should not be reachable — the map's own list is what went down — and
+    // a silent drop is the right answer to a thing that should not exist.
+    if (!file) continue;
+    const already = byPath.get(match.path);
+    if (already) {
+      already.matches.push({ line: match.line, text: match.text });
+      continue;
+    }
+    const hit: SearchHit = {
+      file,
+      matches: [{ line: match.line, text: match.text }],
+    };
+    byPath.set(match.path, hit);
+    hits.push(hit);
+  }
+
+  return {
+    hits,
+    opened: found.searched,
+    // Files the map holds that the upload never kept, or that are too big, or
+    // whose bytes are not text. Never folded into `opened`.
+    closed: Math.max(0, paths.length - found.searched),
+    more: found.matches.length > SEARCH_MATCHES,
+    narrowed: null,
+  };
+}
+
+/**
+ * Files fetched one wave at a time, for a source that can only be asked one
+ * file at a time.
+ *
+ * The sweep is sized twice: once before it starts, from whatever the last
+ * answer said was left, and again before each wave, because the first wave is
+ * usually what teaches us the number. `QUOTA_RESERVE` is held back so that a
+ * search which finds something still leaves enough allowance to open it — a
+ * search that spends the last request has found a line nobody can read.
+ */
+async function sweepForWords(
+  context: ToolContext,
+  words: string,
+  ranked: GraphItem[],
+): Promise<Sweep> {
+  const allowance = sweepAllowance(context);
+  /*
+   * Both ceilings count FETCHES, not files.
+   *
+   * A file this investigation already holds costs no round trip and no
+   * allowance, so it is always looked inside — which is what keeps D114's
+   * promise that the second search of a project is free, instead of quietly
+   * spending the file ceiling again on files already in hand.
+   */
+  const capFetches =
+    allowance === null ? SEARCH_FILES : Math.min(SEARCH_FILES, allowance);
+
+  const candidates: GraphItem[] = [];
+  let costly = 0;
+  let skipped = 0;
+  for (const file of ranked) {
+    const path = file.path ?? "";
+    if (context.cache.has(path) || context.held.has(path)) {
+      candidates.push(file);
+      continue;
+    }
+    if (costly >= capFetches) {
+      skipped += 1;
+      continue;
+    }
+    costly += 1;
+    candidates.push(file);
+  }
+
+  if (candidates.length === 0) {
+    return {
+      hits: [],
+      opened: 0,
+      closed: 0,
+      more: false,
+      narrowed: "quota",
+      refusal: `깃허브 요청 한도가 거의 다 차서 파일을 열어볼 수 없어요. 그래서 "${words}"가 있는지 없는지 말할 수 없어요.${resetWords(context)} 지금은 지도에 있는 이름과 연결만으로 답해 주세요.`,
+    };
+  }
+
+  const hits: SearchHit[] = [];
   let found = 0;
   /** Files whose text actually came back. The only number "없었어요" may rest on. */
   let opened = 0;
   /** Files that would not open. Never silently folded into the one above. */
   let closed = 0;
   let bytes = 0;
-  let stoppedForBytes = false;
+  /** Requests actually spent. A file already held costs none. */
+  const spend = { fetches: 0 };
+  /*
+   * Which ceiling left files unlooked-at, if either did.
+   *
+   * The distinction is the whole point of Job 2: "I could only look at sixty
+   * of two hundred" and "I could only look at twelve because the allowance was
+   * nearly spent" are different facts, and the second one is the one that
+   * tells a person to come back in a few minutes rather than to narrow their
+   * question.
+   */
+  let narrowed: Sweep["narrowed"] =
+    skipped === 0 ? null : capFetches < SEARCH_FILES ? "quota" : "files";
 
-  for (let at = 0; at < candidates.length; at += SEARCH_AT_ONCE) {
+  let at = 0;
+  while (at < candidates.length) {
     if (found >= SEARCH_MATCHES) break;
     if (bytes >= SEARCH_BYTES) {
-      stoppedForBytes = true;
+      narrowed = "bytes";
       break;
     }
     if (context.signal?.aborted) break;
 
-    const wave = candidates.slice(at, at + SEARCH_AT_ONCE);
+    /*
+     * The wave is assembled rather than sliced, because the allowance is asked
+     * again here and the first wave is usually what teaches us the number.
+     *
+     * Measured: with the allowance exhausted, this used to fetch sixty files
+     * and be refused sixty times before reporting the wall as an absence. Now
+     * the first wave learns the number and the sweep stops spending on it —
+     * while files already in hand keep going in, because they cost nothing and
+     * skipping them would take back D114's free second search for a fee nobody
+     * paid.
+     */
+    const wave: GraphItem[] = [];
+    let needed = 0;
+    while (at < candidates.length && wave.length < SEARCH_AT_ONCE) {
+      const file = candidates[at];
+      const path = file.path ?? "";
+      if (!context.cache.has(path) && !context.held.has(path)) {
+        const left = sweepAllowance(context);
+        if (left !== null && spend.fetches + needed >= left) {
+          narrowed = "quota";
+          at += 1;
+          continue;
+        }
+        needed += 1;
+      }
+      wave.push(file);
+      at += 1;
+    }
+    if (wave.length === 0) break;
+
     // Fetched together, folded in order. The concurrency is what keeps this
     // one step on the clock rather than sixty; the ordered fold is what keeps
     // the same question returning the same rows.
     const texts = await Promise.all(
-      wave.map((file) => scanned(context, file.path ?? "")),
+      wave.map((file) => scanned(context, file.path ?? "", spend)),
     );
 
     for (const [index, result] of texts.entries()) {
@@ -1199,102 +1569,55 @@ async function searchSource(
     }
   }
 
-  const scope = one ? `"${where}"` : where === "" ? "프로젝트" : `"${where}" 아래`;
-  const coverage =
-    candidates.length < eligible.length
-      ? `${scope} 파일 ${eligible.length}개 중 ${opened}개를 들여다봤어요.`
-      : `${scope} 파일 ${opened}개를 들여다봤어요.`;
-  const unopened = closed > 0 ? ` ${closed}개는 열어보지 못했어요.` : "";
+  return { hits, opened, closed, more: found > SEARCH_MATCHES, narrowed };
+}
 
-  /*
-   * Nothing opened is not the same as nothing found, and saying the second
-   * when the first happened is a false statement about somebody's code.
-   *
-   * This was real: with GitHub rate limiting every read, the search reported
-   * `"stop_loss"를 파일 48개에서 찾아봤는데 없었어요` on a project that
-   * contains it. The model believed it, and so would the person reading the
-   * trace. A tool may say what it saw; it may never turn what it could not see
-   * into an absence.
-   */
-  if (opened === 0) {
-    return refusal(
-      `${scope} 파일을 하나도 열어보지 못해서 "${words}"가 있는지 없는지 말할 수 없어요. ${closed}개를 열어보려 했어요. 지금은 지도에 있는 이름과 연결만으로 답해 주세요.`,
-    );
+/**
+ * How many files this sweep may fetch, given what is left of the allowance.
+ *
+ * Null is "we have not been told", and it means the usual ceiling: a number we
+ * do not have must never be read as a number that is small, or a search would
+ * narrow itself to nothing on a repository it could read perfectly well.
+ */
+function sweepAllowance(context: ToolContext): number | null {
+  const left = context.quota.remaining;
+  if (left === null) return null;
+  return Math.max(0, left - QUOTA_RESERVE);
+}
+
+/**
+ * One clause saying the search was made smaller, and why. Empty when it was
+ * not.
+ *
+ * Each reason ends with the remedy that actually fits it, which is why they
+ * are not one sentence: narrowing the folder does nothing about an allowance
+ * that is nearly spent, and waiting does nothing about a project with three
+ * hundred files in it.
+ */
+function narrowingWords(context: ToolContext, narrowed: Sweep["narrowed"]): string {
+  if (narrowed === null) return "";
+  if (narrowed === "bytes") {
+    return " 분량이 커서 중간에 멈췄어요. where로 폴더를 좁히면 더 볼 수 있어요.";
   }
-
-  if (hits.length === 0) {
-    const why = stoppedForBytes
-      ? " 분량이 커서 중간에 멈췄어요."
-      : candidates.length < eligible.length
-        ? " where로 폴더를 좁히면 더 볼 수 있어요."
-        : "";
-    return {
-      // "들여다본 파일에는 없었어요" — bounded by what was opened, on purpose.
-      text: `들여다본 파일에는 "${words}"가 적힌 줄이 없었어요. ${coverage}${unopened}${why}`,
-      note: `"${words}"를 파일 ${opened}개에서 찾아봤는데 없었어요.`,
-      ledger: [],
-      items: [],
-      hops: [],
-    };
+  if (narrowed === "quota") {
+    return ` 깃허브 요청 한도가 얼마 남지 않아서 찾아본 범위를 줄였어요.${resetWords(context)}`;
   }
+  return ` 한 번에 ${SEARCH_FILES}개까지만 볼 수 있어서 나머지는 못 봤어요. where로 폴더를 좁히면 더 볼 수 있어요.`;
+}
 
-  const rows: string[] = [];
-  const ledger: LedgerEntry[] = [];
-  const items: string[] = [];
-  let shown = 0;
-
-  for (const hit of hits) {
-    const path = hit.file.path ?? "";
-    let listed = false;
-    for (const match of hit.matches) {
-      if (shown >= SEARCH_MATCHES) break;
-      shown += 1;
-      // The file first, then what is written on the line — the same order
-      // `read_source` puts on the trail, so the map animates them the same way.
-      if (!listed) {
-        items.push(hit.file.id);
-        listed = true;
-      }
-      rows.push(`${path}:${match.line}| ${match.text}`);
-      /*
-       * One line, and exactly the one whose text came back.
-       *
-       * The bytes of this line were returned to the model, so a claim about
-       * this line is a claim about something it read — the same standard
-       * `read_source` meets. The range is the single line and not a
-       * neighbourhood of it: `coverageOf` demands containment, so a model that
-       * wants to say something about the three lines around this one has to
-       * go and read them, which is the correct amount of work.
-       */
-      ledger.push({ path, startLine: match.line, endLine: match.line, read: true });
-      items.push(
-        ...touched(context, path, { startLine: match.line, endLine: match.line }).map(
-          (item) => item.id,
-        ),
-      );
-    }
-    if (shown >= SEARCH_MATCHES) break;
-  }
-
-  const notes: string[] = [];
-  if (found > shown || stoppedForBytes || candidates.length < eligible.length) {
-    notes.push("더 있을 수 있어요. where로 폴더를 좁혀서 다시 찾아보세요.");
-  }
-
-  return {
-    text: [
-      `"${words}"가 적힌 줄 ${shown}개를 찾았어요. ${coverage}${unopened}`,
-      ...rows,
-      ...notes,
-    ].join("\n"),
-    note: `"${words}"를 파일 ${opened}개에서 찾아 ${shown}줄을 봤어요.`,
-    ledger,
-    // The file each match sits in, and whatever the map draws on that line.
-    // A match is a place the loop was genuinely put in front of — unlike a
-    // listing, it came back with the bytes.
-    items: [...new Set(items)],
-    hops: [],
-  };
+/**
+ * When the allowance comes back, if GitHub said.
+ *
+ * Coarse on purpose — minutes, clamped — because the number is only useful as
+ * "wait a bit" or "wait a while", and a stale reset time from an hour-old
+ * response must not turn into a promise about the next minute.
+ */
+function resetWords(context: ToolContext): string {
+  const reset = context.quota.reset;
+  if (reset === null) return " 조금 뒤에 다시 물어봐 주세요.";
+  const minutes = Math.ceil((reset * 1000 - Date.now()) / 60_000);
+  if (minutes < 1 || minutes > 120) return " 조금 뒤에 다시 물어봐 주세요.";
+  return ` 약 ${minutes}분 뒤에 다시 물어봐 주세요.`;
 }
 
 /**
@@ -1309,6 +1632,14 @@ async function searchSource(
 async function scanned(
   context: ToolContext,
   path: string,
+  /**
+   * Counts the requests this sweep really spent.
+   *
+   * A file already held cost nothing, and counting it against the allowance
+   * would make the second search of a project — the one D114 made free — stop
+   * early for a fee it never paid.
+   */
+  spend: { fetches: number },
 ): Promise<SourceResult | null> {
   if (path === "" || !context.read) return null;
   const working = context.cache.get(path);
@@ -1317,6 +1648,7 @@ async function scanned(
   if (already) return already;
 
   let result: SourceResult;
+  spend.fetches += 1;
   try {
     result = await context.read(path, context.signal);
   } catch {
@@ -1325,6 +1657,7 @@ async function scanned(
     return null;
   }
 
+  noteQuota(context, result);
   hold(context, path, result);
   return result;
 }
@@ -1760,6 +2093,7 @@ async function readCached(
   if (already) return already;
 
   const result = await read(path, context.signal);
+  noteQuota(context, result);
   putCache(context, path, result);
   return result;
 }
