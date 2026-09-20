@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { GraphItem, GraphView } from "@/lib/graph/view";
 
 import {
+  PLANE,
   RightPanel,
   sendsOnKey,
   type RightPanelProps,
@@ -231,5 +232,55 @@ describe("sending from the keyboard", () => {
     expect(press({ key: "Tab" })).toBe(false);
     // Including one that looks close enough to be worth saying out loud.
     expect(press({ key: "NumpadEnter" })).toBe(false);
+  });
+});
+
+/**
+ * Where the send mark's weight sits.
+ *
+ * A paper plane has a long thin nose and a wide tail, so centring its bounding
+ * box leaves the ink off in a corner — which is exactly how the first version
+ * looked wrong inside a round button: box centre (8, 8), area centroid
+ * (9.13, 6.87). The shape is drawn around its centroid now, and this recomputes
+ * that rather than trusting the comment, because the next person to nudge a
+ * point will not redo the arithmetic by hand.
+ */
+describe("the send mark", () => {
+  const points = [PLANE.nose, PLANE.tail, PLANE.fold, PLANE.wing].map((pair) => {
+    const [x, y] = pair.split(" ").map(Number);
+    return { x, y };
+  });
+
+  /** Shoelace: signed area, and the centroid of that area. */
+  function centroid() {
+    let twiceArea = 0;
+    let x = 0;
+    let y = 0;
+    for (const [index, a] of points.entries()) {
+      const b = points[(index + 1) % points.length];
+      const cross = a.x * b.y - b.x * a.y;
+      twiceArea += cross;
+      x += (a.x + b.x) * cross;
+      y += (a.y + b.y) * cross;
+    }
+    const area = twiceArea / 2;
+    return { x: x / (6 * area), y: y / (6 * area) };
+  }
+
+  it("carries its weight in the middle of the box", () => {
+    const middle = centroid();
+    expect(middle.x).toBeCloseTo(8, 1);
+    expect(middle.y).toBeCloseTo(8, 1);
+  });
+
+  it("keeps its stroke inside the box it is drawn in", () => {
+    // Half of `strokeWidth`, which a round cap puts outside the path.
+    const bleed = 0.75;
+    for (const point of points) {
+      expect(point.x - bleed).toBeGreaterThanOrEqual(0);
+      expect(point.x + bleed).toBeLessThanOrEqual(16);
+      expect(point.y - bleed).toBeGreaterThanOrEqual(0);
+      expect(point.y + bleed).toBeLessThanOrEqual(16);
+    }
   });
 });

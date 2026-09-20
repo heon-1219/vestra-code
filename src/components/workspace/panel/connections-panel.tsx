@@ -1005,7 +1005,18 @@ function RequestBox({
             : "이 프로젝트에 대해 물어보세요"
         }
         aria-label="질문이나 바꾸고 싶은 내용"
-        className="w-full resize-none rounded-xl border border-edge-lit bg-ink py-2.5 pl-3 pr-11 text-[14px] leading-[1.7] text-said placeholder:text-said-faint focus:border-lamp-dim focus:outline-none disabled:opacity-55"
+        /*
+         * `block` is load-bearing, not tidying.
+         *
+         * A textarea is inline-block, so it sits on a text baseline and leaves
+         * descender space underneath it. Measured here: the wrapper came out
+         * **8.31px taller than the textarea**, and since the mark is placed
+         * from the wrapper's bottom edge, `bottom-2` put it 8px lower than it
+         * looks — hanging off the bottom of a 28px button. Tailwind's preflight
+         * sets `display: block` on img/svg/video and friends for exactly this
+         * reason and does not cover textarea.
+         */
+        className="block w-full resize-none rounded-xl border border-edge-lit bg-ink py-2.5 pl-3 pr-11 text-[14px] leading-[1.7] text-said placeholder:text-said-faint focus:border-lamp-dim focus:outline-none disabled:opacity-55"
       />
 
       {/*
@@ -1101,6 +1112,14 @@ export function sendsOnKey(event: {
  * Two strokes rather than one filled triangle: the fold down the middle is
  * what makes it read as a plane at 14px instead of an arrowhead lying on its
  * side, which is a different instruction.
+ *
+ * **Drawn around its ink, not around its bounding box.** The usual paper plane
+ * has a long thin nose and a wide tail, so squaring up its extents leaves the
+ * mass off to one corner: the shape this started from had a bounding box
+ * centred exactly on (8, 8) and an area centroid at (9.13, 6.87), which is why
+ * it looked shoved up and to the right inside a round button. The points below
+ * are the same plane moved and scaled so the centroid lands on (8, 8) — the
+ * arithmetic is in the test — and the stroke still clears every edge.
  */
 function SendMark() {
   return (
@@ -1115,11 +1134,25 @@ function SendMark() {
       strokeLinejoin="round"
       className="h-3.5 w-3.5 shrink-0"
     >
-      <path d="M14.5 1.5 7.2 8.8" />
-      <path d="M14.5 1.5 9.9 14.5 7.2 8.8 1.5 6.1z" />
+      <path d={`M${PLANE.nose} ${PLANE.fold}`} />
+      <path d={`M${PLANE.nose} ${PLANE.tail} ${PLANE.fold} ${PLANE.wing}z`} />
     </svg>
   );
 }
+
+/**
+ * The plane's four corners, named so the test can check where its weight sits.
+ *
+ * Exported for that test and for nothing else: "the ink is centred" is a claim
+ * about numbers, and the only way to keep it true through a later nudge is to
+ * let something recompute it.
+ */
+export const PLANE = {
+  nose: "13 3",
+  tail: "8.7 15.1",
+  fold: "6.2 9.8",
+  wing: "0.9 7.3",
+} as const;
 
 /* ---------------------------------------------------------------- loading */
 
