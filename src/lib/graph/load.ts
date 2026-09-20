@@ -74,6 +74,15 @@ export type GraphEdgeRow = {
    * arrived still compiles. An edge with no line is the normal case.
    */
   line?: string | null;
+  /**
+   * The purpose sentence, likewise picked out of `edges.metadata` by name.
+   *
+   * A second `->>` rather than a return to selecting the whole object: the
+   * column now holds two things the view reads and several it does not, and
+   * naming them is what keeps the 39.7 KB above from coming back the moment a
+   * third is added.
+   */
+  purpose?: string | null;
 };
 
 export type GraphRunRow = {
@@ -129,6 +138,7 @@ export async function loadGraphView(
         type: edges.type,
         confidence: edges.confidence,
         line: sql<string | null>`${edges.metadata}->>'line'`,
+        purpose: sql<string | null>`${edges.metadata}->>'purpose'`,
       })
       .from(edges)
       .where(eq(edges.projectId, projectId))
@@ -187,6 +197,7 @@ export function buildGraphView(
   // One pass: build the connection and tally both ends of it while we are here.
   for (const row of edgeRows) {
     const line = readLine(row.line);
+    const purpose = readPurpose(row.purpose);
     connections.push({
       id: row.id,
       from: row.sourceNodeId,
@@ -197,6 +208,7 @@ export function buildGraphView(
       // has no key at all. `view.ts` says absent is the only way to say "no
       // line"; writing `undefined` into the field would give it a second.
       ...(line === null ? {} : { line }),
+      ...(purpose === null ? {} : { purpose }),
     });
 
     // Structural relations are not uses, and counting them inflates the one
@@ -287,6 +299,22 @@ function readLine(value: string | null | undefined): number | null {
   const line = Number(value);
   if (!Number.isInteger(line) || line < 1) return null;
   return line;
+}
+
+/**
+ * The purpose sentence, or null.
+ *
+ * Emptier-minded than `readLine` on purpose: a sentence has no shape to check
+ * beyond being a non-empty string, and inventing further rules here — a
+ * minimum length, a trailing 요 — would be this file second-guessing the pass
+ * that wrote it. What it must not do is hand the map an empty string, because
+ * the UI's test for "is there a purpose" is presence, and `""` would pass it
+ * and then draw nothing.
+ */
+function readPurpose(value: string | null | undefined): string | null {
+  if (typeof value !== "string") return null;
+  const purpose = value.trim();
+  return purpose === "" ? null : purpose;
 }
 
 function readSkipped(value: unknown): string[] {

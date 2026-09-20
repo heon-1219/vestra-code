@@ -1059,6 +1059,10 @@ function seedFrom(
         relation: "contains",
         certainty: "certain",
         line: null,
+        // A joint is not a connection, so there is no edge for a purpose to
+        // be about. The structural sentence in `hopSentence` is the whole
+        // truth of this hop.
+        purpose: null,
         joint,
         branches: siblings.length - 1,
       }),
@@ -1079,6 +1083,14 @@ type Step = {
   relation: ConnectionRelation;
   certainty: Certainty;
   line: number | null;
+  /**
+   * Pass 3's sentence for this connection, when it has one.
+   *
+   * Null at both joints, always: a joint is not a connection, it is the
+   * structural fact that a file answers for an address, and there is no edge
+   * for a purpose to be about.
+   */
+  purpose: string | null;
   joint: FlowJoint | null;
   branches: number;
 };
@@ -1099,7 +1111,10 @@ function extend(index: FlowIndex, partial: Partial, step: Step): Partial {
     packages,
     branches: step.branches,
     joint: step.joint,
-    narrator: "measured",
+    // Who wrote the sentence, on the wire. §5: an arithmetic sentence and a
+    // model's sentence look alike and must not read alike, and the panel has
+    // to be able to say which it is showing.
+    narrator: step.purpose ? "purpose" : "measured",
     text: hopSentence(index, from ?? null, step),
   };
 
@@ -1158,6 +1173,9 @@ function expand(
           relation: "contains",
           certainty: "certain",
           line: null,
+          // The server joint, same rule as the entry joint: no edge, so no
+          // purpose.
+          purpose: null,
           joint: "server",
           branches: siblings.length - 1,
         }),
@@ -1186,6 +1204,7 @@ function expand(
         relation: connection.relation,
         certainty: connection.certainty,
         line: connection.line ?? null,
+        purpose: connection.purpose ?? null,
         joint: null,
         // Counted in places rather than in edges: two connections to the same
         // piece is one other way to go, as a person reads it.
@@ -1281,7 +1300,33 @@ function comparePaths(
   if (terminal !== 0) {
     return { order: terminal, criterion: "terminal", gap: Math.abs(terminal) };
   }
-  const length = a.path.hops.length - b.path.hops.length;
+  /*
+   * Shorter wins **only when the path got somewhere**. Otherwise longer does.
+   *
+   * §2.4 argued length ascending with one example — "a three-hop path to the
+   * server beats a nine-hop one that wandered through utilities to get there"
+   * — and that example is about *wandering on the way to a destination*. It
+   * says nothing about two paths that both simply stop, and applied to them
+   * it selects for the least informative answer the walk can give.
+   *
+   * Measured twice on this repository's own graph, and it is not a corner
+   * case. At 1,495 items `/app/:projectId` opened on `ProjectPageProps` — a
+   * prop type — at one hop. Excluding type declarations fixed that instance
+   * and not the rule, so at 1,821 items it opened on `generateMetadata`,
+   * which is a real function that calls nothing, beating
+   * `ProjectPage → Workspace → GroupingControl` by the same criterion with
+   * the same gap. The shortest thing a file holds is always the thing that
+   * does least, so "shortest wins" will keep finding a new one of them.
+   *
+   * `endpoint` and `terminal` have already had their say by this point, so
+   * both paths here stopped the same way; between two that both stop, the one
+   * that walked further is the one that showed more of the code. `MAX_FLOW_HOPS`
+   * bounds it, and a path that ran out of hops is ranked below one that ended
+   * on its own by `terminal`, so this cannot become a preference for rambling.
+   */
+  const length = a.path.reachedEndpoint
+    ? a.path.hops.length - b.path.hops.length
+    : b.path.hops.length - a.path.hops.length;
   if (length !== 0) return { order: length, criterion: "length", gap: Math.abs(length) };
 
   if (a.path.weakest !== b.path.weakest) {
@@ -1497,7 +1542,18 @@ function hopSentence(index: FlowIndex, from: GraphItem | null, step: Step): stri
     return file ? `이 주소는 ${file} 가 맡고 있어요` : "이 주소를 맡고 있는 자리예요";
   }
 
-  const parts: string[] = [RELATION_WORDS[step.relation].forward];
+  /*
+   * Pass 3's sentence, where there is one, in place of the relation's verb.
+   *
+   * 사용해요 is true and says almost nothing; 여기서 가격을 사람이 읽는 모양으로
+   * 바꿔요 is the same fact worth reading. The verb stays as the fallback and
+   * is never wrong, so a project that has never run Pass 3 — or one where the
+   * model declined this group — loses nothing it had.
+   *
+   * The line and the certainty still follow: the purpose says what this
+   * connection is for, and neither of those is part of that.
+   */
+  const parts: string[] = [step.purpose ?? RELATION_WORDS[step.relation].forward];
   const file = from ? fileNameOf(index, from.id) : null;
   if (step.line !== null && file) parts.push(`${file} ${step.line}줄`);
   // Never asserted on a hop we are sure of; `CERTAINTY_WORDS.certain` is the

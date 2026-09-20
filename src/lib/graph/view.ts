@@ -79,6 +79,23 @@ export type GraphConnection = {
    * stored by `persist.ts`, and dropped on the floor by `load.ts` until now.
    */
   line?: number;
+  /**
+   * One sentence for what this connection is *for*, in plain Korean.
+   *
+   * Shared by every connection that reaches the same thing by the same
+   * relation, which is the whole design: twelve components calling
+   * `formatPrice` are one fact, and a map that words one fact twelve ways is
+   * a map nobody believes. `smoothstep` and `circleTouchesBox` both read
+   * 범위 안에 가두기 because they are both doing that.
+   *
+   * Written by Pass 3 and therefore always `inferred` — it is a model's
+   * reading of the code, never the compiler's. The relation verb stays as the
+   * fallback and is never wrong, so a connection without one loses nothing it
+   * had before.
+   *
+   * Absent, not empty, when Pass 3 has not answered — same rule as `line`.
+   */
+  purpose?: string;
 };
 
 export type ConnectionRelation =

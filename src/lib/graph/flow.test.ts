@@ -1385,3 +1385,118 @@ function jsonLine(metadata: unknown): string | null {
   const line = (metadata as Record<string, unknown>).line;
   return line === undefined || line === null ? null : String(line);
 }
+
+// ---------------------------------------------------------------------------
+// Pass 3's sentence, where there is one
+// ---------------------------------------------------------------------------
+
+describe("what a hop says", () => {
+  /**
+   * Layer 2 of §4. `사용해요` is true and says almost nothing; the purpose
+   * sentence is the same fact worth reading. The verb stays as the fallback
+   * and is never wrong, so a project that has never run Pass 3 loses nothing.
+   */
+  it("prefers the purpose to the relation's verb", () => {
+    const graph = buildGraphView(
+      PROJECT,
+      [
+        node({ id: "f", type: "file", name: "pay.tsx", kind: null }),
+        node({ id: "a", kind: "component", name: "PayButton" }),
+        node({ id: "b", name: "formatPrice" }),
+      ],
+      [
+        edge("f", "a", "contains"),
+        edge("f", "b", "contains"),
+        edge("a", "b", "calls", {
+          line: "34",
+          purpose: "여기서 가격을 사람이 읽는 모양으로 바꿔요",
+        }),
+      ],
+      null,
+    );
+
+    const hop = traceFlow(graph, { startId: "a" }).path?.hops[0];
+    expect(hop?.text).toContain("여기서 가격을 사람이 읽는 모양으로 바꿔요");
+    expect(hop?.text).not.toContain("불러요");
+    // The line still follows. The purpose says what the connection is for;
+    // where it happens is a different fact and the reader wants both.
+    expect(hop?.text).toContain("34줄");
+    // §5: who wrote the sentence travels on the wire, because an arithmetic
+    // sentence and a model's sentence look alike and must not read alike.
+    expect(hop?.narrator).toBe("purpose");
+  });
+
+  it("falls back to the verb, and says the sentence was measured", () => {
+    const hop = traceFlow(shopShape(), { startId: "s_pay" }).path?.hops[0];
+    expect(hop?.narrator).toBe("measured");
+    expect(hop?.text).toBeTruthy();
+  });
+
+  it("never puts a purpose on a joint, because a joint has no edge", () => {
+    // A joint is `route → file → symbol` collapsed. No edge in the graph has
+    // those two ends, so there is nothing for a purpose to be about, and
+    // borrowing one from elsewhere would describe a connection that does not
+    // exist.
+    const trace = traceFlow(shopShape(), { startId: "r_checkout" });
+    const joints = (trace.path?.hops ?? []).filter((hop) => hop.joint !== null);
+    expect(joints.length).toBeGreaterThan(0);
+    for (const hop of joints) expect(hop.narrator).toBe("measured");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Length, and the direction it is read in
+// ---------------------------------------------------------------------------
+
+describe("choosing between two paths that both stop", () => {
+  /**
+   * A page holding one piece that does nothing and one that leads somewhere.
+   * `dead` sorts first and has the shorter path, so the test fails for the
+   * right reason rather than by luck of ordering.
+   */
+  function pageWithADeadEnd(): GraphView {
+    return view(
+      [
+        node({ id: "f", type: "file", name: "page.tsx", kind: null }),
+        node({ id: "route", type: "route", name: "/thing", kind: null }),
+        node({ id: "dead", kind: "function", name: "dead" }),
+        node({ id: "Page", kind: "component", name: "Page" }),
+        node({ id: "g", type: "file", name: "work.tsx", kind: null }),
+        node({ id: "Panel", kind: "component", name: "Panel" }),
+        node({ id: "Row", kind: "component", name: "Row" }),
+      ],
+      [
+        edge("f", "route", "contains"),
+        edge("f", "dead", "contains"),
+        edge("f", "Page", "contains"),
+        edge("g", "Panel", "contains"),
+        edge("g", "Row", "contains"),
+        edge("Page", "Panel", "renders"),
+        edge("Panel", "Row", "renders"),
+      ],
+    );
+  }
+
+  it("takes the one that walked further, when neither reached the server", () => {
+    // The shortest thing a file holds is always the thing that does least.
+    // Measured twice on this repository's own graph: at 1,495 items the
+    // winner was a prop type, and after types were excluded, at 1,821 items,
+    // it was `generateMetadata` — a real function that calls nothing.
+    const trace = traceFlow(pageWithADeadEnd(), { startId: "route" });
+    expect(ids(trace)).toEqual(["Page", "Panel", "Row"]);
+    expect(trace.margin.criterion).toBe("length");
+  });
+
+  it("still takes the shortest one when both reached the server", () => {
+    // §2.4's own example, and the reason length is a criterion at all: a
+    // three-hop path to the server beats a nine-hop one that wandered
+    // through utilities to get there.
+    const trace = traceFlow(shopShape(), { startId: "s_pay" });
+    const best = trace.path;
+    expect(best?.reachedEndpoint).toBe(true);
+    for (const other of trace.alternatives) {
+      if (!other.reachedEndpoint) continue;
+      expect(best!.hops.length).toBeLessThanOrEqual(other.hops.length);
+    }
+  });
+});
