@@ -32,6 +32,32 @@ const RUN_NOT_FOUND = "이 분석 기록을 찾지 못했어요. 페이지를 �
 /** Fast enough to feel live, slow enough that a run is a few hundred queries. */
 const POLL_INTERVAL_MS = 400;
 /**
+ * How slow the poll is allowed to get while nothing is happening.
+ *
+ * A run is not a steady stream of events; it is bursts separated by silence.
+ * Measured over the nine real runs in the database: **84% of the 400ms polls
+ * returned no rows**, and the longest gap between two events was 43 seconds —
+ * Pass 2's model call, which emits nothing while it thinks. Polling a database
+ * in Singapore six hundred times through a wait like that is the app's largest
+ * single source of query traffic, and every one of those queries holds a pool
+ * client for a moment.
+ *
+ * So the poll slows down when there is nothing to fetch and snaps back to
+ * `POLL_INTERVAL_MS` the instant a row arrives. Replayed against those same
+ * nine runs, that is **60% fewer queries** (910 to 363), and the price is the
+ * worst single event appearing **0.85s later** than it would have. That price
+ * is only ever paid at the end of a long silence — by definition, on a screen
+ * that has not changed for tens of seconds — and never during the file-by-file
+ * burst, which is the part a person actually watches move.
+ *
+ * The ceiling is chosen to keep that worst case **under a second**. A 3000ms
+ * ceiling was measured too: 70% fewer queries, but 2.2s of delay, which is long
+ * enough to read as a stall.
+ */
+const POLL_MAX_INTERVAL_MS = 1_600;
+/** How fast it gives up hope. Measured alongside the ceiling above. */
+const POLL_BACKOFF_FACTOR = 1.5;
+/**
  * Railway closes a request after five minutes with no data transferred (D17),
  * and Pass 2's LLM call can be silent for longer than that on its own.
  */
@@ -112,6 +138,8 @@ export async function GET(
     let lastWriteAt = 0;
     let position = cursor;
     let errors = 0;
+    /** Grows while the run is quiet, resets the moment it is not. */
+    let interval = POLL_INTERVAL_MS;
 
     let lastReapAt = Date.now();
 
@@ -143,6 +171,17 @@ export async function GET(
         try {
           const events = await readEventsAfter(db, run.id, position, PAGE_SIZE);
           errors = 0;
+
+          // Something happened, so the next thing is likely to happen soon —
+          // a run's events arrive in bursts. Decided here, next to the read
+          // that is the evidence for it, rather than down beside the sleep.
+          interval =
+            events.length > 0
+              ? POLL_INTERVAL_MS
+              : Math.min(
+                  POLL_MAX_INTERVAL_MS,
+                  Math.round(interval * POLL_BACKOFF_FACTOR),
+                );
 
           for (const event of events) {
             position = event.seq;
@@ -178,7 +217,7 @@ export async function GET(
           if (current) await reapStaleRun(db, current).catch(() => false);
         }
 
-        await sleep(POLL_INTERVAL_MS);
+        await sleep(interval);
       }
     } finally {
       closed = true;

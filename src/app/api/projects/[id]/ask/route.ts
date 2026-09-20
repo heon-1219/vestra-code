@@ -2,11 +2,11 @@ import { and, desc, eq, isNotNull } from "drizzle-orm";
 import type { NextRequest } from "next/server";
 import { z } from "zod";
 
-import { toSseFrame } from "@/analysis/events";
 import { githubSourceReader, storedSourceReader } from "@/qa/readers";
 import { investigate } from "@/qa";
 import { db } from "@/db";
 import { analysisRuns, projects } from "@/db/schema";
+import { ASK_SSE_HEADERS, askEventStream } from "@/lib/ask/stream";
 import { projectDigest, type ProjectDigest } from "@/lib/context";
 import { getGithubToken } from "@/lib/github/token";
 import { loadGraphView } from "@/lib/graph/load";
@@ -25,7 +25,10 @@ import { getSession } from "@/lib/session";
  * of it is an account.
  *
  * Server-Sent Events, in the same frame shape the analysis stream already uses
- * — one machinery for "something is happening", not two.
+ * — one machinery for "something is happening", not two. The transport itself
+ * is `src/lib/ask/stream.ts`: the framing, the headers D17 requires on Railway,
+ * and the **heartbeat**, which this route went live without. Everything below
+ * is about the investigation; nothing below is about the wire.
  *
  * ## What this refuses
  *
@@ -178,20 +181,10 @@ export async function POST(
           })
         : null;
 
-  const encoder = new TextEncoder();
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const send = (event: { seq: number; type: string; payload: unknown }) => {
-        try {
-          controller.enqueue(encoder.encode(toSseFrame(event)));
-        } catch {
-          // The reader went away mid-answer. `request.signal` aborts the loop
-          // just below; there is nothing to do about an enqueue on a closed
-          // stream except not crash the request that owns it.
-        }
-      };
-
-      let seq = 0;
+  const stream = askEventStream({
+    // A client that leaves stops the heartbeat with everything else.
+    signal: request.signal,
+    async run(send) {
       try {
         /*
          * Inside the stream, so the headers are already out and the connection
@@ -223,10 +216,7 @@ export async function POST(
           digest,
           effort: asked.data.effort,
           signal: request.signal,
-          onEvent: (type, payload) => {
-            seq += 1;
-            send({ seq, type, payload });
-          },
+          onEvent: send,
         });
 
         /*
@@ -236,57 +226,25 @@ export async function POST(
          * are different things to a reader and folding the second into the
          * first would make the UI guess which trace entry was the conclusion.
          */
-        seq += 1;
-        send({
-          seq,
-          type: "qa.answer",
-          payload: {
-            summary: investigation.summary,
-            findings: investigation.findings,
-            ruledOut: investigation.ruledOut,
-            stop: investigation.stop,
-            spent: investigation.spent,
-          },
+        send("qa.answer", {
+          summary: investigation.summary,
+          findings: investigation.findings,
+          ruledOut: investigation.ruledOut,
+          stop: investigation.stop,
+          spent: investigation.spent,
         });
       } catch (error) {
         console.error("[ask] investigation failed", project.id, error);
-        seq += 1;
-        send({
-          seq,
-          type: "qa.answer",
-          payload: {
-            summary: "찾아보는 도중에 문제가 생겼어요. 잠시 후에 다시 물어봐 주세요.",
-            findings: [],
-            ruledOut: [],
-            stop: "llm_failed",
-            spent: null,
-          },
+        send("qa.answer", {
+          summary: "찾아보는 도중에 문제가 생겼어요. 잠시 후에 다시 물어봐 주세요.",
+          findings: [],
+          ruledOut: [],
+          stop: "llm_failed",
+          spent: null,
         });
-      } finally {
-        controller.close();
       }
     },
   });
 
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      /*
-       * One person's question and one person's source. Nothing between them
-       * and us may hold a copy.
-       *
-       * `no-transform` is not privacy, it is the feature: a proxy that gzips
-       * this stream buffers it, and the steps then arrive in a single burst
-       * once the answer is already finished. Watching the loop work is most of
-       * why this endpoint streams at all, and without this it silently becomes
-       * a slow POST that returns everything at the end. Same reason
-       * `analysis/events.ts` carries it.
-       */
-      "Cache-Control":
-        "no-store, no-cache, no-transform, must-revalidate, max-age=0, private",
-      Connection: "keep-alive",
-      // Nginx and friends buffer a stream into uselessness without this.
-      "X-Accel-Buffering": "no",
-    },
-  });
+  return new Response(stream, { headers: { ...ASK_SSE_HEADERS } });
 }
