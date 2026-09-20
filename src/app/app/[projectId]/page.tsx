@@ -2,6 +2,8 @@ import { and, eq } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import { z } from "zod";
 
+import { AccountStrip } from "@/components/app/account-strip";
+import { SignOutButton } from "@/components/auth/sign-out-button";
 import { Workspace } from "@/components/workspace/workspace";
 import { db } from "@/db";
 import { projects } from "@/db/schema";
@@ -79,6 +81,18 @@ export default async function ProjectPage({ params }: ProjectPageProps) {
       }}
       initialView={view}
       activeRunId={running && run ? run.id : null}
+      /*
+       * Rendered here, where the session already is, and handed over as a node.
+       * The workspace is the one client component on this screen and it has no
+       * reason to learn who is signed in.
+       */
+      account={
+        <AccountStrip
+          name={session.user.name || session.user.email}
+          image={session.user.image}
+          signOut={<SignOutButton />}
+        />
+      }
     />
   );
 }

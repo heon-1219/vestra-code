@@ -8,6 +8,7 @@ import type {
   ReactNode,
 } from "react";
 
+import { describeAll } from "@/lib/graph/describe";
 import type { GraphConnection, GraphItem } from "@/lib/graph/view";
 import { KIND_WORDS } from "@/lib/graph/view";
 
@@ -786,6 +787,18 @@ export function DistrictMap({
     [fitToBounds, nudgeZoom, requestDraw],
   );
 
+  /*
+   * One line per item, computed once for the whole graph.
+   *
+   * Per-row would be `connections.filter` inside a render — thousands of
+   * connections multiplied by every row on screen — which is the shape
+   * `buildGraphView` already refuses for the same reason.
+   */
+  const descriptions = useMemo(
+    () => describeAll({ items, connections }),
+    [items, connections],
+  );
+
   const hoveredItem = hover ? itemsById.get(hover.id) ?? null : null;
   const tooltip = hover && hoveredItem ? { left: hover.x, top: hover.y, item: hoveredItem } : null;
 
@@ -866,12 +879,13 @@ export function DistrictMap({
           style={{ left: tooltip.left, top: tooltip.top }}
         >
           <p className="text-[13px] leading-[1.5] text-said">{displayNameOf(tooltip.item)}</p>
-          <p className="text-[11px] leading-[1.5] text-said-faint">
-            {KIND_WORDS[tooltip.item.kind]}
-            {" · "}
-            {tooltip.item.usedBy + tooltip.item.uses === 0
-              ? "아는 연결이 없어요"
-              : `${tooltip.item.usedBy + tooltip.item.uses}개와 이어져 있어요`}
+          {/*
+            What it is, not how many edges it has. "파일 · 5개와 이어져
+            있어요" is a measurement; someone who cannot read code is looking
+            at a name they did not choose and asking what the thing does.
+          */}
+          <p className="max-w-[26ch] text-[11px] leading-[1.5] text-said-faint">
+            {descriptions.get(tooltip.item.id)?.line ?? KIND_WORDS[tooltip.item.kind]}
           </p>
           {/*
             Said on the thing itself, because a gesture nobody mentions is a

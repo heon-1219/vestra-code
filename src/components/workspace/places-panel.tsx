@@ -52,6 +52,17 @@ export type PlacesPanelProps = {
   beam: BeamResult;
   /** True while a run is still filling the graph. */
   loading?: boolean;
+  /**
+   * One line per item saying what it is for, computed once by the workspace.
+   *
+   * Passed in rather than worked out here, and not to save the arithmetic: this
+   * panel is handed `items` and not `connections`, so computing it locally
+   * would report every single thing as "쓰는 곳을 아직 못 찾았어요" — a false
+   * statement about the user's code, produced by a panel that simply was not
+   * told. Sharing one map with the map beside it also means the two can never
+   * describe the same file differently.
+   */
+  descriptions?: ReadonlyMap<string, { line: string }>;
 };
 
 type Tab = "features" | "files";
@@ -163,6 +174,7 @@ export function PlacesPanel({
   onOpen,
   beam,
   loading = false,
+  descriptions,
 }: PlacesPanelProps) {
   const [tab, setTab] = useState<Tab>("files");
 
@@ -372,7 +384,18 @@ export function PlacesPanel({
                         <button
                           type="button"
                           onClick={() => onSelect(item.id)}
-                          title={item.path ?? item.name}
+                          /*
+                           * The same sentence the map shows on hover, on the
+                           * row. The path is kept after it because a name
+                           * repeats across folders and the path is how you
+                           * tell two `index.ts` apart.
+                           */
+                          title={
+                            descriptions?.get(item.id)
+                              ? `${descriptions.get(item.id)!.line}
+${item.path ?? item.name}`
+                              : (item.path ?? item.name)
+                          }
                           aria-current={item.id === selectedId ? "true" : undefined}
                           style={{ paddingInlineStart: indentOf(row.depth) + CHEVRON_GUTTER }}
                           className={`flex min-w-0 flex-1 items-baseline gap-1.5 py-1 pr-2 text-left ${

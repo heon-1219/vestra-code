@@ -28,6 +28,8 @@ import {
   type Neighbour,
   type Neighbourhood,
 } from "./neighbourhood";
+import { describeAll } from "@/lib/graph/describe";
+
 import { DEFAULT_PANEL_MODE, MODE_WORDS, type PanelMode } from "./mode";
 import { ModeSelect } from "./mode-select";
 import { previewTargetFor } from "../preview/file-preview";
@@ -236,6 +238,14 @@ export function ConnectionsPanel({
     [view, selected.id, hops, limit],
   );
 
+  // Memoised on the graph, not recomputed per render: it walks every
+  // connection, and this panel re-renders on every hop change and every
+  // selection.
+  const described = useMemo(
+    () => describeAll({ items: view.items, connections: view.connections }),
+    [view],
+  );
+
   if (!around) return <PanelLoading />;
 
   const name = selected.label ?? selected.name;
@@ -257,9 +267,17 @@ export function ConnectionsPanel({
           )}
         </h2>
 
-        {selected.summary ? (
-          <p className="mt-2 text-[13px] leading-[1.8] text-said-soft">{selected.summary}</p>
-        ) : null}
+        {/*
+          What this is for, always — not only when a model has written a
+          sentence about it. `describeAll` falls back to what the parser
+          measured, so clicking a file answers "what is this" before Pass 2 has
+          ever run, with no key, and when Pass 2 failed. The same sentence the
+          map shows on hover, so pointing at a thing and choosing it never say
+          two different things about it.
+        */}
+        <p className="mt-2 text-[13px] leading-[1.8] text-said-soft">
+          {described.get(selected.id)?.line ?? KIND_WORDS[selected.kind]}
+        </p>
 
         {showPath ? (
           <p className="mt-2 truncate font-mono text-[11px] text-said-faint" title={selected.path ?? ""}>

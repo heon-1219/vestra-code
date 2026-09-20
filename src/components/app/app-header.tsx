@@ -7,38 +7,23 @@ import type { ReactNode } from "react";
 import { UserAvatar } from "@/components/app/user-avatar";
 
 /**
- * The account bar, which gets out of the way once you are actually working.
+ * The account bar, on the pages that have room for one.
  *
- * On the dashboard it is an ordinary header: it is the only chrome on the page
- * and there is nothing competing with it. Inside a project it is the second of
- * two stacked bars, and the one with nothing to do with the work — a wordmark,
- * a name, a sign-out link — sitting on top of the one that does. Two rows of
- * chrome above a three-column workspace is roughly a hundred pixels of the
- * screen spent saying who you are, on a screen whose whole job is to show you
- * as much of your project at once as it can.
+ * The dashboard gets an ordinary header: it is the only chrome on that page and
+ * nothing competes with it. A project gets none at all, and the account row
+ * moves to the foot of the file list (`AccountStrip`).
  *
- * So in a project it slides away and comes back when you reach for it. The
- * reveal is a strip along the top edge rather than a button, because the
- * gesture people already have for a hidden bar is "push the pointer at the top
- * of the screen" — the same one every full-screen video player and every
- * auto-hiding menu bar has trained.
+ * That is the second answer to the same problem. Inside a project this was the
+ * upper of two stacked bars — a wordmark, a name and a sign-out link sitting on
+ * top of the bar that actually does the work, about a hundred pixels of a screen
+ * whose whole job is to show as much of a project at once as it can. The first
+ * answer was to hide it and slide it back when the pointer reached the top
+ * edge. That bought the space and cost something worse: a control you find by
+ * brushing a screen edge is one you find by accident, and a sign-out you cannot
+ * see is one you cannot be sure is there.
  *
- * Three things this has to get right, and each of them is a way it could be
- * quietly broken:
- *
- *   1. **The hidden bar must not eat clicks.** The wrapper stays in the layout
- *      at the top of the screen even while the bar itself is translated out of
- *      view, so without `pointer-events: none` on it the workspace's own header
- *      — which sits directly underneath — would be unclickable along its whole
- *      top edge. Only the trigger strip and the bar itself take pointer events.
- *   2. **It must come back for the keyboard.** A bar that is off screen but
- *      still focusable sends Tab to a control nobody can see. `focus-within`
- *      reveals it for exactly the same reason hover does, and it is not an
- *      accessibility extra — without it the sign-out button becomes a trap.
- *   3. **It must not cost layout.** `transform` only: the bar is taken out of
- *      flow, so revealing it slides it over the workspace rather than pushing
- *      the whole three-column grid down and forcing the map's canvas to
- *      re-measure itself sixty times during the animation.
+ * It is a client component only because the answer depends on the route, and
+ * this layout is shared by the dashboard and every workspace.
  */
 export function AppHeader({
   name,
@@ -76,25 +61,18 @@ export function AppHeader({
     </div>
   );
 
-  if (!inProject) {
-    return <header className="border-b border-edge">{bar}</header>;
-  }
+  /*
+   * In a project there is no bar at all.
+   *
+   * This slid away and came back when the pointer reached the top edge, which
+   * bought the workspace its hundred pixels and cost something worse: a
+   * control you find by brushing against a screen edge is a control you find
+   * by accident, and a sign-out you cannot see is one you cannot be sure is
+   * there. The account row now lives at the foot of the file list instead —
+   * see `AccountStrip`, which the project page renders and hands to the
+   * workspace.
+   */
+  if (inProject) return null;
 
-  return (
-    <div className="group pointer-events-none absolute inset-x-0 top-0 z-40">
-      {/*
-        The reach-for-it strip. Eight pixels: wide enough that a pointer
-        travelling to the top edge of the screen crosses it, narrow enough that
-        it does not shadow the workspace header's own controls, which begin
-        immediately below.
-      */}
-      <div className="pointer-events-auto h-2 w-full" aria-hidden="true" />
-
-      <header
-        className="pointer-events-auto -translate-y-[calc(100%+0.5rem)] border-b border-edge bg-ink/95 backdrop-blur transition-transform duration-200 ease-out group-hover:translate-y-0 group-focus-within:translate-y-0 motion-reduce:transition-none"
-      >
-        {bar}
-      </header>
-    </div>
-  );
+  return <header className="border-b border-edge">{bar}</header>;
 }

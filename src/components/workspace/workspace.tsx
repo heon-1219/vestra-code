@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { z } from "zod";
 
 import { useAnalysisStream } from "@/hooks/use-analysis-stream";
+import { describeAll } from "@/lib/graph/describe";
 import type { GraphView } from "@/lib/graph/view";
 
 import { AnalysisScreen } from "./analysis-screen";
@@ -68,6 +70,15 @@ export type WorkspaceProps = {
   initialView: GraphView;
   /** A run the server found already in flight. This is what survives a refresh. */
   activeRunId: string | null;
+  /**
+   * The account row, rendered by the page that already holds the session and
+   * dropped into the foot of the file list.
+   *
+   * A node rather than the session itself, so this shell never learns who is
+   * signed in — it is handed something to put in a corner. That keeps the one
+   * client component on this screen free of anything worth protecting.
+   */
+  account?: ReactNode;
 };
 
 const startedSchema = z.object({ runId: z.uuid(), started: z.boolean() });
@@ -79,7 +90,12 @@ const RELOAD_FAILED = "새로 그린 지도를 불러오지 못했어요. 페이
 
 type StartError = { status: number; message: string };
 
-export function Workspace({ project, initialView, activeRunId }: WorkspaceProps) {
+export function Workspace({
+  project,
+  initialView,
+  activeRunId,
+  account,
+}: WorkspaceProps) {
   const [view, setView] = useState<GraphView>(initialView);
   const [runId, setRunId] = useState<string | null>(activeRunId);
   const [starting, setStarting] = useState(false);
@@ -213,6 +229,16 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
   );
   const grouping = resolveGrouping(groupings, wantedGrouping);
 
+  /*
+   * What each thing is for, in one sentence, computed once for the screen.
+   *
+   * Here rather than in each panel so the file list and the map can never
+   * describe the same file differently — and because the list is given items
+   * without connections, and would otherwise have to claim that nothing in the
+   * project is used by anything.
+   */
+  const descriptions = useMemo(() => describeAll(view), [view]);
+
   /**
    * Open a file from wherever someone pointed at it.
    *
@@ -334,7 +360,14 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
           unaware that they are in a resizable layout, which is what lets them
           be edited independently.
         */}
-        <div className="grid min-h-0 min-w-0 overflow-hidden">
+        {/*
+          Two rows: the list, then the account strip pinned under it. The list
+          takes `minmax(0, 1fr)` so it is the part that shrinks when the pane
+          is dragged narrow — a strip that gave up its height instead would
+          disappear at exactly the width where a person is least able to find
+          anything else.
+        */}
+        <div className="grid min-h-0 min-w-0 grid-rows-[minmax(0,1fr)_auto] overflow-hidden">
           <PlacesPanel
             items={view.items}
             selectedId={selectedId}
@@ -342,7 +375,9 @@ export function Workspace({ project, initialView, activeRunId }: WorkspaceProps)
             onOpen={openItem}
             beam={beam}
             loading={running}
+            descriptions={descriptions}
           />
+          {account}
         </div>
 
         <Divider
