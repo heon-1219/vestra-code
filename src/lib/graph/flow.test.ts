@@ -1305,3 +1305,68 @@ describe("measured on the shop fixture, through the real parser", () => {
     expect(lines.filter((line) => typeof line === "number" && line > 0)).toHaveLength(3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// A type declaration is not a place where anything happens
+// ---------------------------------------------------------------------------
+
+describe("the entry joint's targets", () => {
+  /**
+   * Found on this repository's own graph, not in a fixture.
+   *
+   * `/app/:projectId` ranked six complete paths and the winner was
+   * `ProjectPageProps` — a React prop type — at one hop, beating
+   * `ProjectPage → Workspace → HistoryBand → RereadButton → RefreshMark` on
+   * the `length` criterion with a gap of 2. Neither path reaches a server, so
+   * `endpoint` and `terminal` tie and shortest wins, and the shortest thing a
+   * file holds is always the declaration that does nothing.
+   *
+   * The ranking was behaving exactly as specified. The fault was upstream: a
+   * `type` has no runtime behaviour, so it can only ever be a dead end, and
+   * the first hop of a flow is the worst place to spend on one.
+   */
+  function pageWithAPropType(): GraphView {
+    return view(
+      [
+        node({ id: "route", type: "route", name: "/app/:projectId", kind: null }),
+        node({ id: "page.tsx", type: "file", name: "page.tsx", kind: null }),
+        // Declared first and sorting first, so the test fails for the right
+        // reason if the filter is removed rather than by luck of ordering.
+        node({ id: "PageProps", kind: "type", name: "PageProps" }),
+        node({ id: "Page", kind: "component", name: "Page" }),
+        // In its own file. A sibling of `Page` would be offered by the joint
+        // on its own merits and win on length, which is the ranking working
+        // and would make this test pass for a reason it is not about.
+        node({ id: "workspace.tsx", type: "file", name: "workspace.tsx", kind: null }),
+        node({ id: "Workspace", kind: "component", name: "Workspace" }),
+      ],
+      [
+        edge("page.tsx", "route", "contains"),
+        edge("page.tsx", "PageProps", "contains"),
+        edge("page.tsx", "Page", "contains"),
+        edge("workspace.tsx", "Workspace", "contains"),
+        edge("Page", "Workspace", "renders"),
+      ],
+    );
+  }
+
+  it("never starts a flow on a type declaration", () => {
+    const graph = pageWithAPropType();
+    const trace = traceFlow(graph, { startId: "route" });
+
+    expect(trace.path).not.toBeNull();
+    expect(ids(trace)).toEqual(["Page", "Workspace"]);
+    // Not merely un-ranked: it must not be reachable as a start at all, or it
+    // comes back the moment two real paths tie.
+    expect([trace.path, ...trace.alternatives].flatMap((path) => path?.hops ?? [])
+      .map((hop) => hop.toId)).not.toContain("PageProps");
+  });
+
+  it("leaves a type out of the choices a file offers, too", () => {
+    // `entryPointsIn` and `jointTargets` ask the same map the same question,
+    // which is why the filter lives in the index rather than at either one.
+    const starts = entryPointsOf(pageWithAPropType(), "page.tsx").starts;
+    expect(starts.map((item) => item.id)).not.toContain("PageProps");
+    expect(starts.map((item) => item.id)).toContain("Page");
+  });
+});

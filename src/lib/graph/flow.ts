@@ -492,6 +492,28 @@ export function indexFlowGraph(graph: FlowGraph): FlowIndex {
   const out = new Map<string, GraphConnection[]>();
   const incoming = new Map<string, GraphConnection[]>();
   const fileOf = new Map<string, GraphItem>();
+  /**
+   * The pieces of a file where something actually happens — **type
+   * declarations excluded**, which is not a tidiness rule.
+   *
+   * Measured on this repository's own graph. `/app/:projectId` ranked six
+   * complete paths and the winner was `ProjectPageProps`, one hop, terminal
+   * `package` — a prop type. It beat
+   * `ProjectPage → Workspace → HistoryBand → RereadButton → RefreshMark` on
+   * the `length` criterion with a gap of 2, because neither path reaches a
+   * server, so `endpoint` and `terminal` both tie and shortest wins.
+   *
+   * The ranking was working exactly as written. The defect is upstream of it:
+   * a `type` has no runtime behaviour at all — it cannot call, render or
+   * fetch — so it can never be anything but a one-hop dead end, and offering
+   * it as a joint target spends the start of a flow on a declaration. It is
+   * the same line `belongs_to` and `contains` are already on: structure is
+   * not something the code does.
+   *
+   * Filtered here rather than at the two call sites because `entryPointsIn`
+   * and `jointTargets` both ask this map the same question, and a rule that
+   * has to be remembered twice is a rule that will one day be applied once.
+   */
   const symbolsOf = new Map<string, GraphItem[]>();
   const packagesOf = new Map<string, string[]>();
   let behaviourEdges = 0;
@@ -512,7 +534,7 @@ export function indexFlowGraph(graph: FlowGraph): FlowIndex {
     if (connection.relation === "contains") {
       if (from.kind !== "file") continue;
       fileOf.set(to.id, from);
-      if (to.kind === "symbol") push(symbolsOf, from.id, to);
+      if (to.kind === "symbol" && to.shape !== "type") push(symbolsOf, from.id, to);
       continue;
     }
 
