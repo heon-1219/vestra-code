@@ -408,6 +408,88 @@ export const projectFiles = pgTable(
   ],
 );
 
+/**
+ * What a project says it is for, boiled down once and reused on every question.
+ *
+ * A live run of the investigation loop spent step 1 of 6 on `list_files`, just
+ * to work out what it was looking at — on every question, for ever. And for a
+ * Python project or a static site, where the graph is thin, the README is
+ * routinely the best account of what the thing actually does. So the docs are
+ * read once, reduced to a few hundred tokens, and handed to the model with the
+ * question.
+ *
+ * **A row here is a description, never evidence.** It is the project author's
+ * own prose about their own project: it describes features that were removed
+ * and features nobody built. It may help the model decide where to look; it may
+ * never be the reason an answer is believed. `src/qa/answer.ts` is what enforces
+ * that — a citation has to match something this investigation actually fetched,
+ * and nothing in this table ever enters that ledger.
+ *
+ * ## Why the database, and why keyed this way
+ *
+ * Not a file on disk: the app is multi-tenant and may run on more than one
+ * machine, and a file has no way to say when it went stale.
+ *
+ * `basis` is what the digest is true OF, and it is self-describing because it
+ * is not always the same kind of thing:
+ *
+ *   - `commit:<sha>` — the commit the last completed run analysed. The commit
+ *     is exactly when a README stops being true, and it is the same signal
+ *     `src/analysis/incremental.ts` already computes.
+ *   - `docs:<hash>` — a fingerprint of the documents themselves, for an upload
+ *     or a project whose run recorded no commit. There is no commit to key on,
+ *     so the thing that changes is the only honest substitute. The cost of that
+ *     is real and worth stating: the documents have to be READ before the cache
+ *     can be checked, so only the model call is saved, not the reads.
+ *
+ * Rows are never updated. A new commit is a new basis, so a stale digest is
+ * simply one nobody asks for again, and the project's row goes with the project.
+ */
+export const projectDigests = pgTable(
+  "project_digests",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+
+    /** `commit:<sha>` or `docs:<hash>`. See above. */
+    basis: text("basis").notNull(),
+
+    /**
+     * Two or three sentences about what the project is for.
+     *
+     * A column rather than a field inside one jsonb blob, because this is the
+     * text that goes into a person's prompt and somebody will want to read it
+     * with a plain `SELECT` when an answer looks strange.
+     */
+    about: text("about").notNull(),
+
+    /** Names the author uses and what they mean, at most a handful. */
+    words: jsonb("words").$type<string[]>().notNull().default([]),
+
+    /**
+     * The files it was boiled down from, repo-relative (D18).
+     *
+     * Kept so the fenced block can say where this came from. "README에 이렇게
+     * 적혀 있어요" is a different sentence from "이 프로젝트는 이래요", and the
+     * difference is the whole reason this table is allowed to exist.
+     */
+    sources: jsonb("sources").$type<string[]>().notNull().default([]),
+
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => [
+    // One digest per basis per project. Unique rather than plain: two questions
+    // asked at once would otherwise each write a row, and a second answer to
+    // "what is this project for" is a coin toss the reader cannot see.
+    uniqueIndex("project_digests_project_basis_idx").on(
+      table.projectId,
+      table.basis,
+    ),
+  ],
+);
+
 export const generatedPrompts = pgTable(
   "generated_prompts",
   {

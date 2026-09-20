@@ -11,6 +11,9 @@ import {
   type LlmReply,
   type LlmToolCall,
 } from "@/lib/llm/types";
+// The leaf, for the same reason. `@/lib/context` reaches the database; the
+// digest's own module imports nothing.
+import type { ProjectDigest } from "@/lib/context/digest";
 
 import {
   checkFindings,
@@ -153,6 +156,16 @@ export type InvestigateInput = {
    * the honest ceiling rather than a failure.
    */
   source?: SourceReader | null;
+  /**
+   * What the project's own README says it is for, or null.
+   *
+   * Orientation only. It goes into the system prompt fenced and labelled as the
+   * author's own description, it never enters the ledger, and a claim resting
+   * on it alone is refused in `answer.ts` like any other unread citation. Null
+   * is the ordinary case and the loop behaves exactly as it did before this
+   * existed — a smaller honest input, not an invented one.
+   */
+  digest?: ProjectDigest | null;
   budget?: Partial<Budget>;
   /**
    * How hard the model should think, passed through to every turn.
@@ -190,6 +203,7 @@ export async function investigate(
   const system = buildSystemPrompt({
     items: input.graph.items,
     hasSource: source !== null,
+    digest: input.digest ?? null,
   });
 
   const trace: QaEvent[] = [];

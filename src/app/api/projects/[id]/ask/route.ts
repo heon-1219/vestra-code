@@ -7,6 +7,7 @@ import { githubSourceReader, storedSourceReader } from "@/qa/readers";
 import { investigate } from "@/qa";
 import { db } from "@/db";
 import { analysisRuns, projects } from "@/db/schema";
+import { projectDigest, type ProjectDigest } from "@/lib/context";
 import { getGithubToken } from "@/lib/github/token";
 import { loadGraphView } from "@/lib/graph/load";
 import { llmFor, llmFromEnv } from "@/lib/llm";
@@ -44,6 +45,26 @@ import { getSession } from "@/lib/session";
  * uploaded one is read from what we kept (D77). A project with neither gets a
  * loop with no `read_source`, which can only produce `inferred` findings — the
  * honest ceiling rather than a failure.
+ *
+ * ## The project's own description
+ *
+ * Before the loop starts, this endpoint asks for the project's context digest:
+ * a few hundred tokens boiled out of its README and kept against the commit the
+ * map was measured at. It exists because a live run spent step 1 of 6 on
+ * `list_files` working out what it was looking at, on every question, for ever
+ * — and because for a Python project or a static site the README is often the
+ * best account of what the thing does, since the graph is thin.
+ *
+ * Three things about it, and the third is the one that gets missed:
+ *
+ *   - **Lazy.** Built here on the first question, never during analysis, so it
+ *     costs tokens only for projects somebody actually asks about.
+ *   - **Never fatal.** No README, no model, a failed call: all null, and the
+ *     loop runs exactly as it did before. A smaller honest input.
+ *   - **Untrusted.** It is the repository owner's own prose and it goes into a
+ *     prompt. `prompt.ts` fences it and says it carries no authority; the
+ *     citation ledger in `answer.ts` is what actually keeps it from becoming
+ *     evidence.
  */
 
 export const runtime = "nodejs";
@@ -172,11 +193,34 @@ export async function POST(
 
       let seq = 0;
       try {
+        /*
+         * Inside the stream, so the headers are already out and the connection
+         * is open while this happens — and in its own try/catch, because the
+         * one below reports a failure as `llm_failed` to the person waiting.
+         * A digest that could not be built is not a failed question, and
+         * saying it was would be the more serious kind of wrong.
+         */
+        let digest: ProjectDigest | null = null;
+        try {
+          digest = await projectDigest({
+            db,
+            projectId: project.id,
+            commitSha: run?.commitSha ?? null,
+            items: view.items,
+            read: source,
+            llm,
+            signal: request.signal,
+          });
+        } catch (error) {
+          console.error("[ask] digest failed", project.id, error);
+        }
+
         const investigation = await investigate({
           question: asked.data.question,
           graph: { items: view.items, connections: view.connections },
           llm,
           source,
+          digest,
           effort: asked.data.effort,
           signal: request.signal,
           onEvent: (type, payload) => {
