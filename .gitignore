@@ -40,3 +40,8 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 !.env.example
+
+# installed agent skills — pinned by skills-lock.json, restored from it
+# (same relationship package-lock.json has with node_modules)
+/.agents/skills/
+/.claude/skills/
