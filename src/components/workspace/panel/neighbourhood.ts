@@ -50,6 +50,22 @@ export type Neighbour = {
    * merits. Never show this as a label — rule 2 above.
    */
   hopCertainty: Certainty;
+  /**
+   * What the far hop is *for*, in a sentence, when Pass 3 wrote one.
+   *
+   * Off the same connection `hopCertainty` comes from, and for the same
+   * reason: it is a fact about that one link, not about the chain that reached
+   * it. 사용해요 is true of every `calls` edge in the project and says almost
+   * nothing; 여기서 가격을 사람이 읽는 모양으로 바꿔요 is the same fact worth
+   * reading.
+   *
+   * Optional, and the relation's verb stays as the fallback everywhere it is
+   * read — a project that has never run Pass 3, or one where the model declined
+   * this group, loses nothing it had. `flow.ts` makes the same substitution in
+   * `hopSentence` with the same fallback, so the panel and the walk say one
+   * thing about one edge.
+   */
+  purpose?: string;
   /** The item one step closer to the selection. Null at one hop. */
   via: GraphItem | null;
 };
@@ -203,6 +219,10 @@ function walk(
           relation: connection.relation,
           certainty,
           hopCertainty: connection.certainty,
+          // Absent rather than null when there is none, so there is exactly
+          // one way to say "no sentence" — the same rule `GraphConnection.line`
+          // follows one file over.
+          ...(connection.purpose ? { purpose: connection.purpose } : {}),
           via: hop === 1 ? null : from,
         });
 

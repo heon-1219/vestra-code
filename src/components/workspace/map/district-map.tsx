@@ -45,6 +45,7 @@ import {
   hubsOf,
   nameRanks,
   NO_FOCUS,
+  type Trail,
 } from "./render/scene";
 import { trailFrom } from "./render/walk";
 
@@ -145,6 +146,34 @@ export type DistrictMapProps = {
    */
   trail?: QaTrail | null;
   /**
+   * A flow being followed, already in the renderer's own vocabulary.
+   *
+   * Separate from `trail` rather than folded into it because the two arrive in
+   * different shapes and only one of them needs translating: `src/qa/trail.ts`
+   * speaks in points and hops and is joined to the renderer by
+   * `render/walk.ts`, while a flow is joined by `flow/trail.ts` — which also has
+   * to trim the path to however much of it the reader has been shown, a
+   * question an investigation's walk does not have.
+   *
+   * **It takes the lighting over from both the selection and the walk.** A
+   * flow, a neighbourhood and an investigation are three answers to "what am I
+   * looking at", and two of them on screen at once leaves the reader to work
+   * out which one their question produced — `scene.ts`'s own warning about a
+   * second private idea of "near", applied to the third.
+   */
+  flow?: Trail | null;
+  /**
+   * The item the reader is on right now, which the camera keeps in view.
+   *
+   * Only moves the camera when the item is **not already on screen**. At the
+   * resting zoom the whole map fits, so a camera that recentred on every step
+   * would slide the picture under someone who can already see where the step
+   * went — motion with nothing gained, which is the one kind this product does
+   * not spend. Under `prefers-reduced-motion` the move is instant, the rule
+   * `zoomToDistrict` already follows.
+   */
+  centreOn?: string | null;
+  /**
    * A set of items to light instead of whatever is typed, when one is set.
    *
    * This is the same light the query produces, aimed by something else — a
@@ -200,6 +229,8 @@ export function DistrictMap({
   onOpen,
   onHoverChange,
   trail: qaTrail = null,
+  flow = null,
+  centreOn = null,
   highlight = null,
   className,
 }: DistrictMapProps) {
@@ -401,8 +432,11 @@ export function DistrictMap({
   );
 
   // Translated once per change rather than per frame: the draw pass runs at 60
-  // a second and this builds two sets.
-  const trail = useMemo(() => trailFrom(qaTrail), [qaTrail]);
+  // a second and this builds two sets. A flow arrives already translated — by
+  // `flow/trail.ts`, the same kind of join `render/walk.ts` is — and wins,
+  // because it is the more recent answer to the reader's question.
+  const walked = useMemo(() => trailFrom(qaTrail), [qaTrail]);
+  const trail = flow ?? walked;
 
   /**
    * Everything the draw pass reads, in one ref.
@@ -592,6 +626,64 @@ export function DistrictMap({
   useEffect(() => {
     requestDraw();
   }, [beam, selection, pointed, grouped, roads, links, hubs, trail, requestDraw]);
+
+  /**
+   * Keep the step the reader is on where they can see it.
+   *
+   * **Only when it is off screen.** At the resting zoom the whole map fits, so
+   * a camera that recentred on every step of a flow would slide the picture
+   * sideways under somebody who can already see exactly where the step went:
+   * motion with nothing gained, on a product whose one rule about motion is
+   * that it has to be carrying information. The test is the real one — is this
+   * item's dot inside the window, with the same `FIT_PADDING` margin the fit
+   * uses — rather than a guess about zoom.
+   *
+   * `userMovedRef` is set for the same reason `zoomToDistrict` sets it: the
+   * camera is now somewhere on purpose, and the fit effect must not pull it
+   * back to the middle of the project between one step and the next.
+   *
+   * Reduced motion jumps instead of easing, which is the rule this file already
+   * follows one function down.
+   */
+  const centredRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (centreOn === null) {
+      centredRef.current = null;
+      return;
+    }
+    if (centredRef.current === centreOn) return;
+    centredRef.current = centreOn;
+
+    const placed = layout.byItemId.get(centreOn);
+    const measured = sceneRef.current.size;
+    if (!placed || !measured || measured.width <= 0 || measured.height <= 0) return;
+
+    const camera = cameraRef.current;
+    const offX = Math.abs(placed.x - camera.x) * camera.scale;
+    const offY = Math.abs(placed.y - camera.y) * camera.scale;
+    if (
+      offX <= Math.max(measured.width / 2 - FIT_PADDING, 0) &&
+      offY <= Math.max(measured.height / 2 - FIT_PADDING, 0)
+    ) {
+      return;
+    }
+
+    // The scale is kept. Zooming in on each step would change how much of the
+    // project is on screen from one step to the next, which is the reader
+    // losing the picture the path is drawn on.
+    const target: Camera = { ...camera, x: placed.x, y: placed.y };
+    userMovedRef.current = true;
+    const reduced =
+      typeof window !== "undefined" &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduced) {
+      cameraRef.current = target;
+      tweenRef.current = null;
+    } else {
+      tweenRef.current = { from: cameraRef.current, to: target, started: performance.now() };
+    }
+    requestDraw();
+  }, [centreOn, layout, requestDraw]);
 
   useEffect(() => {
     return () => {

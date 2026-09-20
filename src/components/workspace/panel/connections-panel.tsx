@@ -35,6 +35,9 @@ import {
 import type { AskSession } from "@/lib/ask/session";
 import { describeAll } from "@/lib/graph/describe";
 
+import { importCountOf } from "../flow/start";
+import type { FlowControls } from "../flow/use-flow";
+import { FlowState } from "./flow-state";
 import { DEFAULT_PANEL_MODE, MODE_WORDS, type PanelMode } from "./mode";
 import { ModeSelect } from "./mode-select";
 import {
@@ -107,6 +110,28 @@ export type RightPanelProps = {
   onMakePrompt?: (text: string, request: PanelRequest) => void;
   onExplain?: (text: string, request: PanelRequest) => void;
   /**
+   * 흐름 따라가기's handler. The one mode in this box that needs no model and no
+   * network: it walks a graph the browser is already holding, so `request` is
+   * accepted for the shape's sake and never read.
+   *
+   * It is given the typed text *and* works without it — §6's mode row is
+   * `needs: "either"` — because the founder's own example is a sentence and the
+   * map's own selection is the other way in.
+   */
+  onFlow?: (text: string, request: PanelRequest) => void;
+  /**
+   * Start a flow from one named place: a discovery button, or a row in a
+   * refusal's 골라 보기 list.
+   */
+  onFollow?: (itemId: string) => void;
+  /**
+   * The flow being watched, when one is. It takes the panel over while it is
+   * set — §5's table says the panel *swaps* to the flow state, because a path
+   * and a neighbourhood are two answers to "what am I looking at" and showing
+   * both leaves the reader to work out which one their question produced.
+   */
+  flow?: FlowControls | null;
+  /**
    * The models this installation actually has a key for, default first —
    * `availableProviders()` from `@/lib/llm`, handed down from the server
    * because only the server may read the environment.
@@ -157,6 +182,9 @@ export function RightPanel({
   onAsk,
   onMakePrompt,
   onExplain,
+  onFlow,
+  onFollow,
+  flow = null,
   models = NO_MODELS,
   answer = null,
   walk = null,
@@ -189,8 +217,35 @@ export function RightPanel({
   const selected = view?.items.find((item) => item.id === selectedId) ?? null;
   const running = run?.status === "running";
 
+  /*
+   * `describeAll` for the whole graph, once.
+   *
+   * Here rather than inside the flow state because a flow's rows are revealed
+   * one at a time and each one wants the line the parser measured for the place
+   * it lands. Recomputing per reveal would walk every connection in the project
+   * once a second while a path is playing.
+   */
+  const described = useMemo(
+    () => describeAll({ items: view?.items ?? [], connections: view?.connections ?? [] }),
+    [view],
+  );
+
   let body: React.ReactNode;
-  if (run && (run.status === "running" || (run.status === "completed" && !view))) {
+  if (flow?.session && view) {
+    // While a flow is showing it IS the panel. One screen, one meaning — the
+    // same rule `scene.ts` states for the map's lighting, one column over.
+    body = (
+      <FlowState
+        flow={flow}
+        graph={view}
+        itemsById={itemsById}
+        described={described}
+        importCount={importCountOf(view)}
+        onOpen={onOpen}
+        onStart={(id) => flow.follow(id, "listed")}
+      />
+    );
+  } else if (run && (run.status === "running" || (run.status === "completed" && !view))) {
     body = <AnalysisRunningState run={run} showSteps={showRunSteps} />;
   } else if (run?.status === "failed" && !selected) {
     body = <RunFailedState message={run.message} onRetry={onRetry} />;
@@ -214,7 +269,7 @@ export function RightPanel({
     );
   } else {
     body = (
-      <NothingSelectedState view={view} onSelect={onSelect} />
+      <NothingSelectedState view={view} onSelect={onSelect} onFollow={onFollow} />
     );
   }
 
@@ -230,20 +285,24 @@ export function RightPanel({
           Above `answer`, because it contains the answer once there is one and
           the account of reaching it either way. They are not both shown: a
           screen wiring `walk` does not wire `answer`.
+
+          A flow has the panel to itself while it is showing, so none of the
+          three below is drawn under it: two accounts of two different questions
+          stacked in one column is the thing §6 and `scene.ts` both refuse.
         */}
-        {walk ? (
+        {walk && !flow?.session ? (
           <div className="mt-5">
             <WalkView session={walk} itemsById={itemsById} onSelect={onSelect} />
           </div>
         ) : null}
 
-        {answer ? (
+        {answer && !flow?.session ? (
           <div className="mt-5">
             <AnswerState answer={answer} onSelect={onSelect} />
           </div>
         ) : null}
 
-        {prompt ? (
+        {prompt && !flow?.session ? (
           <div className="mt-4">
             <PromptState prompt={prompt} />
           </div>
@@ -263,6 +322,7 @@ export function RightPanel({
         onAsk={onAsk}
         onMakePrompt={onMakePrompt}
         onExplain={onExplain}
+        onFlow={onFlow}
       />
     </aside>
   );
@@ -933,6 +993,7 @@ function RequestBox({
   onAsk,
   onMakePrompt,
   onExplain,
+  onFlow,
 }: {
   selected: GraphItem | null;
   disabled: boolean;
@@ -946,6 +1007,7 @@ function RequestBox({
   onAsk?: (text: string, request: PanelRequest) => void;
   onMakePrompt?: (text: string, request: PanelRequest) => void;
   onExplain?: (text: string, request: PanelRequest) => void;
+  onFlow?: (text: string, request: PanelRequest) => void;
 }) {
   const boxRef = useRef<HTMLTextAreaElement>(null);
   const [hasText, setHasText] = useState(false);
@@ -963,16 +1025,25 @@ function RequestBox({
     ask: onAsk,
     prompt: onMakePrompt,
     explain: onExplain,
+    flow: onFlow,
   }[mode];
 
   // 설명하기 works on the thing already chosen, so it must not sit greyed out
-  // waiting for text it never promised to read.
-  const enough = words.needs === "text" ? hasText : selected !== null;
+  // waiting for text it never promised to read. 흐름 따라가기 takes either — a
+  // typed question, resolved against the map by the map's own beam, or
+  // whatever is already chosen — so it is live as soon as there is one.
+  const enough =
+    words.needs === "text"
+      ? hasText
+      : words.needs === "either"
+        ? hasText || selected !== null
+        : selected !== null;
 
   function fire() {
     const text = read();
     if (!act) return;
     if (words.needs === "text" && text.length === 0) return;
+    if (words.needs === "either" && text.length === 0 && selected === null) return;
     // What the row underneath actually shows, resolved the same way it resolves
     // it — not the raw `model`, which can name a provider whose key has since
     // been taken away. Null means nothing is connected, and it is the caller's

@@ -80,7 +80,7 @@ export function ConnectionRow({
   onLockChange: (id: string, lock: ConnectionLock) => void;
   onSelect: (id: string) => void;
 }) {
-  const { item, direction, relation, certainty, hops, via } = neighbour;
+  const { item, direction, relation, certainty, hops, via, purpose } = neighbour;
   const verb = RELATION_WORDS[relation][direction === "uses" ? "forward" : "backward"];
   const editable = lock === "editable";
   const name = displayName(item);
@@ -109,6 +109,30 @@ export function ConnectionRow({
             </span>
             <span className="text-[13px] text-said-soft">{verb}</span>
           </span>
+
+          {/*
+            What this connection is *for*, when Pass 3 wrote a sentence for it.
+
+            Its own line, under the name, rather than in place of the verb. The
+            verb is two words and carries the **direction** — 사용해요 against
+            여기서 쓰여요 is the whole difference between the two halves of this
+            panel — and a sentence put where it was would be both too long for
+            the line and silent about which way the arrow points. So the verb
+            stays where it is and this goes underneath, which is also what
+            happens when there is no sentence: nothing moves, the row is one
+            line shorter, and a project that has never run Pass 3 loses nothing
+            it had.
+
+            Marked, because a model wrote it. Same rule `flow-state.tsx` keeps
+            and the same two words, imported from here so the product has one
+            wording for one idea.
+          */}
+          {purpose ? (
+            <span className="mt-1 flex items-baseline gap-1.5 text-[12px] leading-[1.7] text-said-soft text-pretty">
+              <ModelMark />
+              <span className="min-w-0">{purpose}</span>
+            </span>
+          ) : null}
 
           {/*
             The certainty word is lifted out of the dot-joined run.
@@ -160,6 +184,40 @@ export function ConnectionRow({
         {editable ? "편집 허용" : "잠금"}
       </button>
     </li>
+  );
+}
+
+/**
+ * Two words that say a model wrote the line beside them.
+ *
+ * `FLOW_TRACKING.md` §5 states the rule and it is not about flows: **an LLM
+ * sentence and an arithmetic sentence look alike and must not read alike.** A
+ * reader who cannot check either one is entitled to know which of the two they
+ * are reading, which is the same line `Description.fromModel` draws and the
+ * reason that field exists.
+ *
+ * The mark goes on the model's sentence rather than on the measured one,
+ * because measured is this product's floor: every row has a line the parser
+ * counted before any model has ever run, and marking the normal case would say
+ * nothing. 모델 is a word this panel has already taught — the request box says
+ * 아직 모델이 연결되지 않았어요 — rather than a new one introduced here.
+ *
+ * Exported with its sentence so the flow panel can use the same two words. One
+ * idea, one wording, which is the rule D69 was written for.
+ */
+export const MODEL_TAG = "모델이 쓴 말";
+
+export const MODEL_WROTE_IT =
+  "이 줄은 저희가 코드를 읽고 모델에게 풀어 쓰게 한 말이에요. 표시가 없는 줄은 읽은 것만 가지고 적은 거예요.";
+
+export function ModelMark({ className = "" }: { className?: string }) {
+  return (
+    <span
+      title={MODEL_WROTE_IT}
+      className={`shrink-0 rounded-[3px] bg-lamp/10 px-1.5 text-[10px] leading-[1.6] text-lamp ${className}`}
+    >
+      {MODEL_TAG}
+    </span>
   );
 }
 

@@ -536,6 +536,60 @@ describe("the right panel", () => {
   });
 });
 
+/**
+ * What a connection is *for*, beside what it is.
+ *
+ * Pass 3 writes a sentence onto the edge — 2,123 of this repository's 3,771
+ * connections carry one today — and until now nothing read it. 사용해요 is true
+ * of every `calls` edge in a project and says almost nothing; the sentence is
+ * the same fact worth reading.
+ *
+ * Two rules are pinned here. The verb never goes away, so a project that has
+ * never run Pass 3 loses nothing it had. And a model's sentence is **marked**,
+ * because an arithmetic sentence and a model's look alike and must not read
+ * alike (`FLOW_TRACKING.md` §5, and the line `Description.fromModel` already
+ * draws).
+ */
+describe("what a connection is for", () => {
+  const withPurpose: GraphConnection = {
+    ...link("PayButton", "formatPrice"),
+    purpose: "여기서 가격을 사람이 읽는 모양으로 바꿔요",
+  };
+  const items = [item("PayButton"), item("formatPrice")];
+
+  it("carries the sentence off the far hop, where the certainty comes from", () => {
+    const around = buildNeighbourhood(graph(items, [withPurpose]), "PayButton");
+    expect(around?.uses[0].purpose).toBe("여기서 가격을 사람이 읽는 모양으로 바꿔요");
+  });
+
+  it("leaves it absent rather than null when there is none", () => {
+    const around = buildNeighbourhood(graph(items, [link("PayButton", "formatPrice")]), "PayButton");
+    expect(around?.uses[0].purpose).toBeUndefined();
+    expect("purpose" in (around?.uses[0] ?? {})).toBe(false);
+  });
+
+  it("shows it on the row, marked, without taking the verb away", () => {
+    const html = render({
+      view: { ...demoView, items, connections: [withPurpose] },
+      selectedId: "PayButton",
+    });
+    expect(html).toContain("여기서 가격을 사람이 읽는 모양으로 바꿔요");
+    expect(html).toContain("모델이 쓴 말");
+    // The verb is the fallback and is never wrong, so it stays: it is also the
+    // only thing on the row that says which way the arrow points.
+    expect(html).toContain("사용해요");
+  });
+
+  it("draws no mark on a row the model never wrote", () => {
+    const html = render({
+      view: { ...demoView, items, connections: [link("PayButton", "formatPrice")] },
+      selectedId: "PayButton",
+    });
+    expect(html).toContain("사용해요");
+    expect(html).not.toContain("모델이 쓴 말");
+  });
+});
+
 const completedRun: RunProgress = {
   status: "completed",
   phase: "done",

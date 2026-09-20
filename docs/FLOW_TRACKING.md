@@ -2,14 +2,28 @@
 
 Source: the founder's ask — "Graph traversing 설명, 기능별로 코드 플로우 트래킹(실시간으로 트래킹 및 코드 설명) 기능 만들기."
 
-Status: **Phase 0 built and measured (2026-09-21). Phases 1–5 proposed.**
+Status: **Phases 0, 1 and 2 built and measured (2026-09-21). Phases 3–5 proposed,
+and Phase 3 has since shipped from another direction — see below.**
+
 `src/lib/graph/flow.ts` and `src/lib/graph/flow.test.ts` are the walk, headless: entry
 points, both joints, the beam, the lexicographic ranking, the bounds, the five
-terminals, the event shape and every refusal sentence. Nothing is on screen yet.
-§11.1's call-site line is carried, so `GraphConnection.line` now exists.
-The decisions this produced are **D78–D86** in `DECISIONS.md`; the measurements are
-§8 below, with the two results that did not come out as this document predicted marked
-where they sit.
+terminals, the event shape and every refusal sentence. §11.1's call-site line is
+carried, so `GraphConnection.line` exists.
+
+**Phases 1 and 2 are on screen.** A fourth `PanelMode`, a typed question resolved by
+the map's own beam, the path read as a numbered list with a player — play / pause,
+1x and 2x, replay, step, scrub — the map lighting the same path with the hop numbers
+on its lines, and the discovery block for someone who has clicked nothing. The
+decisions are **D137–D148**; the measurements are in §8 and in §9's phase notes.
+
+**Purpose sentences (Phase 3) arrived out of order**, from the analysis side rather
+than from this feature: `GraphConnection.purpose` exists, `hopSentence` prefers it to
+the relation's verb, and 2,123 of this repository's 3,771 connections carry one. So
+`FlowHop.narrator` is live, and the panel marks a model's sentence (D146).
+
+The decisions Phase 0 produced are **D78–D86**; the measurements are §8 below, with
+the two results that did not come out as this document predicted marked where they
+sit.
 
 ---
 
@@ -290,9 +304,21 @@ flow: {
   name: "흐름 따라가기",
   promise: "고른 곳에서 코드가 어디로 이어지는지, 한 걸음씩 따라가 드려요.",
   notYet: "고른 곳에서 코드가 어디로 이어지는지 한 걸음씩 따라가 드릴 거예요. 따라가는 건 아직 준비 중이에요.",
-  needs: "selection",
+  needs: "either",
 }
 ```
+
+**Built, and `needs` came out differently (D137).** `selection` is what this section
+drafted and it is wrong by this document's own §2.3: the founder's example is a
+*sentence*, and a mode that waits for a selection cannot answer one. Requiring text
+instead would kill the other way in. `ModeWords.needs` gained a third value rather
+than `RequestBox` gaining a branch on the mode's name, because the reason those words
+live in `mode.ts` at all is that the sentence a user reads and the rule the code runs
+must not be able to drift apart.
+
+`notYet` is kept and is reached only by a screen that does not hand this mode a
+handler; the workspace always does. **This mode needs no model**, warm or cold, so its
+apology was never about waiting for a key.
 
 **Discovery when nothing is selected.** `NothingSelectedState` is already the brief's "project overview and a few suggested questions" slot. It gains a block: 따라가 볼 수 있는 흐름 — the project's routes and endpoints, each a 따라가 보기 button. That is where someone who has not clicked anything finds this.
 
@@ -381,6 +407,25 @@ Not "does it look plausible". This repository has a habit of finding its own def
 7. **Narration cost, asserted.** Count real model calls and tokens for a twelve-hop flow. Assert `calls === 0` warm and `calls <= 1` cold. The rule in §4 is then enforced by a number instead of by a paragraph.
 8. **The vocabulary test.** No flow sentence, from any layer including the model's, contains 실행 · 추적 · 실시간 · 안전 · 노드 · 엣지. Extends `FORBIDDEN_WORDS`. D68's precedent: "a test asserts the sentence does not come back."
 
+   **Extended to the screen, 2026-09-21.** `flow-state.test.ts` renders eight states —
+   a walk mid-reveal, a finished walk, a walk from a symbol, a refusal, words that
+   matched nothing, nothing chosen, a project with no way in, a project read only
+   shallowly — strips the tags, removes `FLOW_NOTICE` (the one string allowed to
+   contain 실행, because it is a *denial* of the thing the word names) and runs
+   `flowSentenceIssues` over what is left, plus a check for the past tense of
+   execution.
+
+   **One thing it deliberately does not catch, and it is worth someone's attention.**
+   The rule is about *our* sentences. A person may type 추적 and the panel echoes their
+   question back verbatim, which is right — rewriting somebody's question to match our
+   house style would be the worse dishonesty. But **Pass 2's labels are not ours and
+   are not checked either**, and production has at least one: `/api/projects/:id/events`
+   is named 실시간 상황 주소. That name is accurate about the code and appears on the
+   map, in the file list and in the connections panel already, so it is not this
+   feature's to filter — but `flowSentenceIssues` applied at Pass 2's *write* time
+   would be a one-line change and would stop a forbidden word entering the product
+   through the one door nobody is watching.
+
 ---
 
 ## 9. Build order
@@ -418,9 +463,33 @@ Two things Phase 1 and Phase 2 have to know, both of which this document got wro
    the hop whose target is an `api_endpoint`, and `FlowPath.reachedEndpoint` says it
    happened.
 
-**Phase 1 — the flow, read as a list.** The fourth `PanelMode`, the hop list narrated by Layers 0 and 1 only, the discovery block in the nothing-selected state, every refusal sentence in §7. **Zero LLM, zero schema change.** On the demo repo this already answers "주문이 어디서 이뤄지나요" with a numbered path whose every row opens a file. This is a complete feature.
+**Phase 1 — the flow, read as a list. Built, 2026-09-21.** The fourth `PanelMode`
+(D137), the hop list, the discovery block in the nothing-selected state, every refusal
+sentence in §7, and the player the founder asked for by name — play / pause, 1x and
+2x, replay, step both ways, and a scrubber (D140). **Zero LLM, zero schema change, and
+no HTTP route**: the walk is arithmetic over a graph the browser already holds, which
+is why there is no loading state anywhere in this feature (D147).
 
-**Phase 2 — the map lights the path.** Path-aware `Focus`, hop numbers on the on-path links, LOD exemption, the camera walking the path under the existing reduced-motion rule. Same list, now with a picture.
+Two things this section did not anticipate, both found by running it against
+production:
+
+  - **A typed question needs its words cut out of it before the beam can take one**
+    (D138), and on a project Pass 2 has named, the only thing carrying the word a
+    person uses is often the **feature** — so a matched feature resolves to the
+    addresses inside it, which turns out to be Phase 5's entry rule arriving early and
+    as a grouping rather than an algorithm (D139).
+  - **How sure we are of the start is a separate question from how sure we are of the
+    path**, and the walk cannot ask it: the entry joint is `certain` by construction.
+    Every Streamlit address is `inferred` (D133), so the panel reads that off the
+    `contains` edge and says so (D145).
+
+**Phase 2 — the map lights the path. Built, 2026-09-21.** Mostly wiring, as §9 said it
+would be: `flow/trail.ts` is the join, the same kind of file `render/walk.ts` is for
+the investigation's walk. A joint becomes a `TrailStep` with `connected: false` and the
+panel says why the map has no line there (D142); `critical` is spent on "the step you
+are on" rather than on an evidence split a flow does not have (D143); and the camera
+moves **only when the step is off screen** (D144), because at the resting zoom the
+whole map fits and a recentre on every hop is motion carrying no information.
 
 **Phase 3 — purpose sentences. Built, 2026-09-21 (D130-D132).** `src/analysis/purpose/` is one batched pass inside the analysis run, after Pass 2 so the model sees the Korean names Pass 2 just wrote. Flow hops upgrade from 사용해요 to 여기서 가격을 사람이 읽기 좋은 모양으로 바꿔요, and so does **every connection row in the right panel**.
 
@@ -461,8 +530,17 @@ Found by reading, listed so nobody rediscovers them.
 4. **`lib/llm/types.ts` deliberately has no streaming.** So 실시간 cannot mean token streaming, and this plan does not ask for it to.
 5. **`purpose/groups.ts` has no caller and no storage.** `groupByPurpose` is exported and tested; nothing in `pipeline.ts` calls it; there is no column or table for the answers. "Built, not yet wired" is exact, and the wiring includes a schema addition.
 6. **`analysis/events.ts` declares a `semantic` phase and `feature.created` / `node.assigned` events that nothing emits**, while `panel/states.tsx` draws a 기능 이름 붙이는 중 step for it. Not this feature's bug; Phase 3 is the thing that would finally make that step true.
-7. **`mode.ts` states flatly that none of its three modes works — "There is no model wired up behind any of them" — and that is now out of date.** `lib/llm/config.ts` and `client.ts` exist, `qa/loop.ts` is built and tested. A fourth mode added today inherits a `notYet` regime whose premise has changed.
-8. **`panel/` and `lib/llm/` were being edited by other agents while this was written** (`connections-panel.tsx`, `model.ts`, `model-select.tsx`, `llm/config.ts`, `llm/client.ts`, `llm/types.ts`). Phase 1 touches `mode.ts` and `states.tsx`. Sequence after that work lands, and prefer a new `panel/flow-state.tsx` over an edit to `states.tsx`.
+7. ~~**`mode.ts` states flatly that none of its three modes works.**~~ **Corrected for the
+   fourth mode only, 2026-09-21 (D137).** The premise — "there is no model wired up
+   behind any of them" — expired when `lib/llm/` and `qa/loop.ts` landed. 흐름 따라가기
+   is the one mode that needs **no** model at all, so its `notYet` is not a wait for a
+   key; it is what a screen that does not wire this mode should say, and the workspace
+   always wires it. Whether the other three still need their apology is a question
+   about screens this wave did not own.
+8. ~~**`panel/` and `lib/llm/` were being edited by other agents while this was
+   written.**~~ **Settled, 2026-09-21.** `panel/flow-state.tsx` is a new file, as this
+   said it should be; `states.tsx` gained one component and one optional prop, and
+   `connections-panel.tsx` gained one state and one handler.
 9. **The demo repo's recorded edge counts predate `fetches`, and they are STILL unmeasured.** `DECISIONS.md` records 22 files / 38 symbols / 4 endpoints / 1 route / 3 packages and 119 edges with no `fetches` (D56 says they did not exist yet); `analyzer.ts` now emits them and D57 took the count to 121. Phase 0 did **not** re-measure it: `heon-1219/coding-interview-prep` needs the network, and the live parser suite that reaches it is skipped by default. §8.1's ground truth is still owed.
 
    What Phase 0 did measure, so the flow work is not resting on nothing, is `src/analysis/__fixtures__/shop` through the real parser and the real `buildGraphView`: **49 items, 63 connections — 27 `contains`, 15 `imports`, 10 `calls`, 5 `renders`, 5 `uses_package`, 1 `fetches`; 61 certain, 2 inferred.** Widest behaviour fork: 4. Entry points: 3 (`/`, `/checkout`, `/api/orders`), coverage 3 of 3. That fixture is the same tree `analyzer.test.ts` measures, and it is smaller and tamer than the demo repo — §8.3's surprise is exactly what "smaller and tamer" costs.
@@ -501,7 +579,7 @@ the SSE rule, purpose storage, runtime tracing — are untouched and still owed.
 - **Bounds: 12 hops, beam 4, 400 expansions, 3 branches shown with the count said out loud.**
 - **A twelve-hop flow costs at most one model call.** Enforced by an assertion, not by convention. `investigate()` is per-hop and on demand, at roughly 250× the cost.
 - **`GraphConnection` gains the edge's call-site line**, carried from `edges.metadata` through `load.ts` and `view.ts`.
-- **`Focus` becomes path-aware** — an ordered set of links, not only item ids — and on-path links are exempt from the LOD label budget and carry a hop number.
-- **Flow events reuse the `{ seq, type, payload }` shape**, are delivered by an in-process sink by default, and reach SSE only when a model call is genuinely in flight.
+- ~~**`Focus` becomes path-aware**~~ **Done — D126 for the renderer, D142/D143 for the flow's half.** An ordered set of links, matched on direction; on-path links are exempt from the LOD label budget and carry a hop number; a joint draws neither line nor number.
+- **Flow events reuse the `{ seq, type, payload }` shape**, are delivered by an in-process sink by default, and reach SSE only when a model call is genuinely in flight. **Moot for Phases 1–2 and recorded as such (D147):** nothing is ever in flight, because the walk runs in the browser against a graph already on the client. There is no route and no transport to choose.
 - ~~**Purpose sentences get storage** — `edge_purposes(projectId, purposeKey) → text, textLang` — pending the measurement in §12.1.~~ **Measured and settled as D130-D132: `edges.metadata.purpose`, no table, no migration.**
 - **Runtime tracing is a separate product decision**, with the costs in §10 on the record, and its vocabulary is not borrowed forward.

@@ -12,6 +12,7 @@ import type { GraphView } from "@/lib/graph/view";
 
 import { AnalysisScreen } from "./analysis-screen";
 import { describeCoverage } from "./coverage";
+import { useFlow } from "./flow/use-flow";
 import { HistoryBand, type ChangeLight } from "./history/history-band";
 import { DistrictMap } from "./map/district-map";
 import { beamOf, buildBeamIndex, runBeam, IDLE_BEAM } from "./map/beam";
@@ -292,14 +293,50 @@ export function Workspace({
     setLocks((previous) => ({ ...previous, [id]: lock }));
   }, []);
 
-  const onSelect = useCallback((id: string | null) => {
-    setSelectedId(id);
-  }, []);
-
   // The left panel lights with the same word the map does. Its own index,
   // because the map's lives inside the canvas component — both are rebuilt only
   // when the items change, and cost well under a millisecond at this size.
   const beamIndex = useMemo(() => buildBeamIndex(view.items), [view.items]);
+
+  /*
+   * 흐름 따라가기 — the path from one place, and the player that reveals it.
+   *
+   * Owned here rather than inside the panel for the same reason `useAsk` is:
+   * **two** things need it. The panel reads the path as a list of steps, and
+   * the map lights the same path as a picture, and a hook inside the panel
+   * would leave the map with no way to see it short of handing it back up.
+   *
+   * It is given the beam index this toolbar already built rather than building
+   * a second one. `qa/tools.ts` states the rule — the beam that answers a typed
+   * question has to be the beam that lights the map, or the product answers the
+   * user's own words differently from the picture they are looking at — and two
+   * indexes over the same items would be the first step towards exactly that.
+   *
+   * Nothing here is in flight: the walk is pure arithmetic over `view`, which
+   * the browser is already holding. No model, no network, no loading state.
+   */
+  const flow = useFlow(view, beamIndex);
+  // Pulled out so the selection handler depends on one stable callback rather
+  // than on the whole controls object, which is rebuilt every render.
+  const { clear: clearFlow, follow: followFlow, ask: askFlow } = flow;
+
+  const onSelect = useCallback(
+    (id: string | null) => {
+      setSelectedId(id);
+      /*
+       * Choosing a place ends the flow that was showing.
+       *
+       * One screen, one meaning. While a flow is on, the map's lighting IS the
+       * flow and the panel IS the flow, so a click that selected something
+       * without clearing it would leave the person looking at a path and a
+       * panel about something else, with nothing saying which of the two their
+       * click produced. The flow's own rows do not go through here — they move
+       * the player instead — so this only fires for a real change of subject.
+       */
+      if (id !== null) clearFlow();
+    },
+    [clearFlow],
+  );
   /*
    * One light, two switches — and the file list lights with the same one the
    * map does, whichever switch is on.
@@ -737,6 +774,13 @@ export function Workspace({
                 // out to be a dead end, and the person cannot tell the
                 // difference until it stops.
                 trail={walk?.trail ?? null}
+                // The flow being followed, trimmed to the steps the reader has
+                // been shown. It takes the lighting over from both the walk and
+                // the selection while it is set, and `centreOn` keeps the step
+                // they are on in view — only when it is off screen, which at
+                // the resting zoom is almost never.
+                flow={flow.session ? flow.trail : null}
+                centreOn={flow.session ? flow.here : null}
                 // The places a picked change touched. The same light the beam
                 // is, aimed by the band instead of by the box.
                 highlight={change?.ids ?? null}
@@ -846,6 +890,15 @@ export function Workspace({
             })
           }
           walk={walk}
+          /*
+           * 흐름 따라가기. No model and no network, so nothing from the request
+           * is read — the walk is arithmetic over the graph already on screen.
+           * The typed text is resolved against the map by the map's own beam,
+           * and falls back to whatever is selected when the box is empty.
+           */
+          onFlow={(text) => askFlow(text, selectedId)}
+          onFollow={(itemId) => followFlow(itemId, "listed")}
+          flow={flow}
         />
         </div>
       </div>

@@ -69,6 +69,21 @@ import { districtOf, type DistrictDescriptor } from "./layout";
 export type Grouping = "folder" | "feature" | "kind" | "job" | "usage";
 
 /**
+ * What this product says when no `feature` row has been written yet.
+ *
+ * Exported rather than written inline where `judge` uses it, because a third
+ * screen now needs it: 흐름 따라가기's discovery block offers the project's flows
+ * grouped by feature where there are features, and has to say the same thing
+ * this map says where there are none. `places-panel.tsx` already carries its
+ * own variant of this sentence for its own list, and that is two too many —
+ * `FLOW_TRACKING.md` §3 asks for this one verbatim on the grounds that two
+ * halves of one screen explaining the same gap two different ways is the exact
+ * failure the sentence was written to avoid.
+ */
+export const NO_FEATURES_YET =
+  "기능 이름은 아직 붙이기 전이에요. 이름이 붙으면 여기서 기능별로 볼 수 있어요.";
+
+/**
  * The floor. Always available, because it needs nothing but a path, and because
  * a screen with no way to group at all is not a screen we are willing to draw.
  */
@@ -288,9 +303,7 @@ function judge(
   if (total === 0) return "아직 읽은 게 없어서 묶어 볼 것도 없어요.";
 
   if (grouping === "feature" && !items.some((item) => item.kind === "feature")) {
-    // Deliberately the same sentence the left panel already says, so the two
-    // halves of the screen do not explain the same gap two different ways.
-    return "기능 이름은 아직 붙이기 전이에요. 이름이 붙으면 여기서 기능별로 볼 수 있어요.";
+    return NO_FEATURES_YET;
   }
 
   const largest = grouped.districts[0];

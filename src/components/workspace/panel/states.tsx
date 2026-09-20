@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 
+import { flowRefusalSentence } from "@/lib/graph/flow";
 import {
   CERTAINTY_WORDS,
   KIND_WORDS,
@@ -9,6 +10,8 @@ import {
   type ItemKind,
 } from "@/lib/graph/view";
 
+import { discoveryRefusal, flowsByFeature, importCountOf } from "../flow/start";
+import { NO_FEATURES_YET } from "../map/grouping";
 import { CertaintyMark, displayName } from "./connection-row";
 
 /**
@@ -380,9 +383,16 @@ function busiestItems(view: GraphView, howMany: number) {
 export function NothingSelectedState({
   view,
   onSelect,
+  onFollow,
 }: {
   view: GraphView;
   onSelect: (id: string) => void;
+  /**
+   * Start a flow from a place in the project. Undefined leaves the 흐름 block
+   * out entirely rather than drawing buttons that do nothing — the same rule
+   * `onOpen` follows one file over.
+   */
+  onFollow?: (id: string) => void;
 }) {
   const counts = countByKind(view);
   const certain = view.connections.filter((c) => c.certainty === "certain").length;
@@ -458,6 +468,7 @@ export function NothingSelectedState({
             </div>
           ) : null}
 
+          {onFollow ? <FlowsHere view={view} onFollow={onFollow} /> : null}
         </>
       ) : null}
 
@@ -478,6 +489,118 @@ export function NothingSelectedState({
     </div>
   );
 }
+
+/**
+ * 따라가 볼 수 있는 흐름 — where somebody who has clicked nothing finds this.
+ *
+ * `FLOW_TRACKING.md` §6 puts it here, and §6 is right about why: this panel is
+ * already the project-overview slot, and a feature that can only be reached by
+ * first guessing what to click is a feature most people never reach.
+ *
+ * ## The refusal is the common case, and it is written as one
+ *
+ * Measured against production the same day this was built: **three of the four
+ * real projects have no entry point at all** — a Streamlit app, an OpenCV tray
+ * app and a static site. So the branch that says so is not the error path, it
+ * is what most people see first, and it gets §7's own sentence rather than an
+ * empty list or a shrug. The sentence ends by telling them what to do instead
+ * (pick a file), because a refusal with no next move is only an apology.
+ *
+ * ## Features are a heading, never a start
+ *
+ * Pass 2 writes `feature` rows now, so where a project has them the flows are
+ * gathered under the feature each belongs to (§9's Phase 5, which turns out to
+ * be a grouping and not an algorithm). A feature is never itself a button:
+ * `entryPointsOf` refuses one on purpose, because a grouping we made is not
+ * something the code does. Where a project has no features, the sentence is
+ * `grouping.ts`'s own, imported rather than retyped — two halves of one screen
+ * explaining the same gap two different ways is what that sentence exists to
+ * prevent.
+ */
+function FlowsHere({
+  view,
+  onFollow,
+}: {
+  view: GraphView;
+  onFollow: (id: string) => void;
+}) {
+  const refusal = discoveryRefusal(view);
+  const groups = refusal === null ? flowsByFeature(view) : [];
+  const named = groups.some((group) => group.feature !== null);
+
+  return (
+    <div className="rule-t mt-5 pt-4">
+      <p className="label-kr text-[11px] text-said-faint">따라가 볼 수 있는 흐름</p>
+
+      {refusal !== null ? (
+        <p className="mt-1.5 text-[12px] leading-[1.75] text-said-faint text-pretty">
+          {flowRefusalSentence(refusal, {
+            name: "",
+            kind: "file",
+            imports: importCountOf(view),
+          })}
+        </p>
+      ) : (
+        <>
+          {groups.map((group) => (
+            <div key={group.feature?.id ?? "그 밖"} className="mt-2">
+              {named ? (
+                <p className="text-[11px] text-said-faint">
+                  {group.feature
+                    ? (group.feature.label ?? group.feature.name)
+                    : "어느 기능에도 넣지 못한 것"}
+                </p>
+              ) : null}
+              <ul className="mt-1 space-y-1">
+                {group.starts.slice(0, FLOWS_PER_GROUP).map((item) => (
+                  <li key={item.id}>
+                    <button
+                      type="button"
+                      onClick={() => onFollow(item.id)}
+                      className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-baseline gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-ink max-md:py-2.5"
+                    >
+                      <span className="min-w-0 flex-1 truncate text-[14px] text-said-soft">
+                        {item.label ? (
+                          displayName(item)
+                        ) : (
+                          <code className="text-[13px]">{item.name}</code>
+                        )}
+                      </span>
+                      <span className="shrink-0 text-[12px] text-said-faint">따라가 보기</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              {group.starts.length > FLOWS_PER_GROUP ? (
+                <p className="mt-1 text-[11px] text-said-faint tabular-nums">
+                  이 밖에 {group.starts.length - FLOWS_PER_GROUP}곳이 더 있어요.
+                </p>
+              ) : null}
+            </div>
+          ))}
+
+          {!named ? (
+            <p className="mt-2 text-[11px] leading-[1.7] text-said-faint text-pretty">
+              {NO_FEATURES_YET}
+            </p>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * How many flows one feature lists before it says there are more.
+ *
+ * `neighbourhood.ts`'s rule, and the reason is the same: a list that stops with
+ * no note reads as "that is all there is", which on this product is a false
+ * statement about somebody's code. Six rather than three because this list is
+ * the whole way in to the feature rather than an aside beside something else,
+ * and because a project with sixteen endpoints under one feature would
+ * otherwise show three of them.
+ */
+const FLOWS_PER_GROUP = 6;
 
 /* ------------------------------------------------------- nothing connected */
 
