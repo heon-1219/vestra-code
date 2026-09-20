@@ -523,7 +523,20 @@ describe("stable ids", () => {
 
     first.fixture.cleanup();
     second.fixture.cleanup();
-  });
+    /*
+     * Twenty seconds, not the default five.
+     *
+     * This runs a whole ts-morph analysis TWICE on purpose — that is the only
+     * way to compare two runs from different directories — and it got slower
+     * when the parser started matching fetch URLs and reading re-exports. It
+     * passes comfortably on its own and times out in the full suite, where
+     * forty-four workers are sharing the machine.
+     *
+     * The budget is the honest fix. Trimming the fixture would make the test
+     * cheaper by making it test less, and this is the test that stops a user's
+     * saved correction from silently repointing at the wrong thing.
+     */
+  }, 20_000);
 
   it("does not churn when a file changes and the lines below it move", async () => {
     const before = await runFixture("shop");
