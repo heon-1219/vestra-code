@@ -576,7 +576,11 @@ describe("stable ids", () => {
 
     before.fixture.cleanup();
     after.fixture.cleanup();
-  });
+    // Two full analyses of the same fixture, each building a real ts-morph
+    // program off disk. The same honest budget as the test above it: this is
+    // slow because of what it does, and the default five seconds fails it on a
+    // machine that is busy rather than on a machine that is wrong.
+  }, 20_000);
 });
 
 // ---------------------------------------------------------------------------
