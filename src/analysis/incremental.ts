@@ -125,7 +125,17 @@ import type { AnalyzedEdge, AnalyzedNode, Confidence } from "./types";
  * graph would be a mix of two analyzer versions with no way to tell which rows
  * came from which.
  */
-export const ANALYZER_VERSION = "1";
+/*
+ * Bumped to 2 when the Python analyzer landed.
+ *
+ * A project that was `unsupported` or `static_site` and is now detected as
+ * `python` has a base graph built by the shallow analyzer. Its rows are not
+ * wrong so much as from a different world — files and packages, no symbols —
+ * and an incremental write against it would stamp those shallow rows as still
+ * current and carry them past the sweep for ever. A version mismatch forces
+ * one full write, after which it is incremental again.
+ */
+export const ANALYZER_VERSION = "2";
 
 /**
  * Above this share of the analysed tree, an incremental write is bookkeeping

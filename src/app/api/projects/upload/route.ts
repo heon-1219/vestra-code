@@ -8,6 +8,7 @@ import { startAnalysis } from "@/analysis/pipeline";
 import { db } from "@/db";
 import { projects } from "@/db/schema";
 import { detectProject, type PackageManifest } from "@/lib/github/detect";
+import { llmFromEnv } from "@/lib/llm";
 import { STORE_BUDGET_BYTES, storeProjectFiles } from "@/lib/preview/store";
 import { getSession } from "@/lib/session";
 
@@ -147,6 +148,8 @@ export async function POST(request: Request) {
     project: { id: projectId, source: "upload", kind: detection.kind },
     githubToken: null,
     upload: payload,
+    // See the note at the other `startAnalysis` call. Null is ordinary.
+    llm: llmFromEnv(),
   });
 
   if (!outcome.ok) {

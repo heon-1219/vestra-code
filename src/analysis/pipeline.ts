@@ -20,6 +20,12 @@ import {
   type ChangeScope,
   type WriteScope,
 } from "./incremental";
+// Type only. A runtime import of `@/lib/llm` reaches `env.ts`, which validates
+// eleven server variables at import time and throws when any is missing —
+// correct for a server that must not boot half-configured, fatal for a unit
+// test of this file. The model is injected by the caller instead.
+import type { Llm } from "@/lib/llm/types";
+
 import { ingestRepo, LIMIT_MESSAGES, type IngestOutcome } from "./ingest";
 import { ingestStoredUpload } from "./ingest/restore";
 import { ingestUpload, type UploadPayload } from "./ingest/upload";
@@ -32,6 +38,7 @@ import {
   reapStaleRun,
   type RunStore,
 } from "./run-store";
+import { createPythonAnalyzer, pythonLlmCoverage } from "./python/analyzer";
 import { createShallowAnalyzer } from "./shallow/analyzer";
 import type {
   AnalysisEmitter,
@@ -93,6 +100,14 @@ export type RunAnalysisInput = {
   runId: string;
   /** The signed-in user's GitHub token, resolved before the request ended. */
   githubToken: string | null;
+  /**
+   * The model, for the analyzers that use one. Null is ordinary.
+   *
+   * Resolved by the caller rather than read here, because reading it means
+   * importing `env.ts`, which validates the whole environment at import and
+   * throws — right for a route, fatal for a unit test of this module.
+   */
+  llm?: Llm | null;
   /** Injectable so a test can watch the sequence without a database. */
   sink?: EventSink;
 };
@@ -127,22 +142,34 @@ class AnalysisFailure extends Error {}
  * Built per run rather than once at module load, so nothing an analyzer
  * accumulates about one repository can reach the next one.
  */
-const ANALYZERS: readonly (() => Analyzer)[] = [
-  createTypescriptAnalyzer,
+const ANALYZERS: readonly ((llm: Llm | null) => Analyzer)[] = [
+  () => createTypescriptAnalyzer(),
+  /*
+   * The one analyzer that takes a model, which is why the list is built from
+   * the model rather than from nothing.
+   *
+   * A null model is an ordinary state, not a failure: the analyzer then runs
+   * its parser half alone and produces a smaller honest graph. Python's
+   * imports are `certain` without any model at all; only the calls need one.
+   */
+  (llm) => createPythonAnalyzer({ llm }),
   // Last, and it has to stay last: `selectAnalyzer` takes the first analyzer
   // that says yes, and the shallow one claims `static_site` until the D6
   // static-site analyzer exists. Ahead of a deep analyzer it would shadow it
   // permanently, and today the two are disjoint so nothing would fail.
-  createShallowAnalyzer,
+  () => createShallowAnalyzer(),
 ];
 
 /**
  * Exported for the test that pins the ordering rule above. Nothing else should
  * call it — the pipeline picks the analyzer, callers pick the project.
  */
-export function selectAnalyzer(kind: ProjectKind): Analyzer | null {
+export function selectAnalyzer(
+  kind: ProjectKind,
+  llm: Llm | null = null,
+): Analyzer | null {
   for (const create of ANALYZERS) {
-    const analyzer = create();
+    const analyzer = create(llm);
     if (analyzer.handles(kind)) return analyzer;
   }
   return null;
@@ -178,6 +205,8 @@ export function startAnalysis(input: {
   githubToken: string | null;
   /** The folder, when someone has just picked one. A re-read passes nothing. */
   upload?: UploadPayload;
+  /** The model, for the analyzers that use one. See `RunAnalysisInput.llm`. */
+  llm?: Llm | null;
 }): Promise<StartAnalysisResult> {
   const pending = starting.get(input.project.id);
   if (pending) return pending;
@@ -194,8 +223,9 @@ async function start(input: {
   project: AnalysisProject;
   githubToken: string | null;
   upload?: UploadPayload;
+  llm?: Llm | null;
 }): Promise<StartAnalysisResult> {
-  const { db, project, githubToken, upload } = input;
+  const { db, project, githubToken, upload, llm } = input;
 
   if (!selectAnalyzer(project.kind)) {
     return { ok: false, message: UNSUPPORTED_MESSAGE };
@@ -215,7 +245,7 @@ async function start(input: {
   // it has work — no queue, no worker, no `after()` with a request-bound
   // duration cap. The cost is that a process restart mid-run abandons the run;
   // `reapStaleRun` is what notices and closes it out.
-  void runAnalysis({ db, project, runId, githubToken, upload }).catch((error: unknown) => {
+  void runAnalysis({ db, project, runId, githubToken, upload, llm }).catch((error: unknown) => {
     // `runAnalysis` handles its own failures, so reaching here means the failure
     // path itself failed. On Node 22 an unhandled rejection ends the process,
     // which would take every other user's run down with it.
@@ -236,7 +266,7 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
     : createRunStore(db, runId);
   const emit = store.emit;
 
-  const analyzer = selectAnalyzer(project.kind);
+  const analyzer = selectAnalyzer(project.kind, input.llm ?? null);
   let cleanup: (() => Promise<void>) | null = null;
 
   try {
@@ -379,6 +409,28 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
     const graph = await analyzer.analyze(files, root, emitter);
     await store.flush();
 
+    /*
+     * How much of the project the model actually opened.
+     *
+     * Read back off the nodes rather than plumbed through a callback, because
+     * the analyzer already writes it onto every file node and a second channel
+     * for the same fact is a second thing to keep in step.
+     *
+     * The log is the honest minimum and not the end of this: "the model looked
+     * at 40 of your 120 files" belongs on screen, and putting it there needs an
+     * event type the contract does not have yet. Until then it must at least
+     * not be invisible — a cap that silently halves the answer is how "there is
+     * nothing there" gets said about files nobody read.
+     */
+    const coverage = pythonLlmCoverage(graph.nodes);
+    if (coverage.notExamined > 0) {
+      console.log(
+        "[pipeline] model coverage",
+        runId,
+        `${coverage.examined} examined, ${coverage.notExamined} not opened`,
+      );
+    }
+
     // D36's tripwire. Every silent-emptiness failure this parser has — `allowJs`
     // off putting zero files in the program, a resolution change emptying the
     // name index — looks exactly like a successful run of an empty repository,
@@ -427,7 +479,39 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
         ? selectOwnedRows(graph, writeScope.touched)
         : graph;
 
-    const written = await persistGraph(db, project.id, runId, slice.nodes, slice.edges);
+    /*
+     * Two writes, because an edge a model guessed must not be stored as
+     * something a parser saw.
+     *
+     * `persistGraph` stamps one origin per call, so the only way to get both
+     * is to partition and call it twice — the same thing Pass 2 already does
+     * for its feature nodes. The Python analyzer marks every edge it got from
+     * the model with `metadata.origin === "llm"`; every other analyzer emits
+     * none, so `guessed` is empty and the second call is skipped entirely.
+     *
+     * Nodes all go with the `static` write: the model never invents a node,
+     * only claims a call between two that the parser already found.
+     */
+    const guessed = slice.edges.filter(
+      (edge) => (edge.metadata as { origin?: unknown } | undefined)?.origin === "llm",
+    );
+    const parsed =
+      guessed.length === 0
+        ? slice.edges
+        : slice.edges.filter(
+            (edge) =>
+              (edge.metadata as { origin?: unknown } | undefined)?.origin !== "llm",
+          );
+
+    const written = await persistGraph(db, project.id, runId, slice.nodes, parsed);
+    if (guessed.length > 0) {
+      const guessedWritten = await persistGraph(db, project.id, runId, [], guessed, {
+        origin: "llm",
+      });
+      written.edgesWritten += guessedWritten.edgesWritten;
+      written.edgesDropped += guessedWritten.edgesDropped;
+      written.droppedSamples.push(...guessedWritten.droppedSamples);
+    }
     if (written.nodesDropped > 0 || written.edgesDropped > 0) {
       console.warn(
         "[pipeline] dropped rows",

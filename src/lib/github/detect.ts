@@ -138,6 +138,46 @@ export function detectProject(
     };
   }
 
+  /*
+   * Python, and it has to be asked before the static-site branch.
+   *
+   * A Django or Flask project ships `.html` templates and no `package.json`,
+   * so `looksBundled` is false and the check below would call it a
+   * hand-written site — promising to read pages it cannot and never reaching
+   * the analyzer that can read its Python.
+   *
+   * Two ways in. A Python manifest is decisive on its own; otherwise `.py`
+   * being the plurality of source files is, because a repo whose code is
+   * mostly Python is a Python project whatever else is lying around. The
+   * plurality test is what catches a repo with no manifest at all, which is
+   * the common shape of a script collection.
+   */
+  const pythonFiles = paths.filter((path) => /\.py$/i.test(path));
+  const pythonManifests = paths.filter((path) =>
+    /(^|\/)(requirements[^/]*\.txt|pyproject\.toml|Pipfile|setup\.py|setup\.cfg|manage\.py)$/i.test(
+      path,
+    ),
+  );
+  const sourceFiles = paths.filter((path) =>
+    /\.(py|tsx?|jsx?|mjs|cjs|rb|go|php|rs|java|cs)$/i.test(path),
+  );
+  const pythonIsPlurality =
+    pythonFiles.length > 0 && pythonFiles.length * 2 > sourceFiles.length;
+
+  if (pythonManifests.length > 0 || pythonIsPlurality) {
+    signals.push(`Python 파일 ${pythonFiles.length}개`);
+    if (pythonManifests.length > 0) {
+      signals.push(pythonManifests.slice(0, 3).join(", "));
+    }
+    return {
+      kind: "python",
+      deep: true,
+      summary:
+        "Python으로 만든 프로젝트예요. 파일끼리 무엇을 불러오는지는 확실하게 읽고, 어떤 기능이 어떤 기능을 쓰는지는 짐작해서 그려드려요.",
+      signals,
+    };
+  }
+
   const htmlFiles = paths.filter((path) => /\.html?$/i.test(path));
 
   /**

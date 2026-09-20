@@ -99,6 +99,7 @@ export const projectKindEnum = pgEnum("project_kind", [
   "nextjs",
   "react_spa",
   "static_site",
+  "python",
   "unsupported",
 ]);
 

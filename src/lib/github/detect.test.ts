@@ -121,8 +121,12 @@ describe("detectProject — named frameworks we cannot read deeply", () => {
   });
 
   it("still promises a map for a repo it does not recognise at all", () => {
+    // Ruby, because Python stopped being the example of "unrecognised" the day
+    // the Python analyzer landed. The claim under test is D26's — never tell
+    // someone their repository is unsupported — and it needs a language we
+    // genuinely cannot read deeply to keep meaning anything.
     const result = detectProject(
-      ["main.py", "requirements.txt", "bot/strategy.py"],
+      ["main.rb", "Gemfile", "lib/strategy.rb"],
       [],
     );
     expect(result.kind).toBe("unsupported");
@@ -137,10 +141,56 @@ describe("detectProject — named frameworks we cannot read deeply", () => {
 describe("detectProject — hygiene", () => {
   it("ignores vendored directories when looking for signals", () => {
     const result = detectProject(
-      ["node_modules/react/index.js", "node_modules/some-pkg/index.html", "main.py"],
+      ["node_modules/react/index.js", "node_modules/some-pkg/index.html", "main.rb"],
       [],
     );
+    // Not react_spa and not static_site: both signals live only under
+    // node_modules, and neither may be read.
     expect(result.kind).toBe("unsupported");
+  });
+
+  it("reads a Python project as Python, on its manifest", () => {
+    const result = detectProject(["main.py", "requirements.txt", "bot/strategy.py"], []);
+    expect(result.kind).toBe("python");
+    expect(result.deep).toBe(true);
+  });
+
+  it("reads a Python project as Python with no manifest at all", () => {
+    // The common shape of a script collection: no requirements.txt, just code.
+    const result = detectProject(["bot.py", "broker.py", "db.py", "run.sh"], []);
+    expect(result.kind).toBe("python");
+  });
+
+  /**
+   * The ordering claim, and the reason the Python branch sits above the
+   * static-site one.
+   *
+   * A Django project ships `.html` templates and no `package.json`, so
+   * `looksBundled` is false and the static-site branch would take it — the
+   * product would promise to read pages it cannot and would never reach the
+   * analyzer that can read its Python.
+   */
+  it("reads a Django project as Python, not as a hand-written site", () => {
+    const result = detectProject(
+      [
+        "manage.py",
+        "shop/views.py",
+        "shop/models.py",
+        "shop/templates/shop/index.html",
+        "shop/templates/shop/detail.html",
+      ],
+      [],
+    );
+    expect(result.kind).toBe("python");
+  });
+
+  it("leaves a JavaScript project alone when a stray script is present", () => {
+    // One `.py` beside real front-end code is a build helper, not the project.
+    const result = detectProject(
+      ["src/App.tsx", "src/main.tsx", "src/api.ts", "scripts/gen.py", "package.json"],
+      [pkg("package.json", { react: "19.0.0" })],
+    );
+    expect(result.kind).toBe("react_spa");
   });
 
   it("never uses the forbidden graph vocabulary in anything a user reads", () => {

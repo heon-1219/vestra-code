@@ -7,6 +7,7 @@ import { startAnalysis, type AnalysisProject } from "@/analysis/pipeline";
 import { db } from "@/db";
 import { projects } from "@/db/schema";
 import { getGithubToken } from "@/lib/github/token";
+import { llmFromEnv } from "@/lib/llm";
 import { storageUsageFor } from "@/lib/preview/store";
 import { getSession } from "@/lib/session";
 
@@ -91,6 +92,11 @@ export async function POST(
     db,
     project: analysisProject,
     githubToken,
+    // Resolved here rather than inside the pipeline: reading it means importing
+    // `env.ts`, which validates the whole environment at import. Null when no
+    // key is configured, and the Python analyzer then runs its parser half
+    // alone — a smaller honest graph rather than a failure.
+    llm: llmFromEnv(),
   });
 
   if (!outcome.ok) {

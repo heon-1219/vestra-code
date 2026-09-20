@@ -1,0 +1,1 @@
+ALTER TYPE "public"."project_kind" ADD VALUE 'python' BEFORE 'unsupported';
