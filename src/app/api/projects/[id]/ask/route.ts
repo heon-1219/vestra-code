@@ -227,9 +227,19 @@ export async function POST(
   return new Response(stream, {
     headers: {
       "Content-Type": "text/event-stream; charset=utf-8",
-      // One person's question and one person's source. Nothing between them
-      // and us may hold a copy.
-      "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0, private",
+      /*
+       * One person's question and one person's source. Nothing between them
+       * and us may hold a copy.
+       *
+       * `no-transform` is not privacy, it is the feature: a proxy that gzips
+       * this stream buffers it, and the steps then arrive in a single burst
+       * once the answer is already finished. Watching the loop work is most of
+       * why this endpoint streams at all, and without this it silently becomes
+       * a slow POST that returns everything at the end. Same reason
+       * `analysis/events.ts` carries it.
+       */
+      "Cache-Control":
+        "no-store, no-cache, no-transform, must-revalidate, max-age=0, private",
       Connection: "keep-alive",
       // Nginx and friends buffer a stream into uselessness without this.
       "X-Accel-Buffering": "no",
