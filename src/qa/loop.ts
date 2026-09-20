@@ -22,6 +22,7 @@ import {
 } from "./answer";
 import { buildSystemPrompt, NUDGE, stepsLeftNote } from "./prompt";
 import type { SourceReader } from "./source";
+import { buildTrail, EMPTY_TRAIL, type TrailStep } from "./trail";
 import {
   commonOf,
   createToolContext,
@@ -206,6 +207,14 @@ export async function investigate(
   const turns: Turn[] = [];
   const ledger: LedgerEntry[] = [];
   const checked: string[] = [];
+  /**
+   * What each step put the loop in front of, in order.
+   *
+   * Gathered as it happens and folded into a trail at the end, because
+   * `critical` is not knowable until the findings have survived checking —
+   * marking points live would mean marking them on hope.
+   */
+  const walked: TrailStep[] = [];
 
   let steps = 0;
   let inputTokens = 0;
@@ -256,6 +265,19 @@ export async function investigate(
 
   function finish(stop: StopReason): Investigation {
     const millis = now() - startedAt;
+    // Built on every exit, not only on `answered`. An investigation that ran
+    // out of steps still went somewhere, and showing where is most of what
+    // makes running out a reportable outcome rather than a failure.
+    const trail =
+      walked.length === 0
+        ? EMPTY_TRAIL
+        : buildTrail({
+            graph: input.graph,
+            catalog: context.catalog,
+            steps: walked,
+            findings,
+          });
+    emit("qa.trail", trail);
     emit("qa.stopped", {
       reason: stop,
       steps,
@@ -274,6 +296,7 @@ export async function investigate(
       ruledOut: presentable(checked),
       unresolved,
       failure,
+      trail,
       trace,
       spent: { steps, inputTokens, outputTokens, millis },
       budget,
@@ -372,6 +395,7 @@ export async function investigate(
         tool: "unknown",
         hypothesis: short(why),
         note: short(text),
+        items: [],
       });
       turns.push(turnFor(call, text, null, budget.maxSteps - steps));
       continue;
@@ -389,6 +413,7 @@ export async function investigate(
           tool: "report",
           hypothesis: short(why),
           note: short(text),
+          items: [],
         });
         if (reportFailures > MAX_REPORT_RETRIES) return finish("no_answer");
         turns.push(turnFor(call, text, null, budget.maxSteps - steps));
@@ -402,6 +427,8 @@ export async function investigate(
         tool: "report",
         hypothesis: short(why),
         note: `${checkedNow.kept.length}가지를 확인했고 ${checkedNow.refused.length}가지는 근거가 없었어요.`,
+        // Reporting is not a place. The walk is what led here.
+        items: [],
       });
 
       /*
@@ -445,11 +472,15 @@ export async function investigate(
 
     const outcome = await runTool(context, name, args);
     ledger.push(...outcome.ledger);
+    if (outcome.items.length > 0 || outcome.hops.length > 0) {
+      walked.push({ step: steps, items: outcome.items, hops: outcome.hops });
+    }
     emit("step.taken", {
       step: steps,
       tool: name,
       hypothesis: short(why),
       note: short(outcome.note),
+      items: outcome.items,
     });
     pending = steps;
     turns.push(turnFor(call, outcome.text, outcome.note, budget.maxSteps - steps));

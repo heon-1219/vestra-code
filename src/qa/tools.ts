@@ -10,6 +10,8 @@ import {
   CERTAINTY_WORDS,
   KIND_WORDS,
   RELATION_WORDS,
+  type Certainty,
+  type ConnectionRelation,
   type GraphConnection,
   type GraphItem,
 } from "@/lib/graph/view";
@@ -77,6 +79,23 @@ export type LedgerEntry = {
   read: boolean;
 };
 
+/**
+ * A connection this result actually walked.
+ *
+ * Only `open_item` produces these, because it is the only tool that traverses:
+ * it stands on one item and is handed what the graph links it to. A search that
+ * happens to return two connected items did not cross the link between them,
+ * and reporting it here would turn "these both matched 결제" into "the walk went
+ * this way" — which the trail then draws.
+ */
+export type RevealedHop = {
+  connectionId: string;
+  from: string;
+  to: string;
+  relation: ConnectionRelation;
+  certainty: Certainty;
+};
+
 export type ToolOutcome = {
   /** What goes back to the model. */
   text: string;
@@ -84,6 +103,14 @@ export type ToolOutcome = {
   note: string;
   /** What this result put on the record, if anything. */
   ledger: LedgerEntry[];
+  /**
+   * The items this result put the loop in front of, by id, in the order they
+   * were shown. Deduplicated later; ordered here, because the order is the
+   * walk.
+   */
+  items: string[];
+  /** The links it crossed to get there. Empty for every tool but `open_item`. */
+  hops: RevealedHop[];
 };
 
 export type ToolContext = {
@@ -92,6 +119,17 @@ export type ToolContext = {
   beam: BeamIndex;
   /** By path, and only files. The map is the authority for what may be read. */
   files: Map<string, GraphItem>;
+  /**
+   * Everything with a line range, by the file it sits in, in graph order.
+   *
+   * Reading sixty lines of a file puts the loop in front of whatever is written
+   * on those lines, and those pieces are what the map draws. Without this the
+   * trail could only ever say "it read this file", and a file is the least
+   * useful thing to light on a map of a project.
+   */
+  ranged: Map<string, GraphItem[]>;
+  /** Every connection touching an item, in graph order. Both directions. */
+  links: Map<string, GraphConnection[]>;
   /** Null when this project's source cannot be reached at all. */
   read: SourceReader | null;
   signal?: AbortSignal;
@@ -124,18 +162,36 @@ export function createToolContext(
   signal?: AbortSignal,
 ): ToolContext {
   const files = new Map<string, GraphItem>();
+  const ranged = new Map<string, GraphItem[]>();
   for (const item of graph.items) {
-    if (item.kind === "file" && item.path) files.set(item.path, item);
+    if (!item.path) continue;
+    if (item.kind === "file") files.set(item.path, item);
+    if (item.startLine !== null) push(ranged, item.path, item);
   }
+
+  const links = new Map<string, GraphConnection[]>();
+  for (const connection of graph.connections) {
+    push(links, connection.from, connection);
+    push(links, connection.to, connection);
+  }
+
   return {
     graph,
     catalog: buildCatalog(graph.items),
     beam: buildBeamIndex(graph.items),
     files,
+    ranged,
+    links,
     read,
     signal,
     cache: new Map(),
   };
+}
+
+function push<T>(map: Map<string, T[]>, key: string, value: T): void {
+  const held = map.get(key);
+  if (held) held.push(value);
+  else map.set(key, [value]);
 }
 
 // --- What the model is told it may do --------------------------------------
@@ -396,7 +452,7 @@ export async function runTool(
 }
 
 function refusal(text: string): ToolOutcome {
-  return { text, note: text, ledger: [] };
+  return { text, note: text, ledger: [], items: [], hops: [] };
 }
 
 function issuesOf(error: z.ZodError): string {
@@ -439,6 +495,10 @@ function findItems(
     text: [head, ...shown.map((item) => itemLine(context.catalog, item))].join("\n"),
     note: `"${words}"로 ${ranked.length}곳을 찾았어요.`,
     ledger: shown.flatMap(placeOf),
+    // The ones shown, not the ones ranked out. A match the model never saw is
+    // not a place the walk went.
+    items: shown.map((item) => item.id),
+    hops: [],
   };
 }
 
@@ -505,6 +565,8 @@ function openItem(
     lines.push("아직 알려진 연결이 없어요.");
   }
 
+  const shownNeighbours = [...around.uses, ...around.usedBy];
+
   return {
     text: lines.join("\n"),
     note: `${item.name}을(를) 펼쳤어요. 나가는 연결 ${around.found.uses}개, 들어오는 연결 ${around.found.usedBy}개.`,
@@ -513,7 +575,57 @@ function openItem(
       ...around.uses.flatMap((n) => placeOf(n.item)),
       ...around.usedBy.flatMap((n) => placeOf(n.item)),
     ],
+    // The item stood on, then what it was shown links to — which is the order
+    // the walk went, and the order the map should animate.
+    items: [item.id, ...shownNeighbours.map((n) => n.item.id)],
+    hops: shownNeighbours.flatMap((n) => hopFor(context, item.id, n)),
   };
+}
+
+/**
+ * The connection behind one neighbour row.
+ *
+ * `buildNeighbourhood` returns the relation and the certainty but not the
+ * connection's own id, and the map draws edges by id — so it is looked up here
+ * rather than reconstructed there. At one hop the pair and the relation
+ * identify it: `neighbourhood` reports `relation` as the hop that touches the
+ * selected item, which at depth 1 is the only hop there is.
+ *
+ * Nothing is invented when the lookup fails. A neighbour whose connection
+ * cannot be named is still a point on the trail — the loop genuinely saw it —
+ * it simply arrives with no line drawn to it, which is what "we cannot say
+ * which link this was" looks like on a map.
+ */
+function hopFor(
+  context: ToolContext,
+  selected: string,
+  neighbour: {
+    item: GraphItem;
+    direction: "uses" | "used-by";
+    relation: ConnectionRelation;
+    hopCertainty: Certainty;
+  },
+): RevealedHop[] {
+  const from = neighbour.direction === "uses" ? selected : neighbour.item.id;
+  const to = neighbour.direction === "uses" ? neighbour.item.id : selected;
+  const match = (context.links.get(selected) ?? []).find(
+    (connection) =>
+      connection.from === from &&
+      connection.to === to &&
+      connection.relation === neighbour.relation,
+  );
+  if (!match) return [];
+  return [
+    {
+      connectionId: match.id,
+      from,
+      to,
+      relation: match.relation,
+      // The connection's own certainty, not the path's. At one hop they are the
+      // same thing, and taking it from the row keeps them so.
+      certainty: neighbour.hopCertainty,
+    },
+  ];
 }
 
 type Side = {
@@ -573,6 +685,18 @@ function listFiles(
       // A listing shows no line numbers, so nothing here becomes citable. That
       // is deliberate: seeing a file's name is not reading it.
       ledger: [],
+      /*
+       * And for the same reason, no points.
+       *
+       * A listing is orientation, not traversal: it tells the model what
+       * exists, not what is in anything. Counting these as places visited would
+       * put thirty files on the trail the loop never opened, and the picture
+       * would show a sweep across the project where the account shows a person
+       * checking a folder. The next step's real landing shows as a restart,
+       * which is exactly what happened.
+       */
+      items: [],
+      hops: [],
     };
   }
 
@@ -607,6 +731,8 @@ function listFiles(
     text: [head, ...folderRows, ...fileRows, ...tail].join("\n"),
     note,
     ledger: [],
+    items: [],
+    hops: [],
   };
 }
 
@@ -673,22 +799,50 @@ async function readSource(
     parsed.data.lines ?? DEFAULT_WINDOW_LINES,
   );
 
+  const empty = window.lines.length === 0;
+
   return {
     text: renderWindow(window),
     note: `${path} ${window.startLine}-${window.endLine}줄을 읽었어요.`,
     // An empty window is not a place: citing it would cite nothing.
-    ledger:
-      window.lines.length === 0
-        ? []
-        : [
-            {
-              path,
-              startLine: window.startLine,
-              endLine: window.endLine,
-              read: true,
-            },
-          ],
+    ledger: empty
+      ? []
+      : [
+          {
+            path,
+            startLine: window.startLine,
+            endLine: window.endLine,
+            read: true,
+          },
+        ],
+    /*
+     * The file, and whatever is written on the lines that came back.
+     *
+     * The file alone would be a true but useless point — a map of a project
+     * lights 조각, and "it read this file" is the one thing the person could
+     * already see. Intersection rather than containment, because every piece
+     * the window touched had at least one of its lines on screen, and a window
+     * that stops in the middle of a function still read part of that function.
+     * Whether the answer rests on any of them is a different question, decided
+     * by the citations rather than by this.
+     */
+    items: empty ? [] : [known.id, ...touched(context, path, window).map((i) => i.id)],
+    hops: [],
   };
+}
+
+/** Everything with a line range in this file that the window overlapped. */
+function touched(
+  context: ToolContext,
+  path: string,
+  window: { startLine: number; endLine: number },
+): GraphItem[] {
+  const inFile = context.ranged.get(path) ?? [];
+  return inFile.filter((item) => {
+    const start = item.startLine ?? 0;
+    const end = item.endLine ?? start;
+    return start <= window.endLine && end >= window.startLine;
+  });
 }
 
 async function readCached(

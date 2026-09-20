@@ -21,9 +21,13 @@ export type {
   QaEventSink,
   QaEventType,
   QaToolName,
+  QaTrail,
   RefusalReason,
   RefusedFinding,
   Spend,
   StopReason,
+  TrailHop,
+  TrailHopVia,
+  TrailPoint,
 } from "./types";
 export { DEFAULT_BUDGET } from "./types";

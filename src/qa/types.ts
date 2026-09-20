@@ -1,4 +1,4 @@
-import type { Certainty } from "@/lib/graph/view";
+import type { Certainty, ConnectionRelation } from "@/lib/graph/view";
 import type { LlmError } from "@/lib/llm/types";
 
 /**
@@ -159,9 +159,100 @@ export type Investigation = {
   unresolved: string | null;
   /** How the endpoint failed, when it did. Null otherwise. */
   failure: { kind: LlmError["kind"]; retryable: boolean } | null;
+  /** The walk, in item ids the map can light. Always present, often empty. */
+  trail: QaTrail;
   trace: QaEvent[];
   spent: Spend;
   budget: Budget;
+};
+
+// --- The trail -------------------------------------------------------------
+
+/**
+ * How the graph was walked to reach the answer.
+ *
+ * The trace says what happened in sentences; the trail says it in item ids,
+ * which is the only form the map can act on — it lights things by id. Without
+ * this the account and the picture are two separate products, and the person
+ * reading "src/lib/format.ts 7줄" has to find that place themselves on a map
+ * that is already showing it.
+ *
+ * Three rules, and each one is a way the picture could agree with the answer
+ * more than the evidence does:
+ *
+ *   1. **A point is somewhere the loop was actually put.** A search result, an
+ *      item it opened, a file it read. A folder listing reveals names, not
+ *      places, so it contributes nothing — the same line `answer.ts` draws when
+ *      it refuses to make a listed file citable.
+ *   2. **`critical` means a surviving finding cites it.** Not "the model
+ *      dwelled here", not "it looked promising". A point visited and then
+ *      abandoned is exactly as uncritical as one never visited, and marking it
+ *      otherwise would draw a conclusion the citations do not support.
+ *   3. **A hop is a connection that exists in the graph**, carried by its own
+ *      id so the map draws a line it already has rather than one we invented.
+ *      Where two points have no connection between them, there is no hop and
+ *      the leg number goes up — the walk restarted, and saying so is the only
+ *      honest alternative to drawing an edge that is not there.
+ */
+export type TrailPoint = {
+  /** The item's id. What the map lights. */
+  id: string;
+  /**
+   * Its number in the catalog — the integer the model itself saw (D46). Carried
+   * so a person reading the trace beside the trail sees the same `[6]` in both.
+   */
+  number: number;
+  /** The step that first put this on the walk. Deduplicated, so first arrival. */
+  step: number;
+  /**
+   * Which run of the walk this belongs to. 1 for the first.
+   *
+   * It goes up when a step lands somewhere nothing already on the trail is
+   * connected to — a fresh search after a dead end. That is a real event in an
+   * investigation and the picture has to be able to show it as a gap rather
+   * than as a line.
+   */
+  leg: number;
+  /** A surviving finding cites this item. */
+  critical: boolean;
+};
+
+/**
+ * `opened` — the loop asked this item for its neighbours and this connection is
+ * what came back. The walk went along it.
+ *
+ * `adjacent` — the loop arrived some other way, by a search or by reading a
+ * file, and the graph already held a link to something on the trail. The
+ * picture is connected because the code is, not because the walk crossed here.
+ * Kept apart because collapsing them would let a search result read as a
+ * traversal.
+ */
+export type TrailHopVia = "opened" | "adjacent";
+
+export type TrailHop = {
+  /** The connection's own id, so the map draws an edge it already knows. */
+  connectionId: string;
+  from: string;
+  to: string;
+  relation: ConnectionRelation;
+  certainty: Certainty;
+  /** The step that established it. */
+  step: number;
+  via: TrailHopVia;
+};
+
+export type QaTrail = {
+  points: TrailPoint[];
+  hops: TrailHop[];
+  /**
+   * Citations that could not be put on the map.
+   *
+   * The finding still carries them — a line number is a line number, and the
+   * answer is not worth less for the map being unable to draw it. This exists
+   * so that "the picture shows less than the answer" is a number somebody can
+   * see rather than something they notice later.
+   */
+  unplaced: Citation[];
 };
 
 // --- The trace -------------------------------------------------------------
@@ -188,6 +279,7 @@ export type QaEventType =
   | "step.taken"
   | "step.concluded"
   | "finding.refused"
+  | "qa.trail"
   | "qa.stopped";
 
 export type QaEventPayloads = {
@@ -205,6 +297,16 @@ export type QaEventPayloads = {
     tool: QaToolName | "unknown";
     hypothesis: string;
     note: string;
+    /**
+     * The items this result put the loop in front of, by id.
+     *
+     * The one place a QA payload carries ids rather than counts, and it is
+     * worth the bytes: a watcher that only has the sentence "src/lib/format.ts
+     * 1-12줄을 읽었어요" has to parse Korean to light anything. Empty for a
+     * folder listing, which reveals names rather than places, and empty for a
+     * step that did not run.
+     */
+    items: string[];
   };
   /**
    * What the previous step turned out to mean.
@@ -216,6 +318,16 @@ export type QaEventPayloads = {
    */
   "step.concluded": { step: number; conclusion: string };
   "finding.refused": { claim: string; reason: RefusalReason };
+  /**
+   * The finished walk, once — the only event that carries `critical`, because
+   * criticality is not knowable until the findings have survived checking.
+   *
+   * Larger than the other payloads here, and the reason `analysis/events.ts`
+   * keeps its own small does not apply: these are streamed straight to one
+   * browser and written to no table. A caller that would rather put the trail
+   * beside the answer can ignore this event and read `Investigation.trail`.
+   */
+  "qa.trail": QaTrail;
   "qa.stopped": {
     reason: StopReason;
     steps: number;
