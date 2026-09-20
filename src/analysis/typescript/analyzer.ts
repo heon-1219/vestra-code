@@ -19,6 +19,7 @@ import type {
   SymbolKind,
 } from "@/analysis/types";
 
+import { isFetchCallee, matchEndpoint, urlPatternOf } from "./fetches";
 import { classifyRoute } from "./routes";
 import { resolveAliasConfig } from "./tsconfig";
 
@@ -168,6 +169,18 @@ function run(
     });
   }
 
+  /*
+   * Every endpoint's address, collected here because a fetch can only be
+   * matched against the WHOLE set.
+   *
+   * Pass A exists precisely so that an edge may point at something declared by
+   * a file parsed later (D31), and a fetch is the strongest case for it: the
+   * screen that calls `/api/orders` is almost never next to the route that
+   * answers it.
+   */
+  const endpointUrls: string[] = [];
+  const endpointFileByUrl = new Map<string, string>();
+
   for (const file of files) {
     const hit = classifyRoute(file.path);
     if (!hit) continue;
@@ -175,6 +188,10 @@ function run(
       ref: { type: hit.kind, filePath: file.path, name: hit.urlPath },
       metadata: { urlPath: hit.urlPath },
     });
+    if (hit.kind === "api_endpoint") {
+      endpointUrls.push(hit.urlPath);
+      endpointFileByUrl.set(hit.urlPath, file.path);
+    }
   }
 
   const symbolsByName = new Map<string, NodeRef[]>();
@@ -305,6 +322,49 @@ function run(
       }
     }
 
+    /*
+     * `export ... from "./x"` is an import with the binding passed straight
+     * through, and it was not being counted.
+     *
+     * The consequence is specific and bad: a barrel file — `index.ts`
+     * re-exporting a folder — is exactly the file every other file imports, so
+     * the one node that should tie a folder together had no edges going out of
+     * it at all. The map showed a hub connected to nothing, and every real
+     * dependency that travelled through it was missing from the graph.
+     */
+    for (const decl of source.getExportDeclarations()) {
+      const specifier = decl.getModuleSpecifierValue();
+      if (!specifier) continue; // `export { a }` re-exports nothing of its own.
+
+      const target = decl.getModuleSpecifierSourceFile();
+      const targetPath = target
+        ? normalizePath(path.relative(repoRoot, target.getFilePath()))
+        : null;
+
+      if (targetPath !== null && !targetPath.startsWith("..")) {
+        addEdge({
+          source: fileRef,
+          target: { type: "file", filePath: targetPath },
+          type: "imports",
+          confidence: "certain",
+          metadata: { specifier, reExport: true },
+        });
+      } else if (!specifier.startsWith(".") && !specifier.startsWith("/")) {
+        // Same repo-membership rule as an import, for the same reason (D39).
+        const packageName = specifier.startsWith("@")
+          ? specifier.split("/").slice(0, 2).join("/")
+          : specifier.split("/")[0];
+        declare({ ref: { type: "package", filePath: "", name: packageName } });
+        addEdge({
+          source: fileRef,
+          target: { type: "package", filePath: "", name: packageName },
+          type: "uses_package",
+          confidence: "certain",
+          metadata: { specifier, reExport: true },
+        });
+      }
+    }
+
     collectCallAndRenderEdges({
       source,
       repoPath,
@@ -312,6 +372,8 @@ function run(
       symbolsByName,
       declared,
       addEdge,
+      endpointUrls,
+      endpointFileByUrl,
     });
   }
 
@@ -448,10 +510,23 @@ function collectCallAndRenderEdges(context: {
   repoPath: string;
   repoRoot: string;
   symbolsByName: Map<string, NodeRef[]>;
+  /** Every API address in the project, for matching a fetch against. */
+  endpointUrls: readonly string[];
+  /** Which file answers each address, since an edge points at a node, not a URL. */
+  endpointFileByUrl: ReadonlyMap<string, string>;
   declared: Set<string>;
   addEdge: (edge: AnalyzedEdge) => void;
 }): void {
-  const { source, repoPath, repoRoot, symbolsByName, declared, addEdge } = context;
+  const {
+    source,
+    repoPath,
+    repoRoot,
+    symbolsByName,
+    declared,
+    addEdge,
+    endpointUrls,
+    endpointFileByUrl,
+  } = context;
 
   /**
    * The nearest enclosing declaration WE MADE A NODE FOR — not merely the
@@ -485,6 +560,39 @@ function collectCallAndRenderEdges(context: {
   for (const call of source.getDescendantsOfKind(SyntaxKind.CallExpression)) {
     const from = enclosing(call);
     if (!from) continue;
+
+    /*
+     * A request to one of our own endpoints, before anything else.
+     *
+     * `fetch` resolves to no project symbol, so without this the call is simply
+     * dropped — which is how the front and back halves of an app ended up as
+     * two islands with nothing crossing between them (D56). It is checked first
+     * because a call is either a request or a call to our code, never both.
+     */
+    const callee = call.getExpression().getText();
+    if (isFetchCallee(callee)) {
+      const urlArg = call.getArguments()[0];
+      const literal = urlArg ? urlLiteralOf(urlArg) : null;
+      if (literal) {
+        const pattern = urlPatternOf(literal.parts, literal.interpolated);
+        const hit = pattern ? matchEndpoint(pattern, endpointUrls) : null;
+        const endpointFile = hit ? endpointFileByUrl.get(hit.urlPath) : undefined;
+        if (hit && endpointFile) {
+          addEdge({
+            source: from,
+            target: {
+              type: "api_endpoint",
+              filePath: endpointFile,
+              name: hit.urlPath,
+            },
+            type: "fetches",
+            confidence: hit.confidence,
+            metadata: { line: call.getStartLineNumber(), url: hit.urlPath },
+          });
+        }
+      }
+      continue;
+    }
 
     const target = resolveToProjectSymbol(
       call.getExpression(),
@@ -665,4 +773,29 @@ function refFromDeclarations(symbol: TsSymbol, repoRoot: string): NodeRef | null
     name: named,
     ...(container ? { container } : {}),
   };
+}
+
+/**
+ * The literal chunks of a URL argument, or null when it is not written down.
+ *
+ * A string literal gives one chunk and is exact. A template gives its literal
+ * spans with the interpolations removed, which is enough to know the shape of
+ * the path even when a value in it is only known at run time. Anything else —
+ * a variable, a call, a concatenation — is genuinely unknowable here, and a
+ * guess about it would be a fabricated connection in somebody's own app.
+ */
+function urlLiteralOf(
+  node: Node,
+): { parts: string[]; interpolated: boolean } | null {
+  if (Node.isStringLiteral(node) || Node.isNoSubstitutionTemplateLiteral(node)) {
+    return { parts: [node.getLiteralValue()], interpolated: false };
+  }
+  if (Node.isTemplateExpression(node)) {
+    const parts = [node.getHead().getLiteralText()];
+    for (const span of node.getTemplateSpans()) {
+      parts.push(span.getLiteral().getLiteralText());
+    }
+    return { parts, interpolated: true };
+  }
+  return null;
 }

@@ -437,22 +437,32 @@ describe("the TypeScript parser, on a fixture Next.js app", () => {
     });
   });
 
-  describe("what Pass 1 does not do yet", () => {
+  describe("the connections that used to be missed", () => {
     /**
-     * Three gaps, measured rather than assumed. Each test asserts the honest
-     * current state, so the day the gap is closed the test fails and whoever
-     * closed it comes here and writes the real assertion. A silent gap in the
-     * parser is a silent gap in every answer built on top of it.
+     * Two of the three gaps this block recorded are now closed, and these are
+     * the assertions the old tests asked whoever closed them to come back and
+     * write.
+     *
+     * Both were the same kind of failure and the worst kind this parser has:
+     * the map looked finished. There was no error and no blank — just two
+     * neighbourhoods that appeared genuinely unrelated, and a barrel file drawn
+     * as a hub joined to nothing.
      */
 
-    it("does not connect a fetch to the endpoint it names", () => {
-      // Section 6.2 asks for an `inferred` fetches edge when a string literal
-      // path matches a known endpoint. createOrder calls fetch("/api/orders")
-      // and the endpoint exists as a node, so the graph currently cannot answer
-      // "what talks to this API route?" at all.
-      expect(edgesOfType(run, "fetches")).toHaveLength(0);
-      expect(nodesOfType(run, "api_endpoint")).toHaveLength(1);
+    it("connects a fetch to the endpoint it names", () => {
+      // createOrder calls fetch("/api/orders") and that route is a node. Before
+      // this, the call resolved to no project symbol and was dropped, so the
+      // graph could not answer "what talks to this API route?" at all — and the
+      // client half and the server half of the app had nothing joining them.
       expect(run.fixture.sources.get("src/lib/orders.ts")).toContain('fetch("/api/orders"');
+
+      const fetches = edgesOfType(run, "fetches");
+      expect(fetches).toHaveLength(1);
+      expect(fetches[0].source.name).toBe("createOrder");
+      expect(fetches[0].target.name).toBe("/api/orders");
+      // Every segment was written out and it is that route, so this is not a
+      // guess — the same fact twice, in the call and in the router.
+      expect(fetches[0].confidence).toBe("certain");
     });
 
     it("credits the component for a call made inside an event handler", () => {
@@ -474,11 +484,17 @@ describe("the TypeScript parser, on a fixture Next.js app", () => {
       expect(toCreateOrder[0].confidence).toBe("certain");
     });
 
-    it("does not record what a barrel re-exports", () => {
-      // `export { PriceTag } from "./PriceTag"` is an export declaration, not
-      // an import declaration, so index.ts looks like a leaf file. Pass 2 is
-      // fed the import graph, where every barrel will appear disconnected.
-      expect(run.edges.some((edge) => edge.source.filePath === "src/components/index.ts")).toBe(false);
+    it("records what a barrel re-exports", () => {
+      // `export { PriceTag } from "./PriceTag"` is an export declaration and
+      // not an import declaration, so only reading imports left index.ts
+      // looking like a leaf. A barrel is precisely the file everything else
+      // imports, so the one node that ties a folder together had nothing going
+      // out of it, and every dependency travelling through it was absent.
+      const fromBarrel = run.edges.filter(
+        (edge) => edge.source.filePath === "src/components/index.ts",
+      );
+      expect(fromBarrel.length).toBeGreaterThan(0);
+      expect(fromBarrel.every((edge) => edge.type === "imports" || edge.type === "contains")).toBe(true);
     });
   });
 });
