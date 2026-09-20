@@ -6,10 +6,12 @@ import type { ReactNode } from "react";
 import { z } from "zod";
 
 import { useAnalysisStream } from "@/hooks/use-analysis-stream";
+import { useAsk } from "@/hooks/use-ask";
 import { describeAll } from "@/lib/graph/describe";
 import type { GraphView } from "@/lib/graph/view";
 
 import { AnalysisScreen } from "./analysis-screen";
+import { HistoryBand } from "./history/history-band";
 import { DistrictMap } from "./map/district-map";
 import { buildBeamIndex, runBeam, IDLE_BEAM } from "./map/beam";
 import {
@@ -137,6 +139,16 @@ export function Workspace({
   const [preview, setPreview] = useState<PreviewTarget | null>(null);
 
   const stream = useAnalysisStream(project.id, runId);
+
+  /*
+   * Asking, and watching the answer be found.
+   *
+   * Owned here rather than inside the panel because two things need it: the
+   * panel says what is happening, and the map lights the walk it is happening
+   * on. A hook inside the panel would leave the map with no way to see the
+   * trail short of passing it back up, which is this, with more steps.
+   */
+  const { session: walk, ask } = useAsk(project.id);
 
   // Both consumers want the same numbers under different names; the translation
   // is one pure function so nobody has to remember which is which.
@@ -474,6 +486,12 @@ export function Workspace({
                 selectedId={selectedId}
                 onSelect={onSelect}
                 onOpen={openItem}
+                // Only once the walk is known. While the loop is still working
+                // the map stays as it was: lighting places one at a time as
+                // they arrive would show a path being walked that may yet turn
+                // out to be a dead end, and the person cannot tell the
+                // difference until it stops.
+                trail={walk?.trail ?? null}
                 className="absolute inset-0"
               />
             ) : (
@@ -559,6 +577,20 @@ export function Workspace({
           // same five steps twice reads as two things happening.
           showRunSteps={false}
           models={models}
+          /*
+           * The model and the effort travel with the question, exactly as the
+           * box sent them. `null` means nothing is connected on this machine,
+           * and the route refuses in plain language rather than answering with
+           * some other model — the name is on screen beside the answer, and
+           * quietly swapping it is a difference the person has no way to see.
+           */
+          onAsk={(text, request) =>
+            ask(text, {
+              ...(request.model ? { model: request.model } : {}),
+              effort: request.effort,
+            })
+          }
+          walk={walk}
         />
         </div>
       </div>
@@ -592,15 +624,20 @@ export function Workspace({
                 : "0 0 0px",
         }}
       >
-        <span>변경 기록</span>
-        <span aria-hidden className="flex items-center gap-1.5 opacity-40">
-          <span className="h-1.5 w-1.5 rounded-full bg-said-faint" />
-          <span className="h-px w-5 bg-edge-lit" />
-          <span className="h-1.5 w-1.5 rounded-full bg-said-faint" />
-          <span className="h-px w-5 bg-edge-lit" />
-          <span className="h-1.5 w-1.5 rounded-full bg-said-faint" />
-        </span>
-        <span>아직 준비 중인 자리예요</span>
+        {/*
+          The band reads its own runs rather than being handed them, because
+          the graph the rest of this screen works from is one snapshot and the
+          band is about the sequence of them. What it takes from here is when
+          to go and read again: a run starting, and a finished run's graph
+          arriving, are the only two moments its list changes.
+        */}
+        <HistoryBand
+          projectId={project.id}
+          expanded={layout.maximized === "history"}
+          activeRunId={runId}
+          lastRunId={view.lastRun?.id ?? null}
+          lastRunStatus={view.lastRun?.status ?? null}
+        />
       </div>
       </div>
 
