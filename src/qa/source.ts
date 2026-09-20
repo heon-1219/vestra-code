@@ -34,7 +34,19 @@ export type SourceRefusal =
   /** An image, a PDF, a compiled blob: bytes with no lines to cite. */
   | "not_text"
   | "too_large"
-  /** The network, the token, the rate limit. Worth trying again later. */
+  /**
+   * GitHub answered 403: it is refusing, and it will keep refusing.
+   *
+   * Its own reason, apart from `unavailable`, because it is the one failure
+   * that will not clear within this investigation and the loop can act on
+   * knowing that — an unauthenticated read is rated at sixty an hour and a
+   * content search looks inside tens of files at once, so this is a failure
+   * the product meets rather than a theoretical one. Named after GitHub's own
+   * `rate_limited`, which is also what it returns for a file the token may not
+   * read; the sentence a person sees does not guess between the two.
+   */
+  | "rate_limited"
+  /** The network, the token, an unreachable host. Worth trying again later. */
   | "unavailable";
 
 export type SourceResult =
@@ -64,6 +76,39 @@ export const MAX_LINE_CHARS = 200;
 export const DEFAULT_WINDOW_LINES = 60;
 export const MAX_WINDOW_LINES = 80;
 export const MAX_WINDOW_CHARS = 5_000;
+
+/**
+ * The ceiling for "just give me the whole file", and why it is only a little
+ * bigger than a window.
+ *
+ * Most modules in a small project are under a hundred and sixty lines, and
+ * reading one of them in two eighty-line steps costs a step and a second round
+ * trip to fetch the same file twice. That is the saving. What it must not
+ * become is a tool that returns a megabyte — so the char budget is 6,000
+ * against the window's 5,000, which is at most one-fifth more than a single
+ * read and nowhere near a fifth of a budget.
+ *
+ * A file over this is not refused. It comes back as its first lines with the
+ * usual header saying where to continue, which is what `read_source` would
+ * have given anyway.
+ */
+export const WHOLE_FILE_LINES = 160;
+export const WHOLE_FILE_CHARS = 6_000;
+
+/**
+ * How big one window may get, so a caller can ask for a longer, still-bounded
+ * one without a second copy of the slicing.
+ *
+ * Optional at the call site and defaulted to the window's own ceilings, which
+ * is what makes this additive: `windowOf(path, text, from)` means exactly what
+ * it meant before this existed.
+ */
+export type WindowLimits = { maxLines: number; maxChars: number };
+
+const WINDOW_LIMITS: WindowLimits = {
+  maxLines: MAX_WINDOW_LINES,
+  maxChars: MAX_WINDOW_CHARS,
+};
 
 export type SourceLine = { number: number; text: string };
 
@@ -109,11 +154,12 @@ export function windowOf(
   text: string,
   from: number,
   want: number = DEFAULT_WINDOW_LINES,
+  limits: WindowLimits = WINDOW_LIMITS,
 ): SourceWindow {
   const all = linesOf(text);
   const totalLines = all.length;
 
-  const count = clamp(Math.trunc(want), 1, MAX_WINDOW_LINES);
+  const count = clamp(Math.trunc(want), 1, limits.maxLines);
   const startLine = clamp(Math.trunc(from), 1, totalLines);
 
   const lines: SourceLine[] = [];
@@ -125,7 +171,7 @@ export function windowOf(
     const raw = all[n - 1];
     const cut = raw.length > MAX_LINE_CHARS;
     const body = cut ? raw.slice(0, MAX_LINE_CHARS) + " …(줄임)" : raw;
-    if (chars + body.length > MAX_WINDOW_CHARS && lines.length > 0) {
+    if (chars + body.length > limits.maxChars && lines.length > 0) {
       shortened = true;
       break;
     }
@@ -177,6 +223,98 @@ export function renderWindow(window: SourceWindow): string {
 }
 
 /**
+ * How much of a matching line comes back from a search.
+ *
+ * Shorter than `MAX_LINE_CHARS`, and deliberately: a search returns ten of
+ * these where a read returns one, so the per-line cost is what decides whether
+ * the whole result stays near a window's worth of tokens. A hundred and twenty
+ * characters is a long line of Python with its indentation, which is what a
+ * person needs to see to know whether this is the line they wanted.
+ */
+export const MATCH_LINE_CHARS = 120;
+
+export type SourceMatch = { line: number; text: string };
+
+/**
+ * Where a word appears inside a file, by line.
+ *
+ * A plain case-insensitive substring, never a regular expression. A pattern
+ * written by a model is a pattern nobody reviewed, running over the user's own
+ * files: the cheap version of that mistake is a catastrophic backtrack that
+ * spends the whole wall-clock budget on one file, and the expensive version is
+ * a search whose meaning nobody can explain to the person watching. Substring
+ * is what "결제가 어디서 이뤄져요" actually needs.
+ *
+ * `limit` is per file rather than overall, so one generated file with four
+ * hundred hits cannot crowd out the nine other files that matched once each.
+ */
+export function matchesIn(
+  text: string,
+  needle: string,
+  limit: number,
+): SourceMatch[] {
+  const wanted = needle.toLowerCase();
+  if (wanted === "") return [];
+
+  const out: SourceMatch[] = [];
+  const all = linesOf(text);
+  for (let n = 0; n < all.length && out.length < limit; n += 1) {
+    const raw = all[n];
+    if (!raw.toLowerCase().includes(wanted)) continue;
+    const body = raw.trim();
+    out.push({
+      line: n + 1,
+      text:
+        body.length > MATCH_LINE_CHARS
+          ? `${body.slice(0, MATCH_LINE_CHARS)} …(줄임)`
+          : body,
+    });
+  }
+  return out;
+}
+
+/**
+ * Whether it is worth spending a fetch on this path at all.
+ *
+ * A guess from the extension, and only ever used to SKIP work — `asText` is
+ * still what decides whether bytes are text, so a `.dat` file full of source
+ * is read correctly the moment anyone asks for it by name. This exists because
+ * a content search fetches tens of files speculatively, and an uploaded
+ * project keeps images and PDFs beside its code (D77): without it, a search
+ * for 결제 spends a third of its budget downloading photographs.
+ */
+const NOT_TEXT = new Set([
+  "png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "svgz",
+  "pdf", "zip", "gz", "tgz", "bz2", "xz", "7z", "rar", "jar", "war",
+  "woff", "woff2", "ttf", "otf", "eot",
+  "mp3", "mp4", "wav", "ogg", "webm", "mov", "avi", "mkv",
+  "exe", "dll", "so", "dylib", "bin", "wasm", "class", "pyc", "pyo",
+  "xlsx", "xls", "docx", "doc", "pptx", "ppt", "psd", "sketch", "fig",
+  "db", "sqlite", "sqlite3", "lock",
+]);
+
+/**
+ * Text, and enormous, and never the answer.
+ *
+ * A lock file is the largest text file in most projects and nothing a person
+ * would ask about is written in one. Most are caught by the `.lock` extension
+ * above; these three are not, and `package-lock.json` in particular sorts near
+ * the front of a root listing, so without this a search would spend a quarter
+ * of its byte budget on it before reaching any source.
+ */
+const GENERATED = new Set(["package-lock.json", "pnpm-lock.yaml", "go.sum"]);
+
+export function probablyText(path: string): boolean {
+  const base = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  if (GENERATED.has(base)) return false;
+  const dot = base.lastIndexOf(".");
+  // No extension at all is a `Dockerfile` or a `Makefile` far more often than
+  // it is a binary, so it is worth the look.
+  if (dot <= 0) return true;
+  return !NOT_TEXT.has(base.slice(dot + 1));
+}
+
+/**
  * `./src/x.ts`, `/src/x.ts`, `src\x.ts` and `src/x.ts` are one file to a person
  * and one of them is how the map spells it (D18: repo-relative, POSIX
  * separators, no leading slash).
@@ -199,6 +337,12 @@ export const SOURCE_REFUSAL_WORDS: Record<SourceRefusal, string> = {
   not_found: "지금은 그 파일을 찾지 못했어요. 지도를 그린 뒤에 지워졌거나 이름이 바뀌었을 수 있어요.",
   not_text: "글자로 된 파일이 아니라서 줄 단위로 읽을 수 없어요.",
   too_large: "파일이 너무 커서 여기서는 열지 않았어요.",
+  // Not "요청이 너무 많았어요": GitHub answers 403 both for a rate limit and
+  // for a file this token may not read, and it does not say which. The
+  // sentence carries what we know — it refused, it will keep refusing, try
+  // later — and does not name a cause we would be guessing at.
+  rate_limited:
+    "깃허브가 지금은 이 파일을 내주지 않아요. 조금 뒤에 다시 물어봐 주세요.",
   unavailable: "지금은 이 파일을 읽어올 수 없어요.",
 };
 

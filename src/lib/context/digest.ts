@@ -29,7 +29,16 @@
 export type ProjectDigest = {
   /** What the project is for, as the author tells it. 해요체, two or three sentences. */
   about: string;
-  /** Names the author uses and what they mean, each one line: `낱말 — 뜻`. */
+  /**
+   * Names the author uses and what they mean, each one line: `낱말 — 뜻`, with
+   * the file the document points at on the end where it names one.
+   *
+   * The path is not a second field because there is no second column to put it
+   * in — `project_digests.words` is a `text[]` and a new column is a migration
+   * in a module this one does not own. It is not a workaround either: what the
+   * author calls a thing and where they say it lives are one sentence in the
+   * README, and splitting them would lose which path goes with which word.
+   */
   words: string[];
   /** The files it was boiled down from, repo-relative (D18). */
   sources: string[];
@@ -39,15 +48,34 @@ export type ProjectDigest = {
  * The ceilings, and they are the reason this feature is affordable.
  *
  * This text goes into the system prompt of EVERY question, and the system
- * prompt is re-sent on every turn of a twelve-step loop. A 5KB README pasted in
+ * prompt is re-sent on every turn of a twenty-step loop. A 5KB README pasted in
  * each time gives back everything D52-D54 were written to save. These numbers
  * put the rendered block at roughly 600 characters — a few hundred tokens,
- * paid twelve times rather than once, which is the arithmetic that matters.
+ * paid twenty times rather than once, which is the arithmetic that matters.
  */
 export const MAX_ABOUT_CHARS = 240;
 export const MAX_WORDS = 6;
-export const MAX_WORD_CHARS = 40;
+/**
+ * Longer than it was, by about the length of a path.
+ *
+ * `킬스위치 — 손실이 커지면 거래를 멈추는 장치 · safety.py` does not fit in forty
+ * characters, and the last nine of those are the ones that save a step. Six
+ * entries at fifty-two is seventy more characters than before, which is under
+ * a tenth of one tool result.
+ */
+export const MAX_WORD_CHARS = 52;
 export const MAX_SOURCES = 4;
+
+/**
+ * How many starting places the block may name.
+ *
+ * They are the cheapest line in the whole digest — a path is four or five
+ * tokens — and the most directly useful, so the cap is about the reader rather
+ * than the cost: a list of a dozen places to start is not a place to start.
+ */
+export const MAX_PLACES = 5;
+/** One path, clipped. A path longer than this is a generated one, not a landmark. */
+export const MAX_PLACE_CHARS = 60;
 
 /**
  * The markers. Long and unusual on purpose: a fence a document could plausibly
@@ -107,7 +135,17 @@ export function fenceUntrusted(content: string): string {
  * property rather than a convention — a digest written by an older deploy, or
  * assembled by a caller, goes through the same ceilings as a fresh one.
  */
-export function renderDigestBlock(digest: ProjectDigest): string | null {
+export function renderDigestBlock(
+  digest: ProjectDigest,
+  /**
+   * Every file path on this project's map.
+   *
+   * Optional, and the block is exactly what it was without it. With it, the
+   * block gains the one line that does the digest's actual job — see
+   * `placesIn` for why a path is checked before it is repeated.
+   */
+  knownPaths?: ReadonlySet<string>,
+): string | null {
   const safe = normaliseDigest(digest);
   if (!safe) return null;
 
@@ -115,10 +153,104 @@ export function renderDigestBlock(digest: ProjectDigest): string | null {
   if (safe.words.length > 0) {
     lines.push(`자주 나오는 말: ${safe.words.join(" / ")}`);
   }
+  const places = knownPaths ? placesIn(safe, knownPaths) : [];
+  if (places.length > 0) {
+    // "가리켜요", not "있어요". We checked that the place exists; what is
+    // inside it is still the author's claim, and the whole block is fenced as
+    // one anyway.
+    lines.push(`문서가 가리키는 자리: ${places.join(", ")}`);
+  }
   if (safe.sources.length > 0) {
     lines.push(`어디에 적혀 있나: ${safe.sources.join(", ")}`);
   }
   return fenceUntrusted(lines.join("\n"));
+}
+
+/**
+ * Where the document points, kept only where the map agrees the place exists.
+ *
+ * ## Why this is the digest's one real job
+ *
+ * A digest cannot be evidence and never will be — nothing here enters the
+ * citation ledger, and `src/qa/answer.ts` refuses a claim resting on it
+ * whatever it says. What it is for is the first two steps of an
+ * investigation, and measured on a real one, two of eleven steps went on
+ * `list_files` and a search for a word the project does not use. A README
+ * that says "매매는 bot.py가 돌려요" answers both of them for five tokens.
+ *
+ * ## Why the path is checked
+ *
+ * A README describes files that were deleted. Repeating one sends the loop to
+ * open something that is not there, which costs a step and returns a refusal
+ * — strictly worse than saying nothing. So a path is repeated only when the
+ * project's own map holds it, which is the same authority `read_source` uses
+ * to decide what may be opened at all.
+ *
+ * This does not make the digest evidence and does not move the line. The path
+ * existing is ours; what is written inside it remains the author's claim, and
+ * a finding that cites it without reading it is refused exactly as before.
+ *
+ * A bare name resolves only when the map holds exactly one file it could mean.
+ * `format.ts` in a project with three of them is not a starting place, it is a
+ * guess with a coin flip in it.
+ */
+export function placesIn(
+  digest: ProjectDigest,
+  knownPaths: ReadonlySet<string>,
+): string[] {
+  const text = [digest.about, ...digest.words].join(" ");
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const raw of text.match(PATH_LIKE) ?? []) {
+    if (raw.length > MAX_PLACE_CHARS) continue;
+    const resolved = resolvePath(raw, knownPaths);
+    if (!resolved || resolved.length > MAX_PLACE_CHARS || seen.has(resolved)) {
+      continue;
+    }
+    seen.add(resolved);
+    out.push(resolved);
+    if (out.length >= MAX_PLACES) break;
+  }
+
+  return out;
+}
+
+/**
+ * Something shaped like a path or a file name, in prose that is mostly Korean.
+ *
+ * Latin letters, digits and the punctuation a path uses — so a Korean sentence
+ * contributes nothing and `bot.py`, `src/lib/format.ts` and `strategies/` all
+ * survive. Deliberately loose: everything it produces is then checked against
+ * the map, so a false positive costs nothing and a miss costs a step.
+ */
+const PATH_LIKE = /[A-Za-z0-9_@.\-]+(?:\/[A-Za-z0-9_@.\-]+)*\/?/g;
+
+function resolvePath(
+  raw: string,
+  knownPaths: ReadonlySet<string>,
+): string | null {
+  const text = raw.trim().replace(/^\.?\//, "").replace(/[.,]+$/, "");
+  if (text === "") return null;
+
+  if (text.endsWith("/")) {
+    // A folder is a starting place when the map holds anything inside it.
+    for (const path of knownPaths) {
+      if (path.startsWith(text)) return text;
+    }
+    return null;
+  }
+
+  if (knownPaths.has(text)) return text;
+
+  // A bare name, resolved only when it can mean exactly one file.
+  let only: string | null = null;
+  for (const path of knownPaths) {
+    if (!path.endsWith(`/${text}`)) continue;
+    if (only !== null) return null;
+    only = path;
+  }
+  return only;
 }
 
 /**

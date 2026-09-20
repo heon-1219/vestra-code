@@ -32,6 +32,7 @@ import {
   isQaToolName,
   runTool,
   toArgumentObject,
+  toolNamesFor,
   toolSpecsFor,
   type LedgerEntry,
   type QaGraph,
@@ -111,12 +112,16 @@ const MAX_LLM_RETRIES = 1;
 /**
  * How many recent tool results keep their full text.
  *
- * History is re-sent on every turn, so a twelve-step investigation that kept
- * everything would pay for its third tool result ten times. Older ones collapse
- * to the one-line note they already produced for the trace — the model keeps
- * the thread of what it did and stops paying for the detail. Six is enough that
- * a file read at step 4 is still on screen at step 9, which is where the
- * "actually, it is the wrapper above it" moment tends to happen.
+ * History is re-sent on every turn, so a twenty-step investigation that kept
+ * everything would pay for its third tool result eighteen times. Older ones
+ * collapse to the one-line note they already produced for the trace — the
+ * model keeps the thread of what it did and stops paying for the detail. Six
+ * is enough that a file read at step 4 is still on screen at step 9, which is
+ * where the "actually, it is the wrapper above it" moment tends to happen.
+ *
+ * This is also what makes the input cost linear rather than triangular, and
+ * therefore what makes twenty steps affordable at all: measured at 4–6k
+ * tokens per step, flat, from step seven onwards.
  */
 const HISTORY_FULL_STEPS = 6;
 
@@ -310,6 +315,7 @@ export async function investigate(
       ruledOut: presentable(checked),
       unresolved,
       failure,
+      read: readTally(ledger),
       trail,
       trace,
       spent: { steps, inputTokens, outputTokens, millis },
@@ -403,7 +409,9 @@ export async function investigate(
     pending = null;
 
     if (!isQaToolName(call.name)) {
-      const text = `${call.name}이라는 도구는 없어요. find_items, open_item, list_files${source ? ", read_source" : ""}, report 중에서 골라 주세요.`;
+      // Named from the specs the model was actually given, so the sentence
+      // cannot drift from the list as tools are added or withheld.
+      const text = `${call.name}이라는 도구는 없어요. ${toolNamesFor(source !== null).join(", ")} 중에서 골라 주세요.`;
       emit("step.taken", {
         step: steps,
         tool: "unknown",
@@ -595,6 +603,40 @@ function presentable(lines: readonly string[]): string[] {
     out.push(text);
   }
   return out;
+}
+
+/**
+ * How much source actually came back, from the ledger rather than from a
+ * counter kept alongside it.
+ *
+ * Only entries marked `read` count. A search result that told us a file exists
+ * at line 40 is on the ledger too, and counting it here would say we had read
+ * a line we only ever pointed at — the same distinction `answer.ts` refuses to
+ * blur, measured the same way.
+ *
+ * Distinct line numbers, because a real investigation reads one file twice: the
+ * imports at the top and the thing that went wrong at line 200, often with an
+ * overlap in the middle.
+ */
+function readTally(ledger: readonly LedgerEntry[]): {
+  files: number;
+  lines: number;
+} {
+  const seen = new Map<string, Set<number>>();
+  for (const entry of ledger) {
+    if (!entry.read) continue;
+    let held = seen.get(entry.path);
+    if (!held) {
+      held = new Set<number>();
+      seen.set(entry.path, held);
+    }
+    for (let line = entry.startLine; line <= entry.endLine; line += 1) {
+      held.add(line);
+    }
+  }
+  let lines = 0;
+  for (const held of seen.values()) lines += held.size;
+  return { files: seen.size, lines };
 }
 
 function short(text: string): string {

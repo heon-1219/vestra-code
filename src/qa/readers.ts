@@ -71,8 +71,23 @@ export function githubSourceReader(source: GithubSource): SourceReader {
     if (!result.ok) {
       if (result.error === "too_large") return { ok: false, reason: "too_large" };
       if (result.error === "not_found") return { ok: false, reason: "not_found" };
-      // Rate limited, private, unreachable: all "try again later" to the person
-      // asking, and none of them a reason to invent an answer instead.
+      /*
+       * Rate limiting is carried through rather than folded in with the rest.
+       *
+       * It used to arrive as `unavailable` with everything else, and a loop
+       * that cannot tell them apart keeps trying: measured on a real
+       * investigation, seven of twenty steps went on opening seven different
+       * files that were all refused for the same reason, and the answer came
+       * back `inferred` on a project whose source was perfectly readable ten
+       * minutes earlier. An unauthenticated read is rated at sixty an hour and
+       * `search_source` looks inside tens of files at once, so this is a
+       * failure the product will meet.
+       */
+      if (result.error === "rate_limited") {
+        return { ok: false, reason: "rate_limited" };
+      }
+      // Private, unreachable, a dropped socket: all "try again later" to the
+      // person asking, and none of them a reason to invent an answer instead.
       return { ok: false, reason: "unavailable" };
     }
 

@@ -39,9 +39,17 @@ export type Finding = {
   /** One claim, in 해요체. Two claims belong in two findings with two citations. */
   claim: string;
   /**
-   * `certain` only when `read_source` returned the cited lines during THIS
-   * investigation. Everything else is `inferred`, including something obvious
-   * from a name. Enforced in `answer.ts` against the ledger, not trusted.
+   * `certain` only when a tool returned the cited lines' own text during THIS
+   * investigation — `read_source`, `read_file`, a `search_source` hit, or the
+   * head `follow_import` opens. Everything else is `inferred`, including
+   * something obvious from a name. Enforced in `answer.ts` against the ledger,
+   * not trusted.
+   *
+   * The rule is about the bytes, not about which tool fetched them: a line
+   * whose text came back is a line somebody could have read, and a line the
+   * graph merely told us exists is not. Every tool that returns source
+   * registers `read: true` for exactly the lines it printed, and no tool
+   * registers it for lines it summarised.
    */
   certainty: Certainty;
   /**
@@ -57,7 +65,10 @@ export type Finding = {
 export type RefusalReason =
   /** Cites somewhere this investigation never fetched. The core check. */
   | "unread_citation"
-  /** Claims `certain` while citing something only the graph showed us. */
+  /**
+   * Claims `certain` while citing something only the graph showed us — a
+   * search result's own line, a neighbour's line range, a listing.
+   */
   | "certain_without_reading"
   /** Says 안전하다, or calls things by the words the product does not use. */
   | "forbidden_words"
@@ -106,30 +117,94 @@ export type Spend = {
 };
 
 /**
- * The budget, with the arithmetic written down.
+ * The budget, measured rather than reasoned.
  *
- * A 300-file project outlines to roughly 12k tokens (D52), but this loop never
- * sends an outline — it sends a system prompt of about 400 tokens, one question,
- * and one small tool result per step. History is re-sent every turn, so the
- * input cost is roughly triangular: with results capped near 700 tokens and
- * `HISTORY_FULL_STEPS` collapsing the old ones, twelve steps lands near 40k
- * total. 60k leaves room for a question that arrives with context.
+ * The numbers here used to be an argument: twelve steps because "twelve is the
+ * number a person waits through", 60k input from an estimate of the triangular
+ * history cost, ninety seconds because twelve round trips "is already a minute
+ * or two". Every one of them was wrong in the same direction, and the way we
+ * found out was to run the loop against a real project and write down what
+ * happened rather than what we expected.
  *
- * Twelve steps is the number a person waits through. Each step is one round
- * trip to a reasoning model, so twelve is already a minute or two — which is
- * what `maxMillis` is really protecting, and why it is 90 seconds rather than
- * the five minutes Railway would allow (D17).
+ * ## What was measured
  *
- * Output is the tighter one on this endpoint: `mimo-v2.5` has a 32,768
- * completion ceiling and reasoning tokens are charged against it (D46), so a
- * per-call cap well under that is what stops one runaway turn from eating the
- * whole investigation.
+ * Three questions a person would actually type, against a real Python project
+ * — 48 files, 213 pieces, 284 connections — read from GitHub at the commit the
+ * map was drawn at. `src/qa/measure.test.ts` is the harness, and it is kept so
+ * the next person to change these numbers has to produce numbers too.
+ *
+ * On the old budget, all three investigations used **11 of 12 steps**. One of
+ * them stopped at `tokens_spent` on step 11 having read 557 lines and filed
+ * **nothing at all**. Two of eleven steps went on searching for words the
+ * project does not use, twice with the same word, because the only search
+ * there was matched names. Wall clock was **23–27 seconds** against a
+ * ninety-second ceiling — so the constraint everyone assumed was patience was
+ * in fact steps and tokens, and time was not close to binding.
+ *
+ * The same question, with the searching and following tools and this budget:
+ * **16 steps of 20**, 104k input of 150k, 36 seconds, **11 files and 406 lines
+ * read**, and **five findings, all `certain`, none refused**. It finished
+ * because it was done, not because a ceiling stopped it — which is the whole
+ * shape of the change, and the thing to check first if these numbers ever move
+ * again.
+ *
+ * ## The numbers, and what each is protecting
+ *
+ * **20 steps.** The ceiling is still what a person waits through, but that
+ * turned out to be a wall-clock question rather than a step-count one: a step
+ * is about 2.2 seconds, so twenty steps is around forty-five — measured at
+ * 36.3s for the sixteen-step run above, against the 23–27s eleven steps took.
+ * Twelve was stopping investigations mid-read: the two questions that now
+ * finish on their own take **6** and **16** steps, and twelve would have cut
+ * the second one off four steps from its answer. Twenty is the first number
+ * that is a ceiling rather than a wall — both runs stopped when they were
+ * finished.
+ *
+ * **150k input.** The real driver, and the one that was quietly binding. Input
+ * is roughly linear at 4–6k per step once `HISTORY_FULL_STEPS` starts
+ * collapsing older results — measured 46k for eleven light steps and 64k for
+ * eleven reading ones. Twenty reading steps is therefore about 120k, and 150k
+ * leaves room for a question that arrives with context without making the
+ * token ceiling the thing that stops a run. The step ceiling should be what
+ * stops it, because the step ceiling is the one a person can feel.
+ *
+ * It can still bind, and that is stated rather than hidden: six full results
+ * of 6,000 characters each — an investigation made entirely of whole-file
+ * reads of long files — is nearer 9k a turn, and would run out of tokens
+ * around step fifteen. That is a real outcome with a real sentence, not a
+ * bug. Raising the ceiling to cover the worst case would mean paying for the
+ * worst case on a question that never comes near it.
+ *
+ * **30k output.** Not a working budget — a guard. Measured output was 829
+ * tokens over six steps and 1,627 over twenty, about eighty a step.
+ * `PER_CALL_OUTPUT_TOKENS` is what actually stops one runaway turn (D46:
+ * `mimo-v2.5` has a 32,768 completion ceiling and charges reasoning against
+ * it), and this is ten such turns out of twenty — far past anything measured,
+ * close enough to catch a loop that has started writing essays instead of
+ * calling tools.
+ *
+ * **180 seconds.** Comfortably past the measured worst case, and still under
+ * the five minutes after which Railway closes a connection that has sent no
+ * data (D17) — which `src/lib/ask/stream.ts` now covers anyway with a
+ * twenty-second keepalive, so the silence this is protecting against is the
+ * user's patience rather than a proxy's. Ninety seconds was never protecting
+ * anything: it was three times the wall clock a whole investigation actually
+ * takes, and the run it would have cut short would have been cut short by the
+ * step ceiling first.
+ *
+ * ## What more budget must not buy
+ *
+ * A bigger budget is more looking, never more confidence. "I ran out of steps
+ * having checked these three places" is still a real answer with a real shape
+ * here, and nothing in `answer.ts` loosened to pay for these numbers — the
+ * measured runs that came back with only `inferred` findings came back that
+ * way because the files would not open, and said so.
  */
 export const DEFAULT_BUDGET: Budget = {
-  maxSteps: 12,
-  maxInputTokens: 60_000,
-  maxOutputTokens: 20_000,
-  maxMillis: 90_000,
+  maxSteps: 20,
+  maxInputTokens: 150_000,
+  maxOutputTokens: 30_000,
+  maxMillis: 180_000,
 };
 
 export type Investigation = {
@@ -159,6 +234,20 @@ export type Investigation = {
   unresolved: string | null;
   /** How the endpoint failed, when it did. Null otherwise. */
   failure: { kind: LlmError["kind"]; retryable: boolean } | null;
+  /**
+   * How much of the project this investigation actually opened.
+   *
+   * Counted from the ledger, so it is the same record the citation check runs
+   * against rather than a second tally that could disagree with it. Distinct
+   * lines, not lines returned: a file read twice at overlapping windows was
+   * read once, and reporting 120 for 80 lines would be the kind of small
+   * wrongness that makes every other number here suspect.
+   *
+   * It exists because "the loop reads more of the project now" is a claim, and
+   * a claim about this product needs a number under it. The budget in this
+   * file was re-derived from this one.
+   */
+  read: { files: number; lines: number };
   /** The walk, in item ids the map can light. Always present, often empty. */
   trail: QaTrail;
   trace: QaEvent[];
@@ -271,7 +360,11 @@ export type QaToolName =
   | "find_items"
   | "open_item"
   | "list_files"
+  | "list_tree"
   | "read_source"
+  | "read_file"
+  | "search_source"
+  | "follow_import"
   | "report";
 
 export type QaEventType =
@@ -289,8 +382,8 @@ export type QaEventPayloads = {
    *
    * `"unknown"` is a real value: a model sometimes calls a tool that does not
    * exist, the loop tells it so, and that step happened and cost the budget.
-   * Recording it as one of the four real tools would put a step in the trace
-   * that never ran.
+   * Recording it as one of the real tools would put a step in the trace that
+   * never ran.
    */
   "step.taken": {
     step: number;

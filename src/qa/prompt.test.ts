@@ -116,3 +116,62 @@ describe("the system prompt with a digest", () => {
     expect(withDigest.length - without.length).toBeLessThan(900);
   });
 });
+
+describe("the prompt's account of how to look", () => {
+  it("names the searching and reading tools only where they exist", () => {
+    const withSource = buildSystemPrompt({ items: ITEMS, hasSource: true });
+    expect(withSource).toContain("search_source");
+    expect(withSource).toContain("read_file");
+    // Measured: the loop searched the same word twice in one investigation and
+    // searched for a word the project does not use. Both were the map's beam
+    // being the only search there was.
+    expect(withSource).toContain("같은 낱말로 두 번 찾지 마세요");
+
+    const without = buildSystemPrompt({ items: ITEMS, hasSource: false });
+    // A tip about a tool the model was not given is a tip that wastes a step.
+    expect(without).not.toContain("search_source");
+    expect(without).not.toContain("read_file");
+    // These two still apply: both are questions about the graph.
+    expect(without).toContain("list_tree");
+    expect(without).toContain("follow_import");
+  });
+
+  it("says which tools make a finding certain", () => {
+    const prompt = buildSystemPrompt({ items: ITEMS, hasSource: true });
+    for (const tool of ["read_source", "read_file", "search_source", "follow_import"]) {
+      expect(prompt).toContain(tool);
+    }
+    // And the rule is still two values, never three.
+    expect(prompt).toContain("셋째 값은 없어요");
+  });
+});
+
+describe("where the digest says to start", () => {
+  it("names a place the map holds, inside the fence", () => {
+    const prompt = buildSystemPrompt({
+      items: ITEMS,
+      hasSource: true,
+      digest: {
+        about: "가격은 src/lib/format.ts에서 만들어요. 결제는 payments.ts예요.",
+        words: [],
+        sources: ["README.md"],
+      },
+    });
+
+    const block = prompt.slice(prompt.lastIndexOf(DIGEST_FENCE_OPEN));
+    const places = block
+      .split("\n")
+      .find((line) => line.startsWith("문서가 가리키는 자리"));
+    expect(places).toBe("문서가 가리키는 자리: src/lib/format.ts");
+    /*
+     * `payments.ts` is not on this project's map, so it is not a starting
+     * place — a README describes files that were deleted, and sending the loop
+     * to open one costs a step and returns a refusal.
+     *
+     * It is still in `about`, and that is right: `about` is the author's own
+     * sentence, quoted, and editing it would make the block read like
+     * something we wrote.
+     */
+    expect(block).toContain("결제는 payments.ts예요");
+  });
+});

@@ -4,12 +4,17 @@ import { SOURCE } from "./__fixtures__/project";
 import {
   asText,
   linesOf,
+  MATCH_LINE_CHARS,
+  matchesIn,
   MAX_LINE_CHARS,
   MAX_WINDOW_CHARS,
   MAX_WINDOW_LINES,
   normalisePath,
+  probablyText,
   renderWindow,
   SOURCE_MAX_BYTES,
+  WHOLE_FILE_CHARS,
+  WHOLE_FILE_LINES,
   windowOf,
 } from "./source";
 
@@ -144,5 +149,93 @@ describe("asText", () => {
   it("refuses a file past the ceiling before decoding it", () => {
     const bytes = new Uint8Array(SOURCE_MAX_BYTES + 1);
     expect(asText(bytes)).toEqual({ ok: false, reason: "too_large" });
+  });
+});
+
+describe("matchesIn", () => {
+  const TEXT = [
+    "import stripe",
+    "",
+    "def pay(amount):",
+    "    return stripe.charge(amount)  # STRIPE",
+  ].join("\n");
+
+  it("gives the line number a citation can be made of", () => {
+    expect(matchesIn(TEXT, "def pay", 3)).toEqual([
+      { line: 3, text: "def pay(amount):" },
+    ]);
+  });
+
+  it("does not care about case, because a person searching does not", () => {
+    expect(matchesIn(TEXT, "STRIPE", 5).map((m) => m.line)).toEqual([1, 4]);
+    expect(matchesIn(TEXT, "stripe", 5).map((m) => m.line)).toEqual([1, 4]);
+  });
+
+  it("stops at the limit, which is per file", () => {
+    const many = Array.from({ length: 50 }, () => "stripe").join("\n");
+    expect(matchesIn(many, "stripe", 3)).toHaveLength(3);
+  });
+
+  it("clips a long line rather than returning it", () => {
+    const wide = `x = "${"결".repeat(400)}"`;
+    const [match] = matchesIn(wide, "x =", 1);
+    // Ten of these come back where a read returns one line, so the per-line
+    // cost is what decides whether the whole result stays near a window.
+    expect(match.text.length).toBeLessThan(MATCH_LINE_CHARS + 10);
+    expect(match.text).toContain("줄임");
+  });
+
+  it("finds nothing for an empty needle rather than everything", () => {
+    expect(matchesIn(TEXT, "", 5)).toEqual([]);
+  });
+});
+
+describe("probablyText", () => {
+  it("keeps source, prose and config", () => {
+    for (const path of [
+      "bot.py",
+      "src/lib/format.ts",
+      "README.md",
+      "pyproject.toml",
+      "requirements.txt",
+      "Dockerfile",
+      "Makefile",
+    ]) {
+      expect(probablyText(path), path).toBe(true);
+    }
+  });
+
+  it("skips what a search would only waste a fetch on", () => {
+    // An uploaded project keeps images and PDFs beside its code (D77), and a
+    // content search fetches speculatively.
+    for (const path of [
+      "tests/fixtures/chatlog_baseline.png",
+      "docs/manual.pdf",
+      "public/font.woff2",
+      "package-lock.json",
+      "yarn.lock",
+      "go.sum",
+    ]) {
+      expect(probablyText(path), path).toBe(false);
+    }
+  });
+});
+
+describe("a window asked to be longer", () => {
+  it("honours the bigger ceiling, and is still a ceiling", () => {
+    const long = Array.from({ length: 400 }, (_, n) => `line ${n + 1}`).join("\n");
+    const whole = windowOf("x.ts", long, 1, WHOLE_FILE_LINES, {
+      maxLines: WHOLE_FILE_LINES,
+      maxChars: WHOLE_FILE_CHARS,
+    });
+    expect(whole.lines).toHaveLength(WHOLE_FILE_LINES);
+    expect(whole.endLine).toBe(WHOLE_FILE_LINES);
+    // And it says there is more, which is what makes a clamp not a lie.
+    expect(renderWindow(whole)).toContain("줄부터는 다시 요청하면");
+  });
+
+  it("means exactly what it meant before the limits existed when none are passed", () => {
+    const long = Array.from({ length: 400 }, (_, n) => `line ${n + 1}`).join("\n");
+    expect(windowOf("x.ts", long, 1, 999).lines).toHaveLength(MAX_WINDOW_LINES);
   });
 });

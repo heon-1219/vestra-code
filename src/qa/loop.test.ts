@@ -713,3 +713,235 @@ describe("the description it was handed", () => {
     expect(requests[0].messages[0].content).not.toContain(DIGEST_FENCE_OPEN);
   });
 });
+
+/**
+ * How much of the project this investigation actually opened.
+ *
+ * The number behind "it reads more now". Counted off the same ledger the
+ * citation check runs against, so it cannot disagree with what the answer was
+ * allowed to claim — and so a tool that forgot to register its reads would
+ * show up here as a zero rather than as a mystery.
+ */
+describe("what it read", () => {
+  it("counts distinct lines, from the ledger, not lines returned", async () => {
+    const { run } = investigateWith([
+      replyWith([
+        call("read_source", {
+          why: "앞부분을 읽어요.",
+          path: "src/lib/format.ts",
+          fromLine: 1,
+          lines: 8,
+        }),
+      ]),
+      replyWith([
+        call("read_source", {
+          why: "겹치게 다시 읽어요.",
+          path: "src/lib/format.ts",
+          fromLine: 5,
+          lines: 8,
+        }),
+      ]),
+      replyWith([
+        call("report", {
+          why: "끝낼게요.",
+          answer: "가격을 만드는 곳을 봤어요.",
+          findings: [],
+        }),
+      ]),
+    ]);
+
+    const investigation = await run();
+    expect(investigation.read.files).toBe(1);
+    // Twelve lines in the file, read as 1-8 and then 5-12. Sixteen lines came
+    // back; twelve were read. Reporting sixteen would be the kind of small
+    // wrongness that makes every other number here suspect.
+    expect(investigation.read.lines).toBe(12);
+  });
+
+  it("does not count a place the graph merely pointed at", async () => {
+    const { run } = investigateWith([
+      replyWith([call("find_items", { why: "찾아요.", words: "가격" })]),
+      replyWith([
+        call("report", { why: "끝낼게요.", answer: "찾아봤어요.", findings: [] }),
+      ]),
+    ]);
+
+    const investigation = await run();
+    // A search puts line ranges on the ledger so they can be cited as
+    // `inferred`. None of them was read, and this number says only what was.
+    expect(investigation.read).toEqual({ files: 0, lines: 0 });
+  });
+});
+
+/**
+ * The tools added so the loop could actually go rummaging, driven end to end.
+ *
+ * `tools.test.ts` proves each one registers what it fetched. This proves the
+ * loop carries that registration into the citation check — which is the join
+ * that would break silently if a new tool's outcome were handled specially
+ * anywhere between the two.
+ */
+describe("a finding built on a search", () => {
+  it("survives, and carries the line the search printed", async () => {
+    const { run } = investigateWith([
+      replyWith([
+        call("search_source", {
+          why: "코드 안에 어떤 말이 적혀 있는지 찾아요.",
+          words: "en-US",
+        }),
+      ]),
+      replyWith([
+        call("report", {
+          why: "찾은 줄로 답할게요.",
+          learned: "format.ts 7줄에 en-US가 적혀 있어요.",
+          answer: "가격을 미국식으로 바꾸고 있어요.",
+          findings: [
+            {
+              claim: "이 줄에서 숫자를 미국식 쉼표로 바꿔요.",
+              certainty: "certain",
+              citations: [
+                { path: "src/lib/format.ts", startLine: 7, endLine: 7 },
+              ],
+            },
+          ],
+        }),
+      ]),
+    ]);
+
+    const investigation = await run();
+    expect(investigation.stop).toBe("answered");
+    expect(investigation.refused).toEqual([]);
+    expect(investigation.findings).toHaveLength(1);
+    expect(investigation.findings[0].certainty).toBe("certain");
+    expect(investigation.read.lines).toBe(1);
+  });
+
+  it("is refused when it reaches past the line the search printed", async () => {
+    const { run } = investigateWith([
+      replyWith([
+        call("search_source", { why: "찾아요.", words: "en-US" }),
+      ]),
+      replyWith([
+        call("report", {
+          why: "끝낼게요.",
+          answer: "가격을 미국식으로 바꾸고 있어요.",
+          findings: [
+            {
+              claim: "이 함수 전체가 미국식으로 바꿔요.",
+              certainty: "certain",
+              citations: [
+                { path: "src/lib/format.ts", startLine: 3, endLine: 8 },
+              ],
+            },
+          ],
+        }),
+      ]),
+      // The loop hands a wholly refused report back once. It comes back the
+      // same way, and the honest empty answer is what travels.
+      replyWith([
+        call("report", {
+          why: "그대로 낼게요.",
+          answer: "가격을 미국식으로 바꾸고 있어요.",
+          findings: [
+            {
+              claim: "이 함수 전체가 미국식으로 바꿔요.",
+              certainty: "certain",
+              citations: [
+                { path: "src/lib/format.ts", startLine: 3, endLine: 8 },
+              ],
+            },
+          ],
+        }),
+      ]),
+    ]);
+
+    const investigation = await run();
+    expect(investigation.findings).toEqual([]);
+    expect(investigation.refused[0].reason).toBe("unread_citation");
+    expect(investigation.summary).toBe(UNGROUNDED_SUMMARY);
+  });
+});
+
+describe("a finding built on a followed import", () => {
+  it("survives, and the walk shows the connection it crossed", async () => {
+    const { run } = investigateWith([
+      replyWith([
+        call("follow_import", {
+          why: "결제 버튼이 무엇을 불러오는지 따라가요.",
+          path: "src/components/PayButton.tsx",
+          name: "@/lib/format",
+        }),
+      ]),
+      replyWith([
+        call("report", {
+          why: "끝낼게요.",
+          learned: "결제 버튼은 format.ts를 불러와요.",
+          answer: "결제 버튼이 가격 글자를 만드는 자리를 불러와요.",
+          findings: [
+            {
+              claim: "가격 글자를 만드는 자리는 여기예요.",
+              certainty: "certain",
+              citations: [
+                { path: "src/lib/format.ts", startLine: 3, endLine: 8 },
+              ],
+            },
+          ],
+        }),
+      ]),
+    ]);
+
+    const investigation = await run();
+    expect(investigation.findings).toHaveLength(1);
+    expect(investigation.refused).toEqual([]);
+    // A real traversal, so the map draws a line it already has.
+    expect(investigation.trail.hops.map((hop) => hop.connectionId)).toContain("c7");
+    expect(investigation.trail.hops[0].via).toBe("opened");
+  });
+});
+
+describe("a finding built on a tree", () => {
+  it("is refused, because a folder listing is not a place", async () => {
+    const { run } = investigateWith([
+      replyWith([call("list_tree", { why: "어디부터 볼지 정할게요." })]),
+      replyWith([
+        call("report", {
+          why: "끝낼게요.",
+          answer: "가격은 format.ts에서 만들어요.",
+          findings: [
+            {
+              claim: "가격 글자는 여기서 만들어요.",
+              certainty: "inferred",
+              citations: [
+                { path: "src/lib/format.ts", startLine: 3, endLine: 8 },
+              ],
+            },
+          ],
+        }),
+      ]),
+      replyWith([
+        call("report", {
+          why: "그대로 낼게요.",
+          answer: "가격은 format.ts에서 만들어요.",
+          findings: [
+            {
+              claim: "가격 글자는 여기서 만들어요.",
+              certainty: "inferred",
+              citations: [
+                { path: "src/lib/format.ts", startLine: 3, endLine: 8 },
+              ],
+            },
+          ],
+        }),
+      ]),
+    ]);
+
+    const investigation = await run();
+    // Seeing a name is not reading anything, and it is not visiting anywhere
+    // either — the same line `list_files` has always drawn. Even `inferred`
+    // needs somewhere this investigation actually fetched.
+    expect(investigation.findings).toEqual([]);
+    expect(investigation.refused[0].reason).toBe("unread_citation");
+    expect(investigation.trail.points).toEqual([]);
+    expect(investigation.read).toEqual({ files: 0, lines: 0 });
+  });
+});

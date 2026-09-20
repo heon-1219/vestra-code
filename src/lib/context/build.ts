@@ -91,11 +91,23 @@ const SYSTEM_PROMPT = [
   "2. 거기 적힌 말이 사실인지 우리는 몰라요. 이미 없어진 기능이나 아직 안 만든 기능이 적혀 있기도 해요. 그러니 글에 있는 말만 옮기고, 없는 말을 채우지 마세요.",
   "3. about은 한국어 해요체로 두세 문장. 이 프로젝트가 무엇을 하는 것인지만 적어요.",
   "4. words는 이 프로젝트에서 자주 쓰는 말과 그 뜻을 '낱말 — 뜻' 한 줄씩, 많아야 6개. 없으면 빈 배열로 두세요.",
-  "5. '안전', '노드', '엣지'라는 말은 쓰지 마세요.",
-  "6. 설치 방법, 라이선스, 뱃지, 기여 안내, 고맙다는 인사는 빼요.",
+  /*
+   * The line that makes this worth building.
+   *
+   * A README that says "매매는 bot.py가 돌려요" answers the first two steps of
+   * an investigation for about five tokens — and those first two steps were
+   * measured going on a folder listing and a search for a word the project
+   * does not use. Asked for as a copy rather than a judgement: the document
+   * either names a file or it does not, and a guessed path is worse than none
+   * because it costs a step to open and a step to recover from. The path is
+   * checked against the project's own map before anyone sees it.
+   */
+  "5. 글에 '이건 어느 파일에 있다'고 적혀 있으면, 그 파일 이름이나 폴더 경로를 낱말 뒤에 ' · 파일이름' 으로 그대로 옮겨 적어요. 적혀 있지 않으면 지어내지 말고 그냥 빼요.",
+  "6. '안전', '노드', '엣지'라는 말은 쓰지 마세요.",
+  "7. 설치 방법, 라이선스, 뱃지, 기여 안내, 고맙다는 인사는 빼요.",
   "",
   "JSON만 답해요. 다른 말은 넣지 마세요.",
-  '{"about":"물건을 고르고 결제까지 하는 가게 앱이에요. 주문은 서버로 보내요.","words":["장바구니 — 고른 물건을 담아 두는 곳"]}',
+  '{"about":"물건을 고르고 결제까지 하는 가게 앱이에요. 주문은 서버로 보내요.","words":["장바구니 — 고른 물건을 담아 두는 곳 · src/cart.ts","결제 — 돈을 받는 부분"]}',
 ].join("\n");
 
 export async function buildDigest(input: {
