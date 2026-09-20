@@ -23,9 +23,15 @@ WORKDIR /app
 
 COPY package.json package-lock.json ./
 # `ci` and not `install`: the lockfile is the record of what was tested, and
-# `install` is allowed to change it. Dev dependencies are needed here —
-# `next build` type-checks with TypeScript and lints with ESLint, both of which
-# are dev dependencies. They do not reach the final image.
+# `install` is allowed to change it. Dev dependencies are needed here, because
+# `next build` type-checks with TypeScript and `typescript` is one of them. They
+# do not reach the final image.
+#
+# It does NOT lint. Next 16 removed `next lint` and `next build` no longer runs
+# ESLint at all (see the version-16 upgrade guide in `node_modules/next/dist/
+# docs/`). So this image is not a lint gate and never was one under 16 — a lint
+# error will build and deploy perfectly happily. `npm run lint` is a separate
+# step and has to be run somewhere that can fail the change.
 RUN npm ci
 
 

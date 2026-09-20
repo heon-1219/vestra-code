@@ -10,6 +10,25 @@ happened. Where I could not be certain of a Railway detail, it says so and is
 listed again under [Marked to verify](#marked-to-verify). Treat the first deploy
 as the test.
 
+What *has* been verified, on 2026-09-20, off the machine rather than on Railway:
+
+- `npx next build` passes from a clean `npm ci`, with placeholder values for the
+  seven required variables. It emits `.next/standalone`.
+- That standalone server boots and serves: `/` 200, `/sign-in` 200, `/app` 307
+  to sign-in, `/_next/static/...` 200, `/globe.svg` 200, and `/api/health` 200
+  with `{"status":"ok","database":"down"}` against a deliberately unreachable
+  database — which is the designed behaviour in step 6.
+- `railway.json` validates against Railway's published schema, and every key in
+  it is real. See [Marked to verify](#marked-to-verify).
+- **`docker build` against this `Dockerfile` succeeds**, producing a 365 MB
+  image, and `docker run` on it serves all of the above. Inside the container:
+  the process is `uid 1001 (nextjs)`, not root; it honours `PORT`; and there is
+  no `.env` file anywhere in the image, so `.dockerignore` is doing its job.
+
+So the build, the image and the artifact are known good. **Railway itself is
+still untested** — every step below that involves clicking something on
+railway.com is still written from its documentation, not from having done it.
+
 Roughly 40 minutes, most of it waiting for builds and filling in consoles.
 
 ---
@@ -73,12 +92,32 @@ cannot touch real users — do this:
    npm run db:migrate
    ```
 
+   That script is `drizzle-kit migrate`; `npx drizzle-kit migrate` is the same
+   command and reads the same `drizzle.config.ts`. Use whichever you like.
+
 5. Put the development line back. Do not skip this; a forgotten production URL
    in `.env.local` means the next thing you run locally writes to production.
 
-You should see drizzle-kit report the migrations it applied. There are three in
-`drizzle/` today (`0000_`, `0001_`, `0002_`). Running it twice is safe — the
-second run applies nothing.
+You should see drizzle-kit report the migrations it applied. Running it twice is
+safe — the second run applies nothing.
+
+**How many migrations there are.** Six: `0000_loose_black_bolt`,
+`0001_lucky_moira_mactaggert`, `0002_dazzling_chimera`, `0003_true_bastion`
+(adds `analysis_runs.analyzer_version`), `0004_premium_jean_grey` (adds
+`python` to the `project_kind` enum) and `0005_warm_nehzno` (adds the
+`project_digests` table). `drizzle/meta/_journal.json` lists all six.
+
+**0003 to 0005 have already been applied to the database this was developed
+against**, on 2026-09-20, and verified afterwards by reading the schema back:
+the enum carries `python`, the column exists, the table exists. Running
+`migrate` against that database again applies nothing, which is the correct
+and safe outcome. A brand-new database needs all six and gets them in one
+run.
+
+If `__drizzle_migrations` in some other database is ever *ahead* of what
+`drizzle/` holds, that means migrations from an unmerged branch were applied
+to it, and `migrate` will not reconcile that for you — check before you run
+anything.
 
 > Why not a shell variable instead of editing the file? `drizzle.config.ts`
 > loads `.env.local` through `dotenv`, which by documented default does not
@@ -119,10 +158,23 @@ distance from the app to the database matters far more than the distance from
 your browser to the app. Seoul to Singapore for the browser hop is around 70 ms
 and you will not feel it.
 
-In the service's **Settings**, find the region setting and choose Singapore.
+**`railway.json` now says this, so there is nothing to click.** The `deploy`
+block carries:
 
-> Marked to verify: where exactly this lives in the current Railway interface,
-> and whether changing it after the first deploy requires a redeploy.
+```json
+"region": "asia-southeast1-eqsg3a"
+```
+
+That is Railway's identifier for *Southeast Asia Metal (Singapore)*, and
+Railway's own region reference states the identifier is the value to use in a
+config-as-code file. Leaving it to the dashboard meant the decision lived in
+somebody's memory; in the file it survives a service being recreated.
+
+Confirm it took: the service's **Settings** should show Singapore after the
+first deploy.
+
+> Marked to verify: whether changing the region on an already-deployed service
+> takes effect without an explicit redeploy.
 
 ---
 
@@ -343,6 +395,34 @@ one of its files it would fail only here. The fix would be an
 deliberately not added pre-emptively — trace includes that are not needed make
 the image bigger for nothing, and this is easy to diagnose from the error.
 
+> *Checked 2026-09-20, and the worry turns out to be covered — by accident.*
+> `ts-morph` is present in `.next/standalone/node_modules/`, so the parser has
+> what it needs. But the reason the trace is so generous is a warning the build
+> prints:
+>
+> ```
+> ./src/analysis/typescript/tsconfig.ts:67:22
+> Warning: Dynamic filesystem access causes tracing of the whole project
+> ```
+>
+> `path.join(repoRoot, name)` has a `repoRoot` that Turbopack cannot determine
+> statically, so it gives up and traces **everything**: `.next/standalone` ends
+> up with `src/`, `drizzle/`, `package-lock.json` and the config files sitting
+> beside the server.
+>
+> Measured rather than guessed, in the built image: `/app/src` is 2.1 MB and
+> `/app/drizzle` 144 KB, against 78 MB of `node_modules` and 12 MB of `.next`
+> in a 365 MB image. So this is untidy, not urgent — and `.dockerignore`
+> already keeps `docs/` and the other Markdown out of the context, which is why
+> they are not in there too.
+>
+> The reason to fix it anyway is that it is *meaningless* work: at runtime
+> `repoRoot` is the temp directory of **somebody else's** checkout, so nothing
+> that got traced is what the code will actually open. But silencing it is a
+> change to make deliberately and then re-test step 5 against, because this
+> over-tracing is currently what guarantees the parser's own files are present.
+> Not on the day of a deploy.
+
 ---
 
 ## 10. Deploying again, later
@@ -372,6 +452,90 @@ it.
 | `Failed to find Server Action` | A build mismatch: an old tab against a new deploy, or two instances built separately. Reloading the page clears it. To prevent it, see `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` in step 5. |
 | Analysis starts, then stops with nothing for a long time | Check Railway's logs for the container being killed. A run holds a parsed project in memory, so the plan's memory limit is what to look at. |
 | A relation or column does not exist | A migration did not run against production. Step 1. |
+| A **question** in the workspace hangs, or its trace arrives all at once at the end | `/api/projects/[id]/ask` is the one SSE route that does not use `SSE_HEADERS` from `src/analysis/events.ts`. It sets `X-Accel-Buffering: no` but its `Cache-Control` omits **`no-transform`**, and it has **no heartbeat** — unlike `/events`, which sends one every 20s and caps itself at 14 minutes. D17 asks for both on every SSE route. In practice the trace events keep data flowing, so this usually hides; it would bite on a single LLM call that stays silent past Railway's 5-minute no-data cut, which `effort: "deep"` can do. See the report that accompanied this file. |
+
+---
+
+## Every variable, and whether you need it
+
+`src/lib/env.ts` is the authority, not `.env.example` and not this table — it
+validates on the first import, which during `next build` is the first page
+module compiled, so a missing **required** variable stops the build with
+`Environment is not configured` and names it. The seven required ones are
+required in that literal sense: nothing starts without them.
+
+`.env.example` lists 23 variables. `env.ts` validates 21 of them. The two it
+does not are the last two rows, and the reason is in each row.
+
+### Required — seven, no defaults, nothing runs without them
+
+| Variable | What it is for |
+|---|---|
+| `DATABASE_URL` | Neon connection string, **direct/unpooled**, `?sslmode=verify-full` (D13, D58). The whole app is behind this. |
+| `BETTER_AUTH_SECRET` | Signs session cookies. **Minimum 32 characters** — the schema enforces it. Changing it signs everyone out. |
+| `BETTER_AUTH_URL` | The app's own origin, no trailing slash. Must parse as a full URL. **See the trap below.** |
+| `GITHUB_CLIENT_ID` | GitHub OAuth App, for sign-in and for an authenticated GitHub rate limit (5000/hr vs 60/hr). |
+| `GITHUB_CLIENT_SECRET` | Its secret. GitHub shows it once. |
+| `GOOGLE_CLIENT_ID` | Google OAuth client, for sign-in. |
+| `GOOGLE_CLIENT_SECRET` | Its secret. |
+
+### Optional — the app runs without all of these
+
+| Variable | What it is for |
+|---|---|
+| `LLM_DEFAULT` | Which provider answers when nobody picked: `mimo` \| `gemini` \| `custom`. Blank means the first with a key. Naming one you have no key for falls through rather than failing. |
+| `LLM_MIMO_API_KEY` | MiMo key. **The only MiMo variable you normally set** — enables the provider. |
+| `LLM_MIMO_BASE_URL` | Override; defaults to `https://api.xiaomimimo.com/v1`. |
+| `LLM_MIMO_MODEL` | Override; defaults to `mimo-v2.5` (not the ~10x `-pro`, D45). |
+| `LLM_MIMO_SUPPORTS_JSON_SCHEMA` | `"true"`/`"false"` string. Defaults false — Xiaomi documents no schema response format (D47). |
+| `LLM_GEMINI_API_KEY` | Gemini key. Enables the provider. |
+| `LLM_GEMINI_BASE_URL` | Override; defaults to Google's OpenAI-compat endpoint. |
+| `LLM_GEMINI_MODEL` | Override; defaults to `gemini-3.8-flash`. |
+| `LLM_GEMINI_SUPPORTS_JSON_SCHEMA` | Defaults **true** here — Google does document it. The per-provider split is the point (D47). |
+| `LLM_BASE_URL` | The unnamed third provider. No defaults, so this and the next two go **together or not at all**. |
+| `LLM_API_KEY` | Its key. |
+| `LLM_MODEL` | Its model. |
+| `LLM_SUPPORTS_JSON_SCHEMA` | Defaults false; the app also sends this endpoint no thinking setting at all. |
+| `E2B_API_KEY` | Validated as optional and **read by no feature yet** — its only appearance in `src/` is its own line in `env.ts`. A Step 6 stretch placeholder. Setting it does nothing today. |
+
+With **no** LLM key at all the app still builds, deploys, signs people in and
+draws maps. Only the question-answering panel is unavailable, and it says so in
+words rather than offering a control it cannot honour. **Do not point any of
+these at a router** (D44).
+
+### The two that are not in `env.ts`
+
+| Variable | What it is for |
+|---|---|
+| `DATABASE_URL_POOLED` | **Read by nothing** — zero references in `src/`. Kept in `.env.example` so that a future serverless path does not cost a trip to the Neon dashboard (D13). Safe to leave unset on Railway. |
+| `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY` | Read by **Next itself, at build time**, not by `env.ts`. Setting it in the Variables tab does nothing; it has to reach the `ARG` in the Dockerfile. Only matters past one instance. See step 5. |
+
+### The trap: `BETTER_AUTH_URL` and the OAuth callbacks
+
+This is the one that lets a deploy succeed completely and still leave nobody
+able to sign in, and it is worth stating on its own because every symptom of it
+points somewhere else.
+
+Better Auth does not know the app's address. It **builds its OAuth callback URLs
+by concatenation**, from `BETTER_AUTH_URL`. So the moment that value changes —
+localhost to `*.up.railway.app`, or `*.up.railway.app` to your own domain — the
+callback URLs change with it, and the ones registered at GitHub and Google do
+not. Nothing warns you. The build is green, the health check is green, the
+landing page renders, and sign-in fails for everyone.
+
+Three consequences to hold on to:
+
+1. **Changing `BETTER_AUTH_URL` is never a one-place change.** It is always
+   three: the variable, the GitHub OAuth App's *Authorization callback URL*, and
+   the Google client's *Authorized redirect URI*. Steps 6, 7 and 8.
+2. **GitHub allows one callback URL per OAuth App**, so production needs its own
+   App — it cannot share the development one. Google allows several redirect
+   URIs on one client, so it can.
+3. **A trailing slash is a mismatch.** `https://x.up.railway.app/` yields
+   `...app//api/auth/callback/github`, which matches nothing.
+
+Moving to a custom domain later is the most common way a working sign-in breaks,
+for exactly this reason. Redo steps 7 and 8 when you do.
 
 ---
 
@@ -379,15 +543,29 @@ it.
 
 Things I could not confirm, and did not want to state as fact:
 
-1. **Where the region setting lives** in the current Railway interface, and
-   whether changing it after a deploy needs a redeploy.
+1. ~~**Where the region setting lives.**~~ *Resolved 2026-09-20.* It does not
+   have to live in the interface at all: `deploy.region` is a real property, and
+   Singapore is `asia-southeast1-eqsg3a`. It is in `railway.json` now. What is
+   still open is whether changing it on an already-deployed service takes effect
+   without an explicit redeploy.
 2. **Whether Railway forwards service variables to Docker build `ARG`s.** Only
    affects `NEXT_SERVER_ACTIONS_ENCRYPTION_KEY`, and only past one instance.
-3. **The `railway.json` schema URL** (`https://railway.com/railway.schema.json`)
-   and the exact spelling of the keys inside it. If Railway rejects the file or
-   quietly ignores it, the same two settings — build with the Dockerfile, health
-   check on `/api/health` — can be set in the service's Settings tab instead,
-   and the file deleted.
+3. ~~**The `railway.json` schema URL and the spelling of its keys.**~~
+   *Resolved 2026-09-20.* Checked against the published schema. Two notes. The
+   URL in the file, `https://railway.com/railway.schema.json`, answers `301` to
+   `https://backboard.railway.app/railway.schema.json` — it resolves, and the
+   redirect is worth knowing if an editor ever reports the file as unvalidated.
+   And every key currently in `railway.json` is real: under `build`, `builder`
+   (whose values include `DOCKERFILE`) and `dockerfilePath`; under `deploy`,
+   `region`, `healthcheckPath`, `healthcheckTimeout`, `restartPolicyType`
+   (`ON_FAILURE` | `ALWAYS` | `NEVER`) and `restartPolicyMaxRetries`. Nothing in
+   the file is ignored.
+
+   The schema also defines `deploy.preDeployCommand`, which is the documented
+   place a migration would go if you ever wanted one to run on Railway rather
+   than from your machine. Step 1 explains why it does not — the image carries
+   no `drizzle-kit` — so taking that route would mean changing the image first,
+   not just this file.
 4. **Whether the generated domain is available before the first successful
    deploy.** Step 6 assumes it is not, and takes the slower route. If the
    **Generate Domain** button is there earlier, use it earlier and set
