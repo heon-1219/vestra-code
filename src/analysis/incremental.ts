@@ -135,7 +135,19 @@ import type { AnalyzedEdge, AnalyzedNode, Confidence } from "./types";
  * current and carry them past the sweep for ever. A version mismatch forces
  * one full write, after which it is incremental again.
  */
-export const ANALYZER_VERSION = "2";
+/*
+ * Bumped to 3 when Pass 2 landed.
+ *
+ * A carried-forward row from a version-2 graph means something different now.
+ * Version 2 had no `feature` nodes, no `belongs_to` edges and no `label`,
+ * `summary` or `text_lang` on anything — Pass 2 existed only as an event type
+ * nothing emitted. Pass 2 decides what to re-ask by looking at which files
+ * already carry a Korean name, so against a version-2 base every file is
+ * unnamed and the first run would ask about all of them anyway. The bump makes
+ * that one run a full write as well, so the two halves of the graph are never
+ * a mixture of "named under the old shape" and "named under the new one".
+ */
+export const ANALYZER_VERSION = "3";
 
 /**
  * Above this share of the analysed tree, an incremental write is bookkeeping

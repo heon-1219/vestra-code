@@ -47,6 +47,7 @@ import { createPythonAnalyzer, pythonLlmCoverage } from "./python/analyzer";
 // Type only, and only for the reason the model pass stopped. The counts are
 // read back off the nodes; this is the one fact the graph itself cannot carry.
 import type { PythonLlmResult } from "./python/llm";
+import { runSemanticLayer } from "./semantic";
 import { createShallowAnalyzer } from "./shallow/analyzer";
 import type {
   AnalysisEmitter,
@@ -541,12 +542,27 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
     // The emitter is synchronous by contract — an analyzer calls it mid-parse
     // and must not await a database round trip per file. The store keeps the
     // writes ordered behind the scenes and `flush` waits for them at the end.
+    const setPhase = (phase: "ingest" | "static" | "semantic" | "done") => {
+      fire(emit("phase.changed", { phase }));
+      fire(db.update(analysisRuns).set({ phase }).where(eq(analysisRuns.id, runId)));
+    };
+
     const emitter: AnalysisEmitter = {
+      /*
+       * An analyzer knows when ITS work is finished. Only the pipeline knows
+       * when the RUN is, and since Pass 2 landed those are no longer the same
+       * moment — every analyzer ends by announcing `done`, and Pass 2 then runs
+       * for another twenty seconds. Passing that through would take the
+       * workspace checklist to 다 됐어요 and then back to 기능 이름 붙이는 중, which
+       * reads as the analysis having restarted.
+       *
+       * Swallowed here rather than deleted from the three analyzers, because
+       * the analyzers are right about their own half and this is the one place
+       * that knows about the other one.
+       */
       phase: (phase) => {
-        fire(emit("phase.changed", { phase }));
-        fire(
-          db.update(analysisRuns).set({ phase }).where(eq(analysisRuns.id, runId)),
-        );
+        if (phase === "done") return;
+        setPhase(phase);
       },
       fileParsed: (path) => {
         filesParsed += 1;
@@ -594,18 +610,16 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
      * nothing there" gets said about files nobody opened — and the person
      * reading the map cannot open the code to check. The event is persisted
      * like every other, so a browser that reloads mid-run replays it.
+     *
+     * Computed here and emitted further down, after Pass 2 has also had its
+     * turn: both passes read files and either can fall short, and the stream
+     * carries one `llm.coverage` whose last value wins. Two events would mean
+     * the second silently overwriting the first.
      */
-    const coverage = pythonLlmCoverage(graph.nodes);
-    const shortfall = llmCoveragePayload(coverage, modelPass.stopped);
-    if (shortfall) {
-      console.log(
-        "[pipeline] model coverage",
-        runId,
-        `${shortfall.examined} examined, ${shortfall.notExamined} not opened`,
-        shortfall.reason,
-      );
-      await emit("llm.coverage", shortfall);
-    }
+    const parserCoverage = llmCoveragePayload(
+      pythonLlmCoverage(graph.nodes),
+      modelPass.stopped,
+    );
 
     // D36's tripwire. Every silent-emptiness failure this parser has — `allowJs`
     // off putting zero files in the program, a resolution change emptying the
@@ -697,6 +711,63 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
       );
     }
 
+    /*
+     * Pass 2, the semantic layer.
+     *
+     * After the write and before the sweep, which is the only window where
+     * both halves are true: Pass 1's rows are in the table, so a `belongs_to`
+     * edge has a file to point at, and last run's features are still there to
+     * be matched against so a rename does not change a feature's id (D55).
+     *
+     * It is handed the WHOLE graph rather than the incremental slice, because a
+     * feature is a claim about the shape of the project and one derived from
+     * the files that happened to change would be a confident statement about a
+     * fifth of it.
+     *
+     * `runSemanticLayer` never throws. A model failure leaves the map exactly
+     * as Pass 1 drew it and the run still completes — the static graph is the
+     * floor, and this pass is an improvement on it.
+     */
+    setPhase("semantic");
+    const semantic = await runSemanticLayer({
+      db,
+      projectId: project.id,
+      runId,
+      llm: input.llm ?? null,
+      graph,
+      scope: changeScope,
+      emit,
+    });
+    await store.flush();
+
+    /*
+     * One coverage line for the run, from whichever pass fell furthest short.
+     *
+     * Not a blend of the two: `examined` and `notExamined` have to be numbers a
+     * real pass actually measured, or the sentence on screen is about a run
+     * that did not happen. The larger shortfall wins because it is the more
+     * conservative claim about what we opened, which is the direction section 3
+     * requires us to err in.
+     */
+    const semanticCoverage = llmCoveragePayload(semantic.coverage, semantic.stopped);
+    const shortfall =
+      (semanticCoverage?.notExamined ?? 0) > (parserCoverage?.notExamined ?? 0)
+        ? semanticCoverage
+        : parserCoverage;
+    if (shortfall) {
+      console.log(
+        "[pipeline] model coverage",
+        runId,
+        `${shortfall.examined} examined, ${shortfall.notExamined} not opened`,
+        shortfall.reason,
+      );
+      await emit("llm.coverage", shortfall);
+    }
+
+    // Now the run really is done: Pass 1 drew the map, Pass 2 wrote on it, and
+    // what is left is bookkeeping the user is not watching.
+    setPhase("done");
+
     // Carry forward, then sweep, in one transaction — and only here, on the
     // success path. A file that became unparseable this run still has correct
     // rows from the last one, and sweeping them takes every connection from
@@ -714,10 +785,16 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
     // What the user is told is the size of the map, not the size of this run's
     // write. A full run is left counting exactly what it counted before, so the
     // only behaviour that changes is the incremental case.
+    // Pass 2's rows are part of the map: `graph` has them appended, and the
+    // full-write branch adds what it wrote, so a project with 7 features
+    // reports 7 more items than Pass 1 alone produced.
     const measured =
       writeScope.mode === "incremental"
         ? graphSize(project.id, graph.nodes, graph.edges)
-        : { nodes: written.nodesWritten, edges: written.edgesWritten };
+        : {
+            nodes: written.nodesWritten + semantic.nodesWritten,
+            edges: written.edgesWritten + semantic.edgesWritten,
+          };
 
     // Row first, then the event. A client that closes on `run.completed` and
     // then reads the project would otherwise be able to see a run still marked
