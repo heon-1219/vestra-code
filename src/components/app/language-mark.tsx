@@ -1,96 +1,111 @@
 /**
- * The language a repository is written in, drawn rather than spelled.
+ * The language a repository is written in, as its own mark.
  *
- * A word per row turned the list into a table of metadata, and the word is the
- * least useful thing in it — someone scanning for a project recognises it by
- * name, and the language is a glance. A coloured dot is also the treatment
- * GitHub itself uses in its own repository lists, so it arrives already learned
- * for anyone who has looked at one.
+ * This was a coloured dot using GitHub's linguist palette, and the palette was
+ * the problem. Those colours are chosen to be distinguishable against GitHub's
+ * white list, not to sit in a dark, near-monochrome interface with one accent —
+ * dropped in here, a yellow dot beside a red one beside a violet one reads as
+ * three stickers rather than as three facts, and the brightest thing in the row
+ * ends up being the metadata rather than the project's own name.
  *
- * The colours are GitHub's own linguist colours, written in here by value. That
- * matters twice: nothing is downloaded at runtime, and the dot beside a
- * TypeScript repository is the blue that reader has seen beside every other
- * TypeScript repository.
+ * So the mark keeps the shape and gives up the colour. **JS and TS are letters
+ * in a square in their own logos**, which is what makes this honest rather than
+ * a retreat to text: the tile IS the mark for most of what this list shows, and
+ * the ones whose real logo is a drawing are given the same tile so the column
+ * reads as one set instead of an assortment.
  *
- * **The name never leaves the page, it only stops being visible.** A colour on
- * its own tells a screen reader nothing at all and tells a colour-blind reader
- * very little, so it stays as the accessible name and as the hover title.
+ * Every tile is `currentColor`, so it takes the row's own colour and brightens
+ * with it on hover rather than being separately themed. Nothing is downloaded:
+ * no icon font, no CDN, no dependency, and no `<img>` that would flash in after
+ * the row it belongs to.
  *
- * A language we have no colour for is drawn as a ring rather than as a guessed
- * colour. A wrong colour would be worse than an honest blank, because these
- * colours are the only thing that makes the dot readable at all.
+ * **The full name never leaves the page, it only stops being visible.** Two
+ * letters tell a screen reader nothing, so the name is the accessible text and
+ * the hover title; the tile itself is `aria-hidden`.
+ *
+ * A language we have no short form for gets its own first two letters rather
+ * than a placeholder. It is occasionally an odd pair, and it is always the
+ * truth about what GitHub reported — which beats a generic mark that says only
+ * "some language".
  */
 
 /**
- * GitHub's linguist colours, for the languages this product's users actually
- * ship in. Adding one is adding a line; the ring is what covers the rest.
+ * The conventional short form per language, which is the one a person already
+ * reads on a file tab or a syntax badge. Deliberately not derived — `Jupyter
+ * Notebook` shortens to `JN` by rule and to `PY` by what it actually contains,
+ * and `C++` is two characters that are not its first two.
  */
-const LANGUAGE_COLOURS: Record<string, string> = {
-  TypeScript: "#3178c6",
-  JavaScript: "#f1e05a",
-  HTML: "#e34c26",
-  CSS: "#663399",
-  SCSS: "#c6538c",
-  Vue: "#41b883",
-  Svelte: "#ff3e00",
-  Astro: "#ff5a03",
-  MDX: "#fcb32c",
-  Python: "#3572a5",
-  Ruby: "#701516",
-  PHP: "#4f5d95",
-  Java: "#b07219",
-  Kotlin: "#a97bff",
-  Swift: "#f05138",
-  Dart: "#00b4ab",
-  Go: "#00add8",
-  Rust: "#dea584",
-  C: "#555555",
-  "C++": "#f34b7d",
-  "C#": "#178600",
-  Shell: "#89e051",
-  Lua: "#000080",
-  Elixir: "#6e4a7e",
-  Haskell: "#5e5086",
-  Scala: "#c22d40",
-  Perl: "#0298c3",
-  R: "#198ce7",
-  Solidity: "#aa6746",
-  Zig: "#ec915c",
-  Nix: "#7e7eff",
-  "Jupyter Notebook": "#da5b0b",
+const SHORT_NAMES: Record<string, string> = {
+  TypeScript: "TS",
+  JavaScript: "JS",
+  HTML: "HT",
+  CSS: "CSS",
+  SCSS: "SC",
+  Less: "LE",
+  Vue: "VUE",
+  Svelte: "SV",
+  Astro: "AS",
+  MDX: "MD",
+  Markdown: "MD",
+  Python: "PY",
+  "Jupyter Notebook": "PY",
+  Ruby: "RB",
+  PHP: "PHP",
+  Java: "JV",
+  Kotlin: "KT",
+  Swift: "SW",
+  "Objective-C": "OC",
+  Dart: "DT",
+  Go: "GO",
+  Rust: "RS",
+  C: "C",
+  "C++": "C++",
+  "C#": "C#",
+  Shell: "SH",
+  PowerShell: "PS",
+  Dockerfile: "DK",
+  Makefile: "MK",
+  SQL: "SQL",
+  Elixir: "EX",
+  Haskell: "HS",
+  Lua: "LUA",
+  Perl: "PL",
+  R: "R",
+  Scala: "SC",
+  Solidity: "SOL",
+  Zig: "ZIG",
 };
 
+/**
+ * How wide the tile's text may be before it stops being a tile.
+ *
+ * Three characters is the ceiling — `C++`, `CSS`, `PHP`, `VUE` — and the text
+ * is tracked in rather than shrunk, because a tile whose type size changes per
+ * language makes a column of them look ragged.
+ */
+function shortNameFor(language: string): string {
+  const known = SHORT_NAMES[language];
+  if (known) return known;
+  return language.slice(0, 2).toUpperCase();
+}
+
 export function LanguageMark({ language }: { language: string | null }) {
-  // GitHub reports no language for an empty repository and for one made only of
-  // files it does not count. Nothing is the honest mark for that.
+  // No language at all is normal: an empty repository, or one of only data
+  // files. Nothing is drawn rather than a mark meaning "we do not know", which
+  // would be one more thing in the row to decode.
   if (!language) return null;
 
-  const colour = LANGUAGE_COLOURS[language];
+  const short = shortNameFor(language);
 
   return (
-    <svg
-      viewBox="0 0 12 12"
-      width="10"
-      height="10"
-      role="img"
-      aria-label={`주로 쓰인 언어: ${language}`}
-      className="shrink-0 text-said-faint"
-    >
-      {/* Shown as a tooltip. `aria-label` above is what a screen reader reads,
-          so this one is written for the eye and stays short. */}
-      <title>{language}</title>
-      {colour ? (
-        <circle cx="6" cy="6" r="6" fill={colour} />
-      ) : (
-        <circle
-          cx="6"
-          cy="6"
-          r="5"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-        />
-      )}
-    </svg>
+    <span title={language} className="inline-flex shrink-0 items-center">
+      <span
+        aria-hidden="true"
+        className="inline-flex h-[17px] min-w-[17px] items-center justify-center rounded-[5px] border border-edge px-1 font-mono text-[9px] leading-none font-semibold tracking-[0.02em] text-said-faint"
+      >
+        {short}
+      </span>
+      <span className="sr-only">주로 쓰인 언어: {language}</span>
+    </span>
   );
 }

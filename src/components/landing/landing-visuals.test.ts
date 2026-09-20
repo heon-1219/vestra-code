@@ -2,6 +2,8 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import { RELATION_WORDS } from "@/lib/graph/view";
+
 import { FeatureMark } from "./feature-mark";
 import { KeptAndNot } from "./kept-and-not";
 import { PainMark } from "./pain-mark";
@@ -125,6 +127,72 @@ describe("the repository-to-map figure", () => {
     // points at nothing.
     expect(html).toContain("md:hidden");
     expect(html).toContain("hidden h-6");
+  });
+
+  it("draws both panels on the same shape, so the two boxes end level", () => {
+    // The alignment is not a CSS trick that could be undone by a class: the two
+    // drawings are the same ratio, so at equal column widths they are the same
+    // height and the panels line up at the bottom as well as the top, with
+    // neither one padded out over empty space. The two arrows are the other
+    // two svgs here and are taller than they are wide, or barely wider.
+    const ratios = [...html.matchAll(/viewBox="0 0 ([\d.]+) ([\d.]+)"/g)].map(
+      ([, width, height]) => Number(width) / Number(height),
+    );
+    const panels = ratios.filter((ratio) => ratio > 1.3);
+    expect(panels, "the two panel drawings").toHaveLength(2);
+    expect(panels[0]).toBeCloseTo(panels[1], 6);
+  });
+
+  it("aligns the two panels by their edges, not by their middles", () => {
+    // `items-center` is what left the tops out of line: two boxes with a
+    // visible edge, centred against each other, are level on neither edge.
+    expect(html).toContain("grid items-stretch");
+    // An arrow is not a panel, so it must not be stretched to the row's height.
+    expect(html.match(/self-center/g) ?? []).toHaveLength(2);
+  });
+
+  it("puts one dot on the map for every file in the list", () => {
+    // The whole reason this is one picture rather than two: nothing appears on
+    // the right that did not come from the left. The swatch beside a file row
+    // and the dot inside the place it went to are counted from the same array,
+    // so a seventh file cannot quietly arrive without a seventh dot.
+    const swatches = html.match(/width="3" height="12"/g) ?? [];
+    const dots = html.match(/r="2\.4"/g) ?? [];
+    expect(swatches, "one swatch per file row").toHaveLength(6);
+    expect(dots, "one dot per file, inside its place").toHaveLength(swatches.length);
+  });
+
+  it("labels each arrow with the product's own word for the relation", () => {
+    // Not a word invented for the landing page. These come from the one table
+    // the workspace names connections with, so renaming one there renames it
+    // here — and inventing one here fails.
+    const text = words(html);
+    expect(text).toContain(RELATION_WORDS.calls.short);
+    expect(text).toContain(RELATION_WORDS.fetches.short);
+  });
+
+  it("writes each arrow out as a sentence, from → word → to", () => {
+    // The words on a line are the one thing in this figure that cannot be HTML
+    // — they are sized against the line they sit on. So they are said again in
+    // the caption, in the order the arrow reads, and from the same table.
+    const text = words(html);
+    expect(text).toContain(`결제 → ${RELATION_WORDS.calls.short} → 장바구니`);
+    expect(text).toContain(`결제 → ${RELATION_WORDS.fetches.short} → 로그인`);
+  });
+
+  it("draws both of the two lines its legend teaches", () => {
+    // A legend for a mark the picture does not contain teaches nothing. The
+    // guess is a hatched band rather than a dashed hairline, because at this
+    // size a 1px dash and a 1px solid stroke are the same stroke.
+    expect(html).toContain("var(--color-wire)");
+    expect(html).toContain("var(--color-guess)");
+    expect(html).toContain('stroke-dasharray="1.5 3"');
+  });
+
+  it("gives every connection a head, because the direction is the fact", () => {
+    // "결제 uses 장바구니" and the reverse are different claims about someone's
+    // code. Filled triangles, one per road.
+    expect(html.match(/<polygon/g) ?? []).toHaveLength(2);
   });
 });
 
