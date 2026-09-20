@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useImperativeHandle, useMemo, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 
 import {
   CERTAINTY_WORDS,
@@ -177,8 +177,6 @@ export function RightPanel({
   // the panel happened to be given.
   const [model, setModel] = useState<ProviderId | null>(null);
   const [effort, setEffort] = useState<PanelEffort>(DEFAULT_PANEL_EFFORT);
-  const requestRef = useRef<RequestBoxHandle>(null);
-
   // Built once per graph rather than per render: the walk names places by id
   // and this panel sits next to a canvas that repaints while the answer streams
   // in, so a lookup rebuilt on every frame would walk every item in the project
@@ -216,21 +214,7 @@ export function RightPanel({
     );
   } else {
     body = (
-      <NothingSelectedState
-        view={view}
-        onSelect={onSelect}
-        // A suggestion is a question, so taking one puts the box in 물어보기.
-        // Dropping the text in while the box was set to 설명하기 would leave it
-        // sitting under a button that has no use for it.
-        onSuggestion={
-          onAsk
-            ? (text) => {
-                setMode("ask");
-                requestRef.current?.fill(text);
-              }
-            : undefined
-        }
-      />
+      <NothingSelectedState view={view} onSelect={onSelect} />
     );
   }
 
@@ -267,7 +251,6 @@ export function RightPanel({
       </div>
 
       <RequestBox
-        ref={requestRef}
         selected={selected}
         disabled={running || !view}
         mode={mode}
@@ -889,11 +872,6 @@ function lastPart(name: string): string {
 
 /* ----------------------------------------------------------- request box */
 
-export type RequestBoxHandle = {
-  /** Put text in the box and focus it, without sending anything. */
-  fill: (text: string) => void;
-};
-
 /**
  * The box at the bottom, mounted once for the life of the panel.
  *
@@ -903,7 +881,6 @@ export type RequestBoxHandle = {
  * know is whether the box is empty, so that is the only thing it is told.
  */
 function RequestBox({
-  ref,
   selected,
   disabled,
   mode,
@@ -917,7 +894,6 @@ function RequestBox({
   onMakePrompt,
   onExplain,
 }: {
-  ref: React.RefObject<RequestBoxHandle | null>;
   selected: GraphItem | null;
   disabled: boolean;
   mode: PanelMode;
@@ -933,16 +909,6 @@ function RequestBox({
 }) {
   const boxRef = useRef<HTMLTextAreaElement>(null);
   const [hasText, setHasText] = useState(false);
-
-  useImperativeHandle(ref, () => ({
-    fill(text: string) {
-      const box = boxRef.current;
-      if (!box) return;
-      box.value = text;
-      setHasText(text.trim().length > 0);
-      box.focus();
-    },
-  }));
 
   function read(): string {
     return boxRef.current?.value.trim() ?? "";

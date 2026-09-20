@@ -380,23 +380,14 @@ function busiestItems(view: GraphView, howMany: number) {
 export function NothingSelectedState({
   view,
   onSelect,
-  onSuggestion,
 }: {
   view: GraphView;
   onSelect: (id: string) => void;
-  /** Fills the request box below rather than sending anything (Step 4 sends). */
-  onSuggestion?: (text: string) => void;
 }) {
   const counts = countByKind(view);
   const certain = view.connections.filter((c) => c.certainty === "certain").length;
   const inferred = view.connections.length - certain;
   const busiest = busiestItems(view, 3);
-
-  const suggestions = [
-    "여기서 제일 많이 쓰이는 건 뭐예요?",
-    busiest[0] ? `${displayName(busiest[0])} 고치면 어디가 같이 바뀌어요?` : null,
-    "어디부터 보면 좋을까요?",
-  ].filter((text): text is string => text !== null);
 
   return (
     <div>
@@ -467,23 +458,6 @@ export function NothingSelectedState({
             </div>
           ) : null}
 
-          <div className="mt-5">
-            <p className="text-[12px] text-said-faint">이런 걸 물어볼 수 있어요</p>
-            <ul className="mt-1.5 space-y-1.5">
-              {suggestions.map((text) => (
-                <li key={text}>
-                  <button
-                    type="button"
-                    onClick={() => onSuggestion?.(text)}
-                    disabled={!onSuggestion}
-                    className="rounded-lg border border-edge-lit px-2.5 py-1.5 text-left text-[13px] leading-[1.6] text-said-soft transition-colors hover:border-lamp-dim hover:text-said disabled:opacity-55 disabled:hover:border-edge-lit disabled:hover:text-said-soft"
-                  >
-                    {text}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
         </>
       ) : null}
 
