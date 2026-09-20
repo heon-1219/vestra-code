@@ -14,9 +14,12 @@ import {
   hubsOf,
   itemStrength,
   linkStrength,
+  stepFor,
   touchesFocus,
+  trailOf,
   DIM,
   NO_FOCUS,
+  type MapLink,
 } from "./scene";
 
 function item(partial: Partial<GraphItem> & { id: string }): GraphItem {
@@ -295,5 +298,71 @@ describe("colourCarriesGrouping", () => {
 
   it("does not, when it was handed no judgement at all", () => {
     expect(colourCarriesGrouping(undefined, 8)).toBe(false);
+  });
+});
+
+describe("a walk drawn as a path", () => {
+  const beam: BeamResult = IDLE_BEAM;
+  const link = (from: string, to: string): MapLink => ({
+    from,
+    to,
+    relation: "calls",
+    certainty: "certain",
+    lane: 0,
+    rank: 3,
+    crossing: false,
+  });
+
+  const walk = trailOf([
+    { order: 1, fromId: "a", toId: "b", critical: true, connected: true },
+    { order: 2, fromId: "b", toId: "c", critical: false, connected: true },
+  ]);
+
+  it("does not light the shortcut as brightly as the path", () => {
+    // The failure this whole shape exists to prevent. A walk a → b → c on a
+    // graph that also holds a → c has three lit items, and "as strong as its
+    // weaker end" would make all three lines equal — a triangle drawn where a
+    // path was walked, with nothing on screen saying which line was taken.
+    expect(linkStrength(link("a", "b"), NO_FOCUS, beam, walk)).toBe(1);
+    expect(linkStrength(link("b", "c"), NO_FOCUS, beam, walk)).toBe(1);
+    expect(linkStrength(link("a", "c"), NO_FOCUS, beam, walk)).toBeLessThan(1);
+  });
+
+  it("reads the hop in the direction it was walked", () => {
+    // a → b is a different statement from b → a, and putting the number on
+    // whichever line happens to exist would point the story the wrong way.
+    expect(stepFor(link("a", "b"), walk)?.order).toBe(1);
+    expect(stepFor(link("b", "a"), walk)).toBeNull();
+  });
+
+  it("draws no line for a restart", () => {
+    // A fresh search after a dead end is a jump, not a connection. Drawing one
+    // would invent an edge the graph does not have.
+    const restarted = trailOf([
+      { order: 1, fromId: "a", toId: "z", critical: false, connected: false },
+    ]);
+    expect(stepFor(link("a", "z"), restarted)).toBeNull();
+    expect(restarted.lit.has("z")).toBe(true);
+  });
+
+  it("keeps what the answer rests on apart from what it merely passed", () => {
+    expect([...walk.critical].sort()).toEqual(["a", "b"]);
+    expect(walk.critical.has("c")).toBe(false);
+    expect(walk.lit.has("c")).toBe(true);
+  });
+
+  it("replaces the selection's lighting rather than adding to it", () => {
+    // Two ideas of "near" on one screen is the failure this file already warns
+    // about. The walk wins while it is showing.
+    const focus = { id: "x", lit: new Set(["x", "y"]) };
+    expect(itemStrength("y", focus, beam, walk)).toBeLessThan(1);
+    expect(itemStrength("b", focus, beam, walk)).toBe(1);
+  });
+
+  it("leaves everything exactly as it was when there is no walk", () => {
+    const focus = { id: "x", lit: new Set(["x", "y"]) };
+    expect(itemStrength("y", focus, beam)).toBe(1);
+    expect(itemStrength("z", focus, beam)).toBeLessThan(1);
+    expect(linkStrength(link("x", "y"), focus, beam)).toBe(1);
   });
 });

@@ -229,17 +229,134 @@ export function focusOf(
  * compounding to 9% would be the map going black — which D59 forbids for a
  * reason that has nothing to do with contrast.
  */
-export function itemStrength(id: string, focus: Focus, beam: BeamResult): number {
+/**
+ * A walk through the graph, drawn as a path rather than as a lit cloud.
+ *
+ * This is what the question-answering loop produces: it started somewhere,
+ * moved to a neighbour, read something, moved again. Lighting the items it
+ * touched is not enough to show that — a set of bright dots says "these are
+ * related", where the thing actually being shown is "it went here, then here,
+ * and the answer rests on these two".
+ *
+ * **Why a list of links and not a set of ids.** `linkStrength` lights any line
+ * whose two ends are both lit. So a walk A → B → C on a graph that also has a
+ * direct A → C would draw the shortcut at exactly the same brightness as the
+ * path, and nothing on screen would say which one was walked. An ordered list
+ * of the hops themselves is the only shape that cannot be ambiguous.
+ *
+ * **`critical` is not decoration.** The loop distinguishes where it looked from
+ * what the answer stands on — a place it opened and abandoned is in the walk
+ * and is not evidence. Drawing both the same way would make the picture agree
+ * with the answer more than the evidence does, which is the one thing a picture
+ * of a chain of reasoning must not do.
+ */
+export type TrailStep = {
+  /** 1-based, and what gets drawn on the line. */
+  order: number;
+  fromId: string;
+  toId: string;
+  /** True when a surviving finding cites this hop, rather than merely passing through it. */
+  critical: boolean;
+  /**
+   * False when the walk restarted here — a fresh search after a dead end,
+   * rather than a move along a connection. There is no line to draw for one of
+   * these, and drawing one would invent an edge the graph does not have.
+   */
+  connected: boolean;
+};
+
+export type Trail = {
+  steps: readonly TrailStep[];
+  /** Every item the walk touched. */
+  lit: ReadonlySet<string>;
+  /** The ones the answer rests on. */
+  critical: ReadonlySet<string>;
+};
+
+export const NO_TRAIL: Trail = {
+  steps: [],
+  lit: new Set<string>(),
+  critical: new Set<string>(),
+};
+
+/** The two lookup sets, built once from the hops rather than at every draw. */
+export function trailOf(steps: readonly TrailStep[]): Trail {
+  const lit = new Set<string>();
+  const critical = new Set<string>();
+  for (const step of steps) {
+    lit.add(step.fromId);
+    lit.add(step.toId);
+    if (step.critical) {
+      critical.add(step.fromId);
+      critical.add(step.toId);
+    }
+  }
+  return { steps, lit, critical };
+}
+
+/**
+ * The hop this link is, or null.
+ *
+ * Matched on direction as well as ends. A walk that went A → B is not the same
+ * statement as the edge B → A, and a map that drew the number on whichever line
+ * happened to exist would put the story's arrow the wrong way round.
+ */
+export function stepFor(link: MapLink, trail: Trail): TrailStep | null {
+  for (const step of trail.steps) {
+    if (!step.connected) continue;
+    if (step.fromId === link.from && step.toId === link.to) return step;
+  }
+  return null;
+}
+
+export function itemStrength(
+  id: string,
+  focus: Focus,
+  beam: BeamResult,
+  trail: Trail = NO_TRAIL,
+): number {
   const beamPart = beam.active && !beam.matched.has(id) ? DIM : 1;
-  const focusPart = focus.id === null || focus.lit.has(id) ? 1 : DIM;
-  return Math.min(beamPart, focusPart);
+
+  /*
+   * A walk replaces the selection's lighting rather than adding to it.
+   *
+   * One screen, one meaning of "near". `focusOf` lights a hop around whatever
+   * is selected, and a walk lights the walk; both at once would put two
+   * different neighbourhoods on the map with nothing to tell the reader which
+   * is which — the same warning this file already gives about a second private
+   * idea of near.
+   */
+  const litPart = trail.steps.length
+    ? (trail.lit.has(id) ? 1 : DIM)
+    : (focus.id === null || focus.lit.has(id) ? 1 : DIM);
+
+  // The weaker of the two, never their product: two dimmings compounding to 9%
+  // is the map going black, which D59 forbids.
+  return Math.min(beamPart, litPart);
 }
 
 /** A link is as strong as its weaker end: a line into the dark would point at nothing. */
-export function linkStrength(link: MapLink, focus: Focus, beam: BeamResult): number {
+export function linkStrength(
+  link: MapLink,
+  focus: Focus,
+  beam: BeamResult,
+  trail: Trail = NO_TRAIL,
+): number {
+  /*
+   * While a walk is showing, only the hops themselves are bright.
+   *
+   * Without this the map would draw a shortcut at full strength: a walk
+   * A → B → C on a graph that also holds A → C has three lit items, and the
+   * rule below — as strong as its weaker end — makes all three lines equal.
+   * The picture would then show a triangle where a path was walked, and
+   * nothing on it would say which line was taken.
+   */
+  if (trail.steps.length) {
+    return stepFor(link, trail) ? 1 : DIM;
+  }
   return Math.min(
-    itemStrength(link.from, focus, beam),
-    itemStrength(link.to, focus, beam),
+    itemStrength(link.from, focus, beam, trail),
+    itemStrength(link.to, focus, beam, trail),
   );
 }
 
