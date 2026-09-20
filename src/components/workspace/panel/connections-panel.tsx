@@ -221,7 +221,7 @@ export function RightPanel({
   return (
     <aside
       aria-label="연결 패널"
-      className="flex h-full min-h-0 flex-col border-l-[0.8px] border-edge bg-ink-raised"
+      className="flex h-full min-h-0 min-w-0 flex-col border-l-[0.8px] border-edge bg-ink-raised"
     >
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5 [scrollbar-color:var(--color-edge-lit)_transparent] [scrollbar-width:thin]">
         {body}
@@ -1056,7 +1056,7 @@ function RequestBox({
          * sets `display: block` on img/svg/video and friends for exactly this
          * reason and does not cover textarea.
          */
-        className="block w-full resize-none rounded-xl border border-edge-lit bg-ink py-2.5 pl-3 pr-11 text-[14px] leading-[1.7] text-said transition-colors placeholder:text-said-faint focus:border-lamp-dim focus:outline-none disabled:opacity-55"
+        className="block w-full resize-none rounded-xl border border-edge-lit bg-ink py-2.5 pl-3 pr-11 text-[14px] max-md:pr-14 leading-[1.7] text-said transition-colors placeholder:text-said-faint focus:border-lamp-dim focus:outline-none disabled:opacity-55"
       />
 
       {/*
@@ -1082,7 +1082,7 @@ function RequestBox({
           the plane stays centred in the button while it presses; the mark is
           drawn around its own centroid and a corner origin would undo that.
         */
-        className="absolute bottom-2 right-2 grid h-7 w-7 origin-center place-items-center rounded-lg bg-paper text-ink transition duration-150 hover:bg-lamp active:scale-95 disabled:bg-edge-lit disabled:text-said-faint"
+        className="absolute bottom-2 right-2 grid h-7 w-7 origin-center place-items-center rounded-lg bg-paper text-ink transition duration-150 hover:bg-lamp active:scale-95 disabled:bg-edge-lit disabled:text-said-faint max-md:h-11 max-md:w-11"
       >
         <SendMark />
       </button>

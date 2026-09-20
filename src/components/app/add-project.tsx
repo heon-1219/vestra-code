@@ -35,7 +35,7 @@ export function AddProject() {
      * A column that takes the height it is given rather than the height of its
      * contents, so the repo list inside can be the only scroller on this side.
      */
-    <div className="hairline flex min-h-0 flex-1 flex-col rounded-2xl bg-ink-raised p-6">
+    <div className="hairline flex min-h-0 flex-1 flex-col rounded-2xl bg-ink-raised p-6 max-lg:flex-none max-md:p-4">
       {/*
         Three labels short enough to sit on one line each at this column's
         narrowest, which is 300px minus the card's padding. Two-line tabs read
@@ -61,7 +61,7 @@ export function AddProject() {
         that grow with what you pick, and scroll here on a short window.
       */}
       <div
-        className={`min-h-0 flex-1 pt-4 ${
+        className={`min-h-0 flex-1 pt-4 max-lg:flex-none max-lg:overflow-visible ${
           tab === "pick" ? "overflow-hidden" : "overflow-y-auto"
         }`}
       >
@@ -120,7 +120,7 @@ function TabButton({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`rounded-lg px-2.5 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors ${
+      className={`inline-flex items-center rounded-lg px-2.5 py-1.5 text-[13px] font-medium whitespace-nowrap transition-colors max-md:min-h-11 max-md:px-3 ${
         active
           ? "bg-edge-lit text-said"
           : "text-said-faint hover:bg-edge/60 hover:text-said-soft"

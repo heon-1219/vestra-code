@@ -336,7 +336,7 @@ export function FilePreview({
             ref={closeRef}
             type="button"
             onClick={onClose}
-            className="shrink-0 rounded-lg border border-edge-lit px-3 py-1.5 text-[13px] text-said-soft transition-colors hover:border-said-faint hover:bg-ink hover:text-said"
+            className="inline-flex shrink-0 items-center rounded-lg border border-edge-lit px-3 py-1.5 text-[13px] text-said-soft transition-colors hover:border-said-faint hover:bg-ink hover:text-said max-md:min-h-11 max-md:px-4"
           >
             닫기
           </button>
@@ -366,7 +366,7 @@ export function FilePreview({
               href={viewOnGithub}
               target="_blank"
               rel="noreferrer noopener"
-              className="shrink-0 text-[12px] text-said-soft underline underline-offset-4 transition-colors hover:text-said"
+              className="inline-flex shrink-0 items-center text-[12px] text-said-soft underline underline-offset-4 transition-colors hover:text-said max-md:min-h-11"
             >
               GitHub에서 보기
             </a>

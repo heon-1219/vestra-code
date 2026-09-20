@@ -144,6 +144,35 @@ line-height above the Latin default. The register is **해요체** throughout �
 anxious and a formal 합니다체 reads as institutional. Concrete token values land with the
 first component, not in this document.
 
+## 7. The phone, and the rule that is not "a mobile version"
+
+There is one layout. Below **768px** (Tailwind's `md`) it changes shape; above it,
+nothing changes. Two codebases would mean every bug twice, and the workspace's whole
+argument — one project, one screen — does not survive being written twice.
+
+**The workspace shows one pane at a time**, chosen by the chips that already existed for
+maximising one (`PaneChips`, now a `tablist`: 지도 · 파일 · 연결 · 변경 기록). Three columns
+and a canvas do not fit in 375px; measured before this, the canvas came out **211 × 668**
+and the 연결 panel sat entirely off the right edge. It is now the full width of the screen.
+
+Three rules govern anything added to that shape:
+
+1. **Nothing is unmounted to hide it.** A pane you are not looking at is at zero width,
+   `inert`, and still mounted — §5's warning 2 is not only about a bar that migrates
+   between parents, it is about every way a component can be made to change parent,
+   including "render it only when its tab is on". Switching to 지도 and back must not eat
+   a half-typed 한글 syllable, and switching must not lose a scroll position either.
+2. **The breakpoint is decided in CSS, not in JavaScript.** Both grid templates are handed
+   over as custom properties and a `max-md:` variant picks one. A layout branched on a
+   measured width is a layout that paints the desktop shape for one frame on every phone.
+3. **44px is the floor for anything you press**, and a label never gets shorter to reach
+   it — the row gets taller, or it wraps on a word boundary. `word-break: keep-all` is
+   already global; the failure to watch for is a label *cut*, not a label wrapped.
+
+And one thing that has no touch equivalent at all: **`group-hover` reveals do not exist on
+a phone.** A control that only appears under a pointer is a control that is not there. If
+a row's action is hidden until hover, it must be present below `md`.
+
 ---
 
 ## Open question for David

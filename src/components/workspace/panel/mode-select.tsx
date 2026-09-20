@@ -67,7 +67,7 @@ export function ModeSelect({
             // is what `aria-pressed` is for, and it is what the tabs above this
             // already do.
             aria-pressed={chosen}
-            className={`rounded-lg px-2.5 py-1.5 text-[13px] font-medium transition-colors ${
+            className={`inline-flex items-center rounded-lg px-2.5 py-1.5 text-[13px] font-medium transition-colors max-md:min-h-11 max-md:px-4 ${
               chosen ? "bg-ink text-said" : "text-said-faint hover:text-said-soft"
             }`}
           >

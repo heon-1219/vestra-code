@@ -123,7 +123,7 @@ export function RereadButton({
         // both shapes — read aloud at rest, read and seen when maximised. The
         // hover says it too, since at rest there is nothing else to go on.
         title={state.label}
-        className={`flex shrink-0 items-center gap-1.5 rounded-md border border-edge-lit text-said-soft transition-colors hover:border-said-faint hover:bg-ink hover:text-said disabled:opacity-55 disabled:hover:border-edge-lit disabled:hover:bg-transparent ${
+        className={`flex shrink-0 items-center gap-1.5 rounded-md border border-edge-lit text-said-soft transition-colors hover:border-said-faint hover:bg-ink hover:text-said disabled:opacity-55 disabled:hover:border-edge-lit disabled:hover:bg-transparent max-md:min-h-11 max-md:px-3 ${
           expanded ? "px-2 py-1 text-[12px]" : "px-1.5 leading-[1.5]"
         }`}
       >

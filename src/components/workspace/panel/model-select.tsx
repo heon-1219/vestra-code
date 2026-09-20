@@ -141,7 +141,7 @@ export function ModelSelect({
  * stops being read.
  */
 function pill(on: boolean): string {
-  return `rounded-md px-2 py-1 font-medium transition-colors ${
+  return `inline-flex items-center rounded-md px-2 py-1 font-medium transition-colors max-md:min-h-11 max-md:px-3 ${
     on ? "bg-ink text-said" : "text-said-faint hover:text-said-soft"
   }`;
 }

@@ -235,7 +235,7 @@ export function PlacesPanel({
   return (
     <nav
       aria-label="프로젝트 안의 것들"
-      className="flex h-full min-h-0 flex-col border-r-[0.8px] border-edge bg-ink-raised"
+      className="flex h-full min-h-0 min-w-0 flex-col border-r-[0.8px] border-edge bg-ink-raised"
     >
       <div className="flex shrink-0 gap-1 border-b-[0.8px] border-edge px-3 py-2.5">
         <TabButton active={tab === "features"} onClick={() => setTab("features")}>
@@ -339,7 +339,7 @@ export function PlacesPanel({
                             aria-expanded={row.open}
                             title={row.path}
                             style={{ paddingInlineStart: indentOf(row.depth) }}
-                            className="flex w-full min-w-0 items-center gap-1 py-1 pr-2 text-left text-said-soft transition-colors hover:text-said"
+                            className="flex w-full min-w-0 items-center gap-1 py-1 pr-2 text-left text-said-soft transition-colors hover:text-said max-md:min-h-11"
                           >
                             {/*
                               One chevron that rotates, not two glyphs that
@@ -431,7 +431,7 @@ ${item.path ?? item.name}`
                           }
                           aria-current={item.id === selectedId ? "true" : undefined}
                           style={{ paddingInlineStart: indentOf(row.depth) + CHEVRON_GUTTER }}
-                          className={`flex min-w-0 flex-1 items-baseline gap-1.5 py-1 pr-2 text-left ${
+                          className={`flex min-w-0 flex-1 items-baseline gap-1.5 py-1 pr-2 text-left max-md:min-h-11 max-md:items-center ${
                             item.id === selectedId ? "text-said" : "text-said-soft"
                           }`}
                         >
@@ -450,12 +450,20 @@ ${item.path ?? item.name}`
                             hidden by opacity, so it is still in the tab order
                             and a keyboard reaches it exactly where a mouse
                             does.
+
+                            On a phone it is simply there. `group-hover` is the
+                            one reveal that has no equivalent on a touch
+                            screen — there is no pointer to rest on a row — so
+                            below `md` the only way to open a file would have
+                            been a control that never appears. The column is
+                            the whole width there, so the room it was hiding to
+                            save is room that exists.
                           */
                           <button
                             type="button"
                             onClick={() => onOpen(item.id)}
                             aria-label={`${name} 열어보기`}
-                            className="mr-1 shrink-0 rounded px-1.5 py-0.5 text-[11px] text-said-faint opacity-0 transition-opacity hover:text-said focus-visible:opacity-100 group-hover:opacity-100"
+                            className="mr-1 shrink-0 rounded px-1.5 py-0.5 text-[11px] text-said-faint opacity-0 transition-opacity hover:text-said focus-visible:opacity-100 group-hover:opacity-100 max-md:min-h-11 max-md:min-w-11 max-md:px-3 max-md:opacity-100"
                           >
                             열기
                           </button>
@@ -487,7 +495,7 @@ function TabButton({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`rounded-md px-2.5 py-1 text-[13px] transition-colors ${
+      className={`inline-flex items-center rounded-md px-2.5 py-1 text-[13px] transition-colors max-md:min-h-11 max-md:flex-1 max-md:justify-center ${
         active ? "bg-edge-lit text-said" : "text-said-faint hover:text-said-soft"
       }`}
     >

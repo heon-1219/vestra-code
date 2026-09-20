@@ -50,7 +50,7 @@ export function DeleteProject({
         // card, so filling with `ink` made the hover read as a hole punched in
         // the card — the same inversion the tab row had. Everything on this
         // screen now moves toward the light when you are on it.
-        className="absolute top-3 right-3 z-10 rounded-lg px-2.5 py-1.5 text-[12px] text-said-faint transition-colors hover:bg-edge-lit hover:text-said focus-visible:bg-edge-lit focus-visible:text-said"
+        className="absolute top-3 right-3 z-10 inline-flex items-center justify-center rounded-lg px-2.5 py-1.5 text-[12px] text-said-faint transition-colors hover:bg-edge-lit hover:text-said focus-visible:bg-edge-lit focus-visible:text-said max-md:min-h-11 max-md:px-3"
       >
         삭제
       </button>
@@ -106,7 +106,7 @@ export function DeleteProject({
               // revalidates /app, so this card leaves with the list it was in.
             });
           }}
-          className="rounded-lg bg-paper px-3.5 py-2 text-[13px] font-semibold text-ink transition-colors hover:bg-lamp disabled:opacity-55"
+          className="inline-flex items-center rounded-lg bg-paper px-3.5 py-2 text-[13px] font-semibold text-ink transition-colors hover:bg-lamp disabled:opacity-55 max-md:min-h-11"
         >
           {pending ? "지우는 중…" : "지우기"}
         </button>
@@ -114,7 +114,7 @@ export function DeleteProject({
           type="button"
           disabled={pending}
           onClick={() => setConfirming(false)}
-          className="rounded-lg px-3.5 py-2 text-[13px] text-said-soft transition-colors hover:text-said disabled:opacity-55"
+          className="inline-flex items-center rounded-lg px-3.5 py-2 text-[13px] text-said-soft transition-colors hover:text-said disabled:opacity-55 max-md:min-h-11"
         >
           취소
         </button>

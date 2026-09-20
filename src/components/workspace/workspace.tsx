@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import { z } from "zod";
 
 import { useAnalysisStream, type AnalysisCoverage } from "@/hooks/use-analysis-stream";
@@ -25,10 +25,15 @@ import { GroupingControl } from "./map/grouping-control";
 import {
   columnTemplate,
   Divider,
+  PANE_PANEL_ID,
   PaneChips,
   resizeColumns,
   resizeHistory,
   usePaneLayout,
+  usePhoneLayout,
+  usePhonePane,
+  type PaneId,
+  type PaneLayout,
 } from "./panes";
 import { PlacesPanel } from "./places-panel";
 import {
@@ -373,12 +378,67 @@ export function Workspace({
     (index: 0 | 1) => (deltaPx: number, containerPx: number) =>
       setColumns(resizeColumns(layout.columns, index, deltaPx, containerPx));
 
+  /*
+   * The phone shape, and the one rule that decides how it is built.
+   *
+   * Three columns and a canvas do not fit in 375px — measured, before this:
+   * the canvas came out **211 × 668**, six controls sat past the right edge,
+   * and 이 프로젝트, 많이 쓰이는 것 and 프롬프트 만들 were all cut mid-word. So below
+   * `md` the workspace shows one pane at a time, chosen by the chips that
+   * already existed for maximising one.
+   *
+   * It is the SAME JSX. Nothing is rendered conditionally, nothing moves to a
+   * different parent, and the three panes that are not on screen are at zero
+   * width rather than unmounted — which is the constraint the whole module was
+   * written around (UI_DIRECTION §5.2): the request box in the 연결 pane holds a
+   * half-typed 한글 syllable, and a React component that changes parent is
+   * unmounted and remounted with its IME composition thrown away. Switching to
+   * 지도 and back must not eat a syllable, so switching cannot be a remount.
+   *
+   * Which is also why the two templates are handed over as custom properties
+   * and chosen by a media query in CSS, rather than by branching on
+   * `phone` here: an inline `grid-template-columns` would be the server's
+   * guess about a width the server does not have, and the first paint on every
+   * phone would be the three-column layout for one frame.
+   */
+  const phone = usePhoneLayout();
+  const [phonePane, selectPhonePane] = usePhonePane();
+
+  /** The layout as the phone sees it: one pane filling the workspace, always. */
+  const phoneLayout: PaneLayout = { ...layout, maximized: phonePane };
+
+  /** The pane actually on screen right now, whichever shape we are in. */
+  const shownPane: PaneId | null = phone ? phonePane : layout.maximized;
+
+  /**
+   * A pane nobody can see should not be reachable by the Tab key.
+   *
+   * Only on a phone. Above the breakpoint a maximised pane's neighbours are
+   * also at zero width, but that is a state someone chose for a minute and the
+   * keyboard is how they chose it; on a phone the other three panes are not a
+   * state, they are simply elsewhere, and tabbing into a 0px 연결 panel to find
+   * a question box you cannot see is not a thing to leave in.
+   *
+   * `inert` rather than unmounting, for the reason above: it takes the subtree
+   * out of the tab order and out of the accessibility tree without touching a
+   * single piece of its state.
+   */
+  const hidden = (pane: PaneId) => phone && phonePane !== pane;
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-4 border-b-[0.8px] border-edge px-4 py-2.5">
+      <header className="flex shrink-0 flex-col border-b-[0.8px] border-edge">
+        <div className="flex items-center gap-2 px-3 py-1.5 md:gap-4 md:px-4 md:py-2.5">
+        {/*
+          44px tall on a phone and the same 13px line it always was above `md`.
+          The padding is negative-margined back out so the larger target does
+          not move the link away from the screen edge it is anchored to — a
+          back control that sits 8px in from the corner on a phone is a back
+          control your thumb has to aim at.
+        */}
         <Link
           href="/app"
-          className="shrink-0 text-[13px] text-said-faint transition-colors hover:text-said-soft"
+          className="-mx-2 flex min-h-11 shrink-0 items-center rounded-lg px-2 text-[13px] text-said-faint transition-colors hover:text-said-soft md:mx-0 md:min-h-0 md:px-0"
         >
           ← 내 프로젝트
         </Link>
@@ -415,11 +475,23 @@ export function Workspace({
             type="button"
             onClick={start}
             disabled={starting}
-            className="shrink-0 rounded-lg border border-edge-lit px-3 py-1.5 text-[13px] text-said-soft transition-colors hover:border-said-faint hover:bg-ink-raised hover:text-said disabled:opacity-55"
+            className="flex min-h-11 shrink-0 items-center rounded-lg border border-edge-lit px-3 py-1.5 text-[13px] text-said-soft transition-colors hover:border-said-faint hover:bg-ink-raised hover:text-said disabled:opacity-55 md:min-h-0"
           >
             {starting ? "시작하는 중…" : "다시 읽기"}
           </button>
         ) : null}
+        </div>
+
+        {/*
+          The same four words as the chips above, in the shape a phone needs.
+
+          Rendered always and hidden by CSS rather than by `phone`, so the
+          markup the server sends is already right for whichever width opens
+          it — the grid below chooses its shape the same way, and the two have
+          to agree in the first frame or the workspace changes shape once after
+          hydration, under the finger of someone who has just tapped.
+        */}
+        <PaneChips maximized={phonePane} onToggle={selectPhonePane} phone />
       </header>
 
       {/*
@@ -428,15 +500,32 @@ export function Workspace({
       */}
       <div className="flex min-h-0 flex-1 flex-col">
       <div
-        className="grid min-h-0"
-        style={{
-          gridTemplateColumns: columnTemplate(layout),
-          // The row gives up its height entirely when the band is the pane
-          // filling the screen. `flex` rather than a class because both values
-          // are computed, and a class string built from state is a class
-          // Tailwind never generates.
-          flex: layout.maximized === "history" ? "0 0 0px" : "1 1 0px",
-        }}
+        /*
+          Both shapes are handed over at once and CSS picks one.
+
+          `grid-template-columns` is set by a utility reading a custom property
+          rather than written into `style`, because an inline property beats
+          every class and there would then be no way for a media query to have
+          the last word. The values are still computed here — they are
+          fractions from a drag — so they travel as `--pane-cols` and
+          `--pane-cols-phone`, and the `max-md:` variant swaps which one is
+          read. Nothing about the layout is decided by JavaScript that knows
+          the width, which is what keeps the first paint on a phone from being
+          the desktop layout.
+        */
+        className="grid min-h-0 [grid-template-columns:var(--pane-cols)] [flex:var(--pane-row-flex)] max-md:[grid-template-columns:var(--pane-cols-phone)] max-md:[flex:var(--pane-row-flex-phone)]"
+        style={
+          {
+            "--pane-cols": columnTemplate(layout),
+            "--pane-cols-phone": columnTemplate(phoneLayout),
+            // The row gives up its height entirely when the band is the pane
+            // filling the screen.
+            "--pane-row-flex":
+              layout.maximized === "history" ? "0 0 0px" : "1 1 0px",
+            "--pane-row-flex-phone":
+              phonePane === "history" ? "0 0 0px" : "1 1 0px",
+          } as CSSProperties
+        }
       >
         {/*
           Each pane is wrapped rather than placed directly in the grid. A pane
@@ -465,7 +554,13 @@ export function Workspace({
           disappear at exactly the width where a person is least able to find
           anything else.
         */}
-        <div className="grid min-h-0 min-w-0 grid-rows-[minmax(0,1fr)_auto] overflow-hidden">
+        <div
+          id={PANE_PANEL_ID.places}
+          role={phone ? "tabpanel" : undefined}
+          aria-label={phone ? "파일" : undefined}
+          inert={hidden("places")}
+          className="grid min-h-0 min-w-0 grid-rows-[minmax(0,1fr)_auto] overflow-hidden"
+        >
           <PlacesPanel
             items={view.items}
             selectedId={selectedId}
@@ -484,10 +579,26 @@ export function Workspace({
           valueNow={layout.columns[0] * 100}
           onDelta={dragColumn(0)}
           onReset={reset}
+          collapsed={shownPane !== null}
         />
 
-        <section className="flex min-h-0 min-w-0 flex-col overflow-hidden">
-          <div className="flex shrink-0 items-center gap-3 border-b-[0.8px] border-edge px-4 py-2">
+        <section
+          id={PANE_PANEL_ID.map}
+          role={phone ? "tabpanel" : undefined}
+          aria-label={phone ? "지도" : undefined}
+          inert={hidden("map")}
+          className="flex min-h-0 min-w-0 flex-col overflow-hidden"
+        >
+          {/*
+            One row above `md`, two below it.
+
+            At 375px the beam and 묶는 기준 together want about 330px of the 343
+            available, which leaves the search box 150px — narrower than the
+            sentence it asks for. Wrapping is not truncation: both controls keep
+            their full label and the row grows by 44px, on a screen that has the
+            height because it is no longer spending it on two other columns.
+          */}
+          <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b-[0.8px] border-edge px-3 py-2 md:flex-nowrap md:px-4">
             {/*
               The beam. Uncontrolled on purpose: React never writes a value back
               into this input, so a 한글 syllable that is mid-composition cannot
@@ -512,7 +623,19 @@ export function Workspace({
                 running ? "다 읽으면 찾아볼 수 있어요" : "찾고 싶은 것을 적어 보세요"
               }
               aria-label="지도에서 찾기"
-              className="min-w-0 flex-1 rounded-lg border border-edge bg-ink px-3 py-1.5 text-[13px] text-said transition-colors placeholder:text-said-faint hover:border-edge-lit focus:border-lamp-dim focus:outline-none disabled:opacity-55"
+              /*
+                `grow shrink basis-0` rather than `flex-1`, so that
+                `max-md:basis-full` has a basis of its own to override — the
+                `flex` shorthand writes `flex-basis: 0%` and which of the two
+                declarations wins would then be a question about the order
+                Tailwind happens to emit them in.
+
+                Full width on a phone because the alternative is 146px at
+                320px, which cuts "찾고 싶은 것을 적어 보세요" in half — and the
+                placeholder is the only thing on this screen that says what the
+                beam is for.
+              */
+              className="min-w-0 grow shrink basis-0 rounded-lg border border-edge bg-ink px-3 py-1.5 text-[13px] text-said transition-colors placeholder:text-said-faint hover:border-edge-lit focus:border-lamp-dim focus:outline-none disabled:opacity-55 max-md:min-h-11 max-md:basis-full"
             />
             {query ? (
               <button
@@ -521,7 +644,7 @@ export function Workspace({
                   if (inputRef.current) inputRef.current.value = "";
                   setQuery("");
                 }}
-                className="shrink-0 text-[12px] text-said-faint transition-colors hover:text-said-soft"
+                className="flex min-h-11 shrink-0 items-center rounded-lg px-2 text-[12px] text-said-faint transition-colors hover:text-said-soft md:min-h-0 md:px-0"
               >
                 지우기
               </button>
@@ -671,6 +794,7 @@ export function Workspace({
           valueNow={(layout.columns[0] + layout.columns[1]) * 100}
           onDelta={dragColumn(1)}
           onReset={reset}
+          collapsed={shownPane !== null}
         />
 
         {/*
@@ -685,7 +809,13 @@ export function Workspace({
           unaware that they are in a resizable layout, which is what lets them
           be edited independently.
         */}
-        <div className="grid min-h-0 min-w-0 overflow-hidden">
+        <div
+          id={PANE_PANEL_ID.panel}
+          role={phone ? "tabpanel" : undefined}
+          aria-label={phone ? "연결" : undefined}
+          inert={hidden("panel")}
+          className="grid min-h-0 min-w-0 overflow-hidden"
+        >
         <RightPanel
           // Always the real view, even when it is empty: an empty graph is an
           // answer the panel knows how to say, and `null` would show "loading"
@@ -735,19 +865,39 @@ export function Workspace({
             setHistory(resizeHistory(layout.history, deltaPx, containerPx))
           }
           onReset={reset}
+          /*
+            On a phone there is nothing to divide — the band is either the whole
+            workspace or it is not on screen — and a 5px bar you can drag is a
+            5px bar you can hit by accident while scrolling past it. It stays
+            in the tree because the desktop's `maximized` state is a separate
+            question from the phone's, and only CSS knows which width we are at.
+          */
+          collapsed={phone}
         />
       ) : null}
 
       <div
-        className="rule-t flex items-center gap-3 overflow-hidden bg-ink-raised px-4 py-1.5 text-[11px] text-said-faint"
-        style={{
-          flex:
-            layout.maximized === "history"
-              ? "1 1 0px"
-              : layout.maximized === null
-                ? `0 0 ${layout.history * 100}%`
-                : "0 0 0px",
-        }}
+        id={PANE_PANEL_ID.history}
+        role={phone ? "tabpanel" : undefined}
+        aria-label={phone ? "변경 기록" : undefined}
+        inert={hidden("history")}
+        className="rule-t flex items-center gap-3 overflow-hidden bg-ink-raised px-4 py-1.5 text-[11px] text-said-faint [flex:var(--pane-band-flex)] max-md:[flex:var(--pane-band-flex-phone)] max-md:items-stretch max-md:px-3 max-md:py-3"
+        style={
+          {
+            "--pane-band-flex":
+              layout.maximized === "history"
+                ? "1 1 0px"
+                : layout.maximized === null
+                  ? `0 0 ${layout.history * 100}%`
+                  : "0 0 0px",
+            // On a phone the band is a pane like the other three: all of the
+            // workspace, or none of it. There is no strip along the bottom,
+            // because a 4.5% strip of a 812px screen is 36px of a list nobody
+            // can read and 36px the map cannot have.
+            "--pane-band-flex-phone":
+              phonePane === "history" ? "1 1 0px" : "0 0 0px",
+          } as CSSProperties
+        }
       >
         {/*
           The band reads its own runs rather than being handed them, because
@@ -758,7 +908,7 @@ export function Workspace({
         */}
         <HistoryBand
           projectId={project.id}
-          expanded={layout.maximized === "history"}
+          expanded={shownPane === "history"}
           activeRunId={runId}
           lastRunId={view.lastRun?.id ?? null}
           lastRunStatus={view.lastRun?.status ?? null}

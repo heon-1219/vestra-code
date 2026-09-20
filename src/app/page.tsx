@@ -159,7 +159,7 @@ const ACTION = `${ACTION_BASE} h-11 px-6 text-[15px]`;
  * same question twice at the same volume. One size per role, composed rather
  * than overridden, so the cascade has nothing to decide.
  */
-const ACTION_SMALL = `${ACTION_BASE} h-10 px-5 text-[14px]`;
+const ACTION_SMALL = `${ACTION_BASE} h-11 px-5 text-[14px] md:h-10`;
 
 /**
  * The recessed bands, with their edges given back.
@@ -231,7 +231,7 @@ export default function LandingPage() {
           <nav className="flex items-center gap-6">
             <Link
               href="/sign-in"
-              className="text-[14px] text-said-soft transition-colors hover:text-said"
+              className="-mx-2.5 inline-flex min-h-11 items-center rounded-lg px-2.5 text-[14px] text-said-soft transition-colors hover:text-said md:mx-0 md:min-h-0 md:px-0"
             >
               로그인
             </Link>

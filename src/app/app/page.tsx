@@ -36,7 +36,19 @@ export default async function AppDashboard() {
      * definite height; without that this would collapse to its content and the
      * inner `overflow-y-auto` would never have a reason to scroll.
      */
-    <div className="mx-auto flex h-full min-h-0 max-w-[1180px] flex-col px-6 py-10">
+    /*
+      One screen or one page, and `lg` is where it changes.
+
+      Above `lg` the height is the viewport's: the picker and the list sit side
+      by side and only the list scrolls, so both are reachable without moving
+      the page. Below it there is one column, and the same rule turns into the
+      bug the founder reported — the picker and the list each get half a phone,
+      so "로그인 후 레포지토리 선택" is a search field over a 110px window onto a
+      list of repositories. There is no second column to keep in view down here,
+      so the page simply becomes a page: content height, one scroll, the
+      repository list as long as it wants to be.
+    */
+    <div className="mx-auto flex h-full min-h-0 max-w-[1180px] flex-col px-6 py-10 max-lg:h-auto max-lg:min-h-full max-lg:px-4 max-lg:py-7">
       <h1 className="display-kr shrink-0 text-[30px]">내 프로젝트</h1>
 
       {/*
@@ -58,7 +70,7 @@ export default async function AppDashboard() {
         to. The `lg:` track already had `minmax(0,1fr)` for its second column
         for the same reason.
       */}
-      <div className="mt-7 grid min-h-0 flex-1 grid-cols-1 gap-8 lg:grid-cols-[minmax(300px,360px)_minmax(0,1fr)]">
+      <div className="mt-7 grid min-h-0 flex-1 grid-cols-1 gap-8 max-lg:flex-none lg:grid-cols-[minmax(300px,360px)_minmax(0,1fr)]">
         {/*
           The picker is the narrower of the two — its widest state is a list of
           repository names, which needs far less room than a grid of cards. On a
@@ -83,7 +95,7 @@ export default async function AppDashboard() {
           <h2 className="label-kr shrink-0 text-micro text-said-faint">
             새 프로젝트
           </h2>
-          <div className="mt-3 flex min-h-0 flex-1 flex-col">
+          <div className="mt-3 flex min-h-0 flex-1 flex-col max-lg:flex-none">
             <AddProject />
           </div>
         </section>
@@ -102,7 +114,7 @@ export default async function AppDashboard() {
             ) : null}
           </h2>
 
-          <div className="mt-3 min-h-0 flex-1 overflow-y-auto">
+          <div className="mt-3 min-h-0 flex-1 overflow-y-auto max-lg:flex-none max-lg:overflow-visible">
             {myProjects.length === 0 ? (
               /*
                * The empty state fills the column rather than sitting at the top

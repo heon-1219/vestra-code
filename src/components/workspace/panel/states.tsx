@@ -441,7 +441,7 @@ export function NothingSelectedState({
                     <button
                       type="button"
                       onClick={() => onSelect(item.id)}
-                      className="-mx-1.5 block w-[calc(100%+0.75rem)] truncate rounded-md px-1.5 py-1 text-left text-[14px] text-said-soft transition-colors hover:bg-ink hover:text-lamp"
+                      className="-mx-1.5 block w-[calc(100%+0.75rem)] truncate rounded-md px-1.5 py-1 text-left text-[14px] text-said-soft transition-colors hover:bg-ink hover:text-lamp max-md:py-2.5"
                     >
                       {item.label ? (
                         displayName(item)

@@ -34,6 +34,38 @@ export const PANE_LABELS: Record<PaneId, string> = {
   history: "변경 기록",
 };
 
+/**
+ * The order the panes are offered in on a phone, which is not the order they
+ * are laid out in on a desktop.
+ *
+ * On a wide screen the chips read left to right across the screen they
+ * describe, so 파일 comes first because the file list is the left column. On a
+ * phone there are no columns to describe: the row is a table of contents, and
+ * the first entry should be the thing the product is for. 지도 is what someone
+ * opened the project to see.
+ */
+export const PHONE_PANE_ORDER: readonly PaneId[] = ["map", "places", "panel", "history"];
+
+/**
+ * Stable ids so the phone's tab row can point at the pane it switches to.
+ *
+ * The panes are rendered by the shell and the control lives here, so the two
+ * would otherwise have to agree on a string written twice.
+ */
+export const PANE_PANEL_ID: Record<PaneId, string> = {
+  places: "pane-places",
+  map: "pane-map",
+  panel: "pane-panel",
+  history: "pane-history",
+};
+
+const PANE_TAB_ID: Record<PaneId, string> = {
+  places: "panetab-places",
+  map: "panetab-map",
+  panel: "panetab-panel",
+  history: "panetab-history",
+};
+
 export type PaneLayout = {
   /** Column widths as fractions of the row. Always three, always sum to 1. */
   columns: [number, number, number];
@@ -181,6 +213,82 @@ function subscribe(listener: () => void): () => void {
 const getSnapshot = () => currentLayout;
 const getServerSnapshot = () => DEFAULT_LAYOUT;
 
+/**
+ * Below this width the workspace stops being three columns and becomes one
+ * pane at a time. 768px is Tailwind's `md`, deliberately: the same number is
+ * written as a `md:` variant on the chrome around the panes, and a layout whose
+ * JavaScript breakpoint and CSS breakpoint disagree changes shape in two steps.
+ *
+ * `767.98` rather than `767`, because a viewport can be a fraction of a pixel
+ * wide — a zoomed page, a desktop at 125% — and `max-width: 767px` leaves a
+ * sliver where neither query matches and the screen is in neither layout.
+ */
+const PHONE_QUERY = "(max-width: 767.98px)";
+
+let phoneQuery: MediaQueryList | null = null;
+let onPhone = false;
+
+/**
+ * Whether the workspace is in its one-pane-at-a-time shape.
+ *
+ * A media query rather than a measured width, and read through the same
+ * `useSyncExternalStore` the layout is read through, for the same reason: the
+ * server has no width, so the server and the first client render must agree on
+ * something (the desktop shape), and React must then re-read and re-render
+ * once, before paint. Reading `window.innerWidth` in an effect and calling
+ * setState is the shape React 19 rejects outright, and it would also paint the
+ * three-column layout for a frame on every phone that opens the page.
+ */
+function subscribePhone(listener: () => void): () => void {
+  if (!phoneQuery) {
+    phoneQuery = window.matchMedia(PHONE_QUERY);
+    onPhone = phoneQuery.matches;
+  }
+  const query = phoneQuery;
+  const handle = () => {
+    onPhone = query.matches;
+    listener();
+  };
+  query.addEventListener("change", handle);
+  return () => query.removeEventListener("change", handle);
+}
+
+const getPhone = () => onPhone;
+const getServerPhone = () => false;
+
+export function usePhoneLayout(): boolean {
+  return useSyncExternalStore(subscribePhone, getPhone, getServerPhone);
+}
+
+/**
+ * Which pane the phone is showing.
+ *
+ * Held apart from `maximized` rather than reusing it, and the reason is a bug
+ * that reusing it would create: on a phone one pane is *always* filling the
+ * screen, so `maximized` would never be null again — and someone who rotated a
+ * tablet back to a wide layout would find a workspace with two of its three
+ * columns collapsed and no memory of having asked for that. The two states
+ * answer different questions ("give this one everything for a minute" against
+ * "which of the four am I looking at"), so they are two values.
+ *
+ * Not persisted, for the reason `maximized` is not: coming back to a phone
+ * that opens on 변경 기록 rather than on the map is the app having lost the map.
+ * The default is 지도, which is what the product is.
+ */
+let phonePane: PaneId = "map";
+const getPhonePane = () => phonePane;
+const getServerPhonePane = (): PaneId => "map";
+
+export function usePhonePane(): [PaneId, (pane: PaneId) => void] {
+  const pane = useSyncExternalStore(subscribe, getPhonePane, getServerPhonePane);
+  const select = useCallback((next: PaneId) => {
+    if (phonePane === next) return;
+    phonePane = next;
+    emit();
+  }, []);
+  return [pane, select];
+}
+
 export function usePaneLayout() {
   const layout = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
@@ -261,9 +369,21 @@ export function Divider({
   valueNow,
   onDelta,
   onReset,
+  collapsed = false,
 }: {
   orientation: "vertical" | "horizontal";
   label: string;
+  /**
+   * The track this divider sits in has been squeezed to 0px — by a maximised
+   * pane, or by the phone layout, where there is nothing to divide at all.
+   *
+   * A zero-width separator is still in the tab order and still announced, so
+   * without this a phone user tabbing through the workspace meets two controls
+   * that are not on the screen and cannot do anything. It stays mounted rather
+   * than being removed, because the grid template names five tracks in every
+   * state and a template whose track count changes is a template that reflows.
+   */
+  collapsed?: boolean;
   /** Percent of the container taken by the pane before the divider, for AT. */
   valueNow: number;
   /**
@@ -284,13 +404,14 @@ export function Divider({
 
   return (
     <div
-      role="separator"
-      aria-orientation={orientation}
-      aria-label={label}
-      aria-valuenow={Math.round(valueNow)}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      tabIndex={0}
+      role={collapsed ? "presentation" : "separator"}
+      aria-orientation={collapsed ? undefined : orientation}
+      aria-label={collapsed ? undefined : label}
+      aria-valuenow={collapsed ? undefined : Math.round(valueNow)}
+      aria-valuemin={collapsed ? undefined : 0}
+      aria-valuemax={collapsed ? undefined : 100}
+      aria-hidden={collapsed ? true : undefined}
+      tabIndex={collapsed ? -1 : 0}
       onPointerDown={(event) => {
         // Only the primary button, and never a touch that is actually a scroll
         // gesture starting on the divider.
@@ -341,7 +462,7 @@ export function Divider({
       */
       className={`group relative shrink-0 bg-edge transition-colors hover:bg-edge-lit focus-visible:bg-lamp-dim focus-visible:outline-none active:bg-lamp-dim ${
         vertical ? "cursor-col-resize" : "cursor-row-resize"
-      }`}
+      } ${collapsed ? "pointer-events-none" : ""}`}
     >
       {/*
         The grab area is larger than the line.
@@ -408,11 +529,101 @@ function containerOf(element: HTMLElement, vertical: boolean): number {
 export function PaneChips({
   maximized,
   onToggle,
+  phone = false,
 }: {
   maximized: PaneId | null;
   onToggle: (pane: PaneId) => void;
+  /**
+   * The same four words, doing a different job.
+   *
+   * Below `md` there is no room for three columns and a canvas — measured at
+   * 375px, the canvas came out 211px wide and six controls sat off the right
+   * edge of the screen — so the workspace shows one pane at a time and this
+   * becomes the only way to reach the other three. That makes it navigation
+   * rather than a convenience, and navigation has to say which of the four you
+   * are in: it is a `tablist` here, one of the four is always selected, and
+   * pressing the selected one does nothing rather than returning to a layout
+   * this width cannot draw.
+   */
+  phone?: boolean;
 }) {
   const panes: PaneId[] = ["places", "map", "panel", "history"];
+
+  if (phone) {
+    const order = PHONE_PANE_ORDER;
+    const move = (from: PaneId, step: number) => {
+      const at = order.indexOf(from);
+      // Wraps, which is what a tablist does: pressing → on the last tab lands
+      // on the first rather than on nothing.
+      onToggle(order[(at + step + order.length) % order.length]);
+    };
+
+    return (
+      <div
+        role="tablist"
+        aria-label="보고 있는 화면"
+        className="flex shrink-0 items-stretch gap-1 border-t-[0.8px] border-edge bg-ink px-2 py-1.5 md:hidden"
+      >
+        {order.map((pane) => {
+          const on = maximized === pane;
+          return (
+            <button
+              key={pane}
+              type="button"
+              role="tab"
+              id={PANE_TAB_ID[pane]}
+              aria-selected={on}
+              aria-controls={PANE_PANEL_ID[pane]}
+              /*
+                Roving tabindex: the four chips are one stop, and the arrow keys
+                move within it. A row of four buttons that each take a tab stop
+                is four presses to get past a control you were not using.
+              */
+              tabIndex={on ? 0 : -1}
+              onClick={() => onToggle(pane)}
+              onKeyDown={(event) => {
+                if (event.key === "ArrowRight") {
+                  event.preventDefault();
+                  move(pane, 1);
+                } else if (event.key === "ArrowLeft") {
+                  event.preventDefault();
+                  move(pane, -1);
+                } else if (event.key === "Home") {
+                  event.preventDefault();
+                  onToggle(order[0]);
+                } else if (event.key === "End") {
+                  event.preventDefault();
+                  onToggle(order[order.length - 1]);
+                }
+              }}
+              /*
+                `min-h-11` is 44px, the smallest target a thumb reliably lands
+                on, and it is a minimum rather than a height so a label that
+                wraps at 320px makes the row taller instead of being cut.
+
+                `whitespace-nowrap` on 변경 기록: it is the only two-word label
+                here, and at 320px each chip is 74px, which is wide enough for
+                it on one line but not by much. Breaking it would put 변경 on one
+                line and 기록 on the next inside a 44px button — the label
+                mid-word failure this layout exists to remove.
+
+                No `label-kr`: its 0.14em tracking is set for a heading with
+                space around it, and on a chip 74px wide it is the difference
+                between a label that fits and one that does not.
+              */
+              className={`flex min-h-11 flex-1 items-center justify-center rounded-lg px-1 text-[13px] whitespace-nowrap transition-colors ${
+                on
+                  ? "bg-paper font-semibold text-ink"
+                  : "text-said-soft active:bg-ink-raised"
+              }`}
+            >
+              {PANE_LABELS[pane]}
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
 
   return (
     <div className="hidden shrink-0 items-center gap-1 md:flex">

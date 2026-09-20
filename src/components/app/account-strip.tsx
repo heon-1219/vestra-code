@@ -49,7 +49,7 @@ export function AccountStrip({
       <Link
         href="/app"
         title="내 프로젝트"
-        className="shrink-0 rounded-md px-1.5 py-1 text-[11px] text-said-faint transition-colors hover:bg-ink hover:text-said-soft"
+        className="inline-flex shrink-0 items-center rounded-md px-1.5 py-1 text-[11px] text-said-faint transition-colors hover:bg-ink hover:text-said-soft max-md:min-h-11 max-md:min-w-11 max-md:justify-center max-md:px-3"
       >
         목록
       </Link>

@@ -161,7 +161,7 @@ export function RepoPicker({
      * a fixed 340px list inside a card inside a scrolling column, which put two
      * bars side by side — the outer one with almost nothing to move.
      */
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col max-lg:h-auto">
       <input
         type="search"
         value={query}
@@ -169,7 +169,7 @@ export function RepoPicker({
         disabled={loading}
         placeholder="저장소 이름으로 찾기"
         aria-label="저장소 검색"
-        className="hairline w-full shrink-0 rounded-xl bg-ink px-4 py-2.5 text-[14px] transition-colors placeholder:text-said-faint focus:border-edge-lit disabled:placeholder:text-said-faint/50"
+        className="hairline w-full shrink-0 rounded-xl bg-ink px-4 py-2.5 text-[14px] transition-colors placeholder:text-said-faint focus:border-edge-lit disabled:placeholder:text-said-faint/50 max-md:min-h-11"
       />
 
       {/*
@@ -188,7 +188,17 @@ export function RepoPicker({
         stay where they are.
       */}
       <ul
-        className={`hairline mt-3 min-h-[160px] flex-1 divide-y divide-edge rounded-xl bg-ink ${
+        /*
+          `max-h-[60svh]` below `lg`, where this list is no longer a column in
+          a fixed-height screen but a box in a page that scrolls.
+          `flex-1` would resolve to nothing there (a flex item with a 0 basis
+          inside an auto-height column), and no cap at all would put a hundred
+          repositories between the search field and everything under it.
+          `svh` rather than `vh`: on a phone `vh` is the tall viewport, so a
+          `vh` cap is taller than the screen whenever the browser's own bar is
+          showing.
+        */
+        className={`hairline mt-3 min-h-[160px] flex-1 divide-y divide-edge rounded-xl bg-ink max-lg:max-h-[60svh] max-lg:flex-none ${
           loading ? "animate-pulse overflow-hidden" : "overflow-y-auto"
         }`}
       >
@@ -268,7 +278,7 @@ export function RepoPicker({
                   // 연결됨 would be 1.6px taller than its neighbours, and a
                   // column of buttons at two heights is the ragged edge this
                   // list is otherwise careful about.
-                  className={`shrink-0 rounded-lg border-[0.8px] px-4 py-2 text-[13px] transition-colors ${
+                  className={`inline-flex shrink-0 items-center rounded-lg border-[0.8px] px-4 py-2 text-[13px] transition-colors max-md:min-h-11 ${
                     repo.connected
                       ? "border-edge bg-transparent font-medium text-said-faint"
                       : "border-transparent bg-paper font-semibold text-ink hover:bg-lamp disabled:opacity-40"

@@ -25,7 +25,7 @@ export function SignOutButton() {
       type="button"
       onClick={handleSignOut}
       disabled={pending}
-      className="text-[14px] text-said-soft transition-colors hover:text-said disabled:opacity-55"
+      className="inline-flex items-center rounded-lg text-[14px] text-said-soft transition-colors hover:text-said disabled:opacity-55 max-md:min-h-11 max-md:px-2"
     >
       {pending ? "나가는 중…" : "로그아웃"}
     </button>

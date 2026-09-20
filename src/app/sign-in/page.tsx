@@ -73,7 +73,7 @@ export default async function SignInPage() {
         <div className="flex h-10 items-center">
           <Link
             href="/"
-            className="text-[15px] font-semibold tracking-[-0.02em] text-said-soft transition-colors hover:text-said"
+            className="inline-flex min-h-11 items-center text-[15px] font-semibold tracking-[-0.02em] text-said-soft transition-colors hover:text-said md:min-h-0"
           >
             Vestra Code
           </Link>

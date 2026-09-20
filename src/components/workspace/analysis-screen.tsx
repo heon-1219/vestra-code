@@ -172,7 +172,7 @@ export function AnalysisScreen({
      */
     <section
       data-stage={stage}
-      className="vc-analysis relative flex h-full w-full items-start justify-center overflow-y-auto px-6 py-10"
+      className="vc-analysis relative flex h-full w-full items-start justify-center overflow-y-auto px-6 py-10 max-md:px-4 max-md:py-6"
     >
       <style href="vestra-analysis-screen" precedence="medium">
         {SCREEN_CSS}
@@ -507,7 +507,7 @@ function Stopped({
         <button
           type="button"
           onClick={onRetry}
-          className="mt-4 rounded-lg bg-paper px-4 py-2 text-[14px] font-semibold text-ink transition duration-150 hover:bg-lamp active:scale-[0.98]"
+          className="mt-4 inline-flex items-center rounded-lg bg-paper px-4 py-2 text-[14px] font-semibold text-ink transition duration-150 hover:bg-lamp active:scale-[0.98] max-md:min-h-11"
         >
           다시 시도하기
         </button>
@@ -549,7 +549,7 @@ function Details({ progress }: { progress: AnalysisProgress }) {
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
         aria-controls="vc-analysis-details"
-        className="flex items-center gap-1.5 text-[13px] text-said-faint transition-colors hover:text-said-soft"
+        className="flex items-center gap-1.5 text-[13px] text-said-faint transition-colors hover:text-said-soft max-md:min-h-11"
       >
         <span aria-hidden="true">{open ? "▾" : "▸"}</span>
         자세히

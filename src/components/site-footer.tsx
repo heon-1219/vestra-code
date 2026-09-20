@@ -34,7 +34,7 @@ export function SiteFooter() {
           // `noopener` is the one that matters: without it the page we open
           // gets a handle on this one through `window.opener`.
           rel="noreferrer noopener"
-          className="transition-colors hover:text-said-soft"
+          className="inline-flex min-h-11 items-center transition-colors hover:text-said-soft md:min-h-0"
         >
           davidseheonchang.xyz
         </a>

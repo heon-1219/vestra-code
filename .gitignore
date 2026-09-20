@@ -45,3 +45,6 @@ next-env.d.ts
 # (same relationship package-lock.json has with node_modules)
 /.agents/skills/
 /.claude/skills/
+
+# agent scratch space
+/.scratch/

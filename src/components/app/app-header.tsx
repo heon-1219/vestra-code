@@ -45,16 +45,22 @@ export function AppHeader({
   const inProject = /^\/app\/[^/]+/.test(pathname);
 
   const bar = (
-    <div className="mx-auto flex max-w-[1180px] items-center justify-between px-6 py-4">
-      <Link href="/app" className="text-[15px] font-semibold tracking-[-0.02em]">
+    <div className="mx-auto flex max-w-[1180px] items-center justify-between gap-3 px-6 py-4 max-md:gap-2 max-md:px-4 max-md:py-2">
+      <Link href="/app" className="shrink-0 whitespace-nowrap text-[15px] font-semibold tracking-[-0.02em] max-md:flex max-md:min-h-11 max-md:items-center">
         Vestra Code
       </Link>
-      <div className="flex items-center gap-5">
+      <div className="flex min-w-0 items-center gap-5 max-md:gap-2">
         {/* Picture and name are one object, so they get one gap between them
             and the sign-out button keeps the row's larger gap. */}
-        <span className="flex items-center gap-2.5">
+        <span className="flex min-w-0 items-center gap-2.5">
           <UserAvatar image={image} name={name} />
-          <span className="text-[14px] text-said-faint">{name}</span>
+          {/* One line, and it truncates. At 375px the bar is a wordmark, a
+              picture, a name and a way out; the name is the only one of the
+              four that can afford to be cut, and wrapping it to two lines
+              makes the bar taller than the thing it sits over. */}
+          <span className="min-w-0 truncate whitespace-nowrap text-[14px] text-said-faint">
+            {name}
+          </span>
         </span>
         {signOut}
       </div>
