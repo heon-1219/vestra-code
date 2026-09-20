@@ -62,7 +62,12 @@ describe("ingestUpload — an uploaded folder becomes an ordinary ingest", () =>
     } finally {
       await result.cleanup();
     }
-  });
+    // It writes a real tree to a real temp directory and then runs the real
+    // analyzer over it, which is the whole point — module resolution cannot be
+    // proved against an in-memory fake. ~2.4s alone, and the default five
+    // seconds is not enough of a margin once the rest of the suite is also
+    // using the disk.
+  }, 20_000);
 
   it("records an asset without ever receiving its bytes", async () => {
     const result = await ingestUpload(
