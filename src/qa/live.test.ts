@@ -72,6 +72,34 @@ describe.skipIf(!live || !keyed)("the investigation loop, against a real model",
         `[qa] finding (${finding.certainty}): ${finding.claim} — ${JSON.stringify(finding.citations)}`,
       );
     }
+    /*
+     * The walk, printed the way the panel shows it.
+     *
+     * Not an assertion — whether a real model crosses two connections or four
+     * is a question about the model. It is here because this is the only place
+     * the whole chain runs at once: a real question, a real model, real tools,
+     * and the trail that comes out the far end. A trail that came back empty
+     * from a loop that plainly took steps is the failure this makes visible,
+     * and no unit test can see it because every one of them supplies its own
+     * tool results.
+     */
+    const trail = investigation.trail;
+    console.log(`[qa] walk: ${trail.points.length}곳, 건넌 연결 ${trail.hops.length}개`);
+    const nameOf = (id: string) =>
+      GRAPH.items.find((item) => item.id === id)?.name ?? id;
+    for (const point of trail.points) {
+      const mark = point.critical ? "근거" : "  ";
+      console.log(`[qa]   ${mark} [${point.number}] ${nameOf(point.id)} (${point.step}단계, ${point.leg}번째 길)`);
+    }
+    for (const [index, hop] of trail.hops.entries()) {
+      console.log(
+        `[qa]   ${index + 1}. ${nameOf(hop.from)} → ${nameOf(hop.to)} (${hop.relation}, ${hop.via})`,
+      );
+    }
+    if (trail.unplaced.length > 0) {
+      console.log(`[qa] 지도에 못 짚은 인용: ${JSON.stringify(trail.unplaced)}`);
+    }
+
     console.log(`[qa] spent: ${JSON.stringify(investigation.spent)}`);
     for (const ruled of investigation.ruledOut) console.log(`[qa] looked at: ${ruled}`);
     for (const refused of investigation.refused) console.log(`[qa] refused: ${JSON.stringify(refused)}`);
