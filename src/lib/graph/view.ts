@@ -61,6 +61,24 @@ export type GraphConnection = {
   to: string;
   relation: ConnectionRelation;
   certainty: Certainty;
+  /**
+   * The line the call, render or fetch is written on, in the FROM end's file.
+   *
+   * Absent rather than null when we do not have one, so there is exactly one
+   * way to say "no line" — `imports`, `contains`, `uses_package` and
+   * `belongs_to` never carry one, and neither does an edge written before
+   * `analyzer.ts` started recording it.
+   *
+   * Optional because this arrived after three other modules were already
+   * constructing this type. Additive only: nothing that builds a connection
+   * today has to change, and nothing that reads one may assume it is there.
+   *
+   * It is worth carrying. "PayButton.tsx 34줄에서" is the difference between a
+   * sentence a person can go and check and one they have to believe, and the
+   * number was already sitting in `edges.metadata` — measured by the parser,
+   * stored by `persist.ts`, and dropped on the floor by `load.ts` until now.
+   */
+  line?: number;
 };
 
 export type ConnectionRelation =
@@ -141,6 +159,35 @@ export const RELATION_WORDS: Record<
   // package territory on the map: one idea, said the same way in both places.
   uses_package: { forward: "이 도구를 써요", backward: "이 도구를 쓰는 곳", short: "가져다 써요" },
   belongs_to: { forward: "이 기능에 속해요", backward: "여기에 속한 것", short: "속해요" },
+};
+
+/**
+ * Which connection tells you the most, when something has to choose.
+ *
+ * ONE ranking, for the whole product. `fetches` crosses the gap between the
+ * screens and the server and is the connection a non-developer asks about by
+ * name; `contains` is last because every picture has already said it.
+ *
+ * It lives here rather than in a renderer because it is now read by two
+ * unrelated things — the map, which decides which lines get their words first,
+ * and `flow.ts`, which decides which way a walk turns. Two rankings for one
+ * idea is the D69 failure: `usedBy` was counted one way in `load.ts` and
+ * another way in the panel, and the product told a user `kv` was used in 7
+ * places when the parser had measured 6.
+ *
+ * `map/render/scene.ts` still declares a private copy of this table with the
+ * same numbers. `flow.test.ts` pins the two together by measuring the order
+ * `buildLinks` actually sorts into; that copy should be deleted in favour of
+ * this export by whoever next touches that file.
+ */
+export const RELATION_RANK: Record<ConnectionRelation, number> = {
+  fetches: 0,
+  renders: 1,
+  belongs_to: 2,
+  calls: 3,
+  imports: 4,
+  uses_package: 5,
+  contains: 6,
 };
 
 /**

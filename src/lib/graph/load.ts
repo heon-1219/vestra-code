@@ -53,6 +53,17 @@ export type GraphEdgeRow = {
   targetNodeId: string;
   type: ConnectionRelation;
   confidence: Certainty;
+  /**
+   * A `jsonb` column, so genuinely unknown until it has been looked at — the
+   * same footing as `filesSkipped` below. `analyzer.ts` writes `{ line }` on
+   * every `calls`, `renders` and `fetches` edge and `persist.ts` stores it;
+   * everything else it writes (a matched url, an import specifier) stays in the
+   * database, because the workspace has no sentence for it.
+   *
+   * Optional so that every fixture and every caller written before this arrived
+   * still compiles. An edge with no metadata is the normal case.
+   */
+  metadata?: unknown;
 };
 
 export type GraphRunRow = {
@@ -107,6 +118,7 @@ export async function loadGraphView(
         targetNodeId: edges.targetNodeId,
         type: edges.type,
         confidence: edges.confidence,
+        metadata: edges.metadata,
       })
       .from(edges)
       .where(eq(edges.projectId, projectId))
@@ -164,12 +176,17 @@ export function buildGraphView(
 
   // One pass: build the connection and tally both ends of it while we are here.
   for (const row of edgeRows) {
+    const line = readLine(row.metadata);
     connections.push({
       id: row.id,
       from: row.sourceNodeId,
       to: row.targetNodeId,
       relation: row.type,
       certainty: row.confidence,
+      // Spread rather than `line: line ?? undefined`, so an edge without one
+      // has no key at all. `view.ts` says absent is the only way to say "no
+      // line"; writing `undefined` into the field would give it a second.
+      ...(line === null ? {} : { line }),
     });
 
     // Structural relations are not uses, and counting them inflates the one
@@ -226,6 +243,27 @@ export function buildGraphView(
  * worth one guard, because the alternative to a guard here is the whole map
  * failing to render over a list of filenames nobody was going to read.
  */
+/**
+ * The call site out of `edges.metadata`, or null.
+ *
+ * Guarded to the same degree as `readSkipped` and for the same reason: this is
+ * a column that can hold anything, and the failure mode of trusting it is a
+ * sentence reading "PayButton.tsx [object Object]줄에서" in front of somebody
+ * who is already unsure whether to trust us.
+ *
+ * Non-integers, zero and negatives are dropped rather than coerced. A line
+ * number is 1-based by every editor's reckoning; a 0 here would mean the
+ * parser recorded something we do not understand, and inventing line 1 from it
+ * is the kind of quiet guess this file exists to refuse.
+ */
+function readLine(value: unknown): number | null {
+  if (typeof value !== "object" || value === null) return null;
+  const line = (value as Record<string, unknown>).line;
+  if (typeof line !== "number") return null;
+  if (!Number.isInteger(line) || line < 1) return null;
+  return line;
+}
+
 function readSkipped(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((entry): entry is string => typeof entry === "string");

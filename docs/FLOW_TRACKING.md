@@ -2,7 +2,14 @@
 
 Source: the founder's ask — "Graph traversing 설명, 기능별로 코드 플로우 트래킹(실시간으로 트래킹 및 코드 설명) 기능 만들기."
 
-Status: **proposed.** Nothing here is built. The decisions it needs are listed at the end and belong in `DECISIONS.md`, not here.
+Status: **Phase 0 built and measured (2026-09-21). Phases 1–5 proposed.**
+`src/lib/graph/flow.ts` and `src/lib/graph/flow.test.ts` are the walk, headless: entry
+points, both joints, the beam, the lexicographic ranking, the bounds, the five
+terminals, the event shape and every refusal sentence. Nothing is on screen yet.
+§11.1's call-site line is carried, so `GraphConnection.line` now exists.
+The decisions this produced are **D78–D86** in `DECISIONS.md`; the measurements are
+§8 below, with the two results that did not come out as this document predicted marked
+where they sit.
 
 ---
 
@@ -358,9 +365,15 @@ Not "does it look plausible". This repository has a habit of finding its own def
 1. **Hand-written ground truth on the demo repo.** `heon-1219/coding-interview-prep` has 1 route and 4 API endpoints. Read the repository by hand once, write down the path a person would give for each of those five, and assert the top-ranked path equals it. Five is small enough to do honestly and large enough to catch "plausible but wrong", which is the only failure the rest of these cannot see.
 2. **Entry-point coverage.** For every `route` and `api_endpoint`, does any path exist? Report the fraction. If 1 of 5 produces nothing on the demo repo, that is the joint rule (§2.1) being wrong, not the repo being odd.
 3. **Endpoint arrival rate.** Of the paths starting at a route, what fraction reach a server address? Measure it **with and without** the `distanceToEndpoint` criterion. If the number does not move, criterion 2 in §2.4 is decoration and comes out.
+
+   **Measured, 2026-09-21, and this rule as written would have deleted a criterion that carries the feature (D81).** On the `shop` fixture through the real parser the number does **not** move — 1 of 2 routes reach a server address with the criterion and 1 of 2 without it, and the chosen paths are byte-identical. The reason is the fixture: its widest behaviour fork is 4 and `BEAM` is 4, so the branch that crosses to the server survives whatever order the candidates came in, and the path ranking then prefers it. **The beam was doing the work, not the criterion.** Measured again on a synthetic fan-out tree — fan-out 2, 3, 4, 5, 6, 8, 12 across depths 2, 3, 4, 6, 8 — the number does not move at fan-out 2 and moves at all 30 combinations from fan-out 3 up. So the criterion stays, and what it buys is now sayable: it makes the arrival rate independent of `BEAM`. The lesson for the rest of §8 is that "the number did not move" is a fact about the fixture until a second fixture has disagreed with it.
 4. **Ranking margin.** For each start, the score gap between path 1 and path 2, and the count of complete paths. This sets the "비슷한 길이 여러 개 있어요" threshold from data. A feature whose top path wins by a hair over forty alternatives is not choosing; it is picking, and the user should be told.
+
+   **Measured, 2026-09-21 (D82).** There is no score, so there is no threshold constant: a lexicographic ranking has no scalar to compare, which is most of why it was chosen. The margin is *which criterion separated the top two*, and "close" is when the three a reader can perceive — where it ends, how long it is, how sure we are — all tied. On the `shop` fixture every start is decided by the length, by one hop: complete paths `/` 2, `/checkout` 6, `/api/orders` 2, none close.
 5. **Determinism.** Two walks over an unchanged graph produce byte-identical paths and byte-identical event sequences, including the order of the branch lists. Same promise and same test shape as `load.ts`, `layout.ts` and `grouping.ts`.
 6. **Three synthetic fixtures for the pathological cases**, because the largest graph anyone here has measured is 68 items: a single 40-node cycle; a 40-deep chain; and a **complete graph of 30 symbols** where everything calls everything. Assert termination, `MAX_EXPANSIONS` respected, the right refusal sentences, and a wall-clock ceiling. The complete graph is the measured answer to "what happens when everything reaches everything" — currently this document only argues it.
+
+   **Measured, 2026-09-21 (D85).** The 40-node cycle and the 40-deep chain each spend exactly 12 expansions and end on the **hop bound** — a 40-node cycle never reaches the cycle terminal, because twelve is less than forty, so the cycle sentence needs a ring shorter than `MAX_FLOW_HOPS` and `flow.test.ts` carries a four-node one for it. The complete graph of 30 spends the expansion budget and stops there: `MAX_EXPANSIONS` is what terminates it, the path it returns is still simple, and a second run returns the identical path.
 7. **Narration cost, asserted.** Count real model calls and tokens for a twelve-hop flow. Assert `calls === 0` warm and `calls <= 1` cold. The rule in §4 is then enforced by a number instead of by a paragraph.
 8. **The vocabulary test.** No flow sentence, from any layer including the model's, contains 실행 · 추적 · 실시간 · 안전 · 노드 · 엣지. Extends `FORBIDDEN_WORDS`. D68's precedent: "a test asserts the sentence does not come back."
 
@@ -370,7 +383,36 @@ Not "does it look plausible". This repository has a habit of finding its own def
 
 Each phase is shippable on its own and none of them is a stub.
 
-**Phase 0 — the walk, headless.** `src/lib/graph/flow.ts`: pure, no React, no model, no database. Entry points, joints, beam search, ranking, bounds, terminals, cycle rule. Ships with §8.1, §8.2, §8.5 and §8.6. Nothing on screen — and every later phase is wrong without it, which is why the measurement comes before the picture.
+**Phase 0 — the walk, headless. Built, 2026-09-21.** `src/lib/graph/flow.ts`: pure, no React, no model, no database. Entry points, joints, beam search, ranking, bounds, terminals, cycle rule. Nothing on screen — and every later phase is wrong without it, which is why the measurement comes before the picture.
+
+Shipped with §8.2, §8.3, §8.4, §8.5, §8.6 and §8.8, plus §11.1's call-site line. **§8.1's hand-written ground truth on `heon-1219/coding-interview-prep` is NOT done** — it needs the repository over the network, and Phase 0 asserted the equivalent against the `shop` fixture through the real parser instead. That is a smaller claim than §8.1 makes and it should still be done. §8.7's narration-cost assertion belongs to Phase 3, which is what will have calls to count.
+
+The exported surface the UI reads:
+
+```
+traceFlow(graph, { startId, index?, onEvent?, ignore? }) -> FlowTrace
+entryPointsOf(graph, itemId) -> EntryPoints        projectEntryPoints(graph) -> GraphItem[]
+indexFlowGraph(graph) -> FlowIndex                 (build once, pass back in)
+FLOW_NOTICE  FLOW_NO_MODEL_NOTE  FLOW_FORBIDDEN_WORDS  flowSentenceIssues(text)
+flowTerminalSentence(terminal, facts)  flowRefusalSentence(refusal, facts)
+guessedAddressNote(address)  certaintyNote(hops, guessed)  alternativesNote(others)
+branchesNote(branches)
+MAX_FLOW_HOPS  BEAM  MAX_EXPANSIONS  BRANCHES_SHOWN  HOP_RELATIONS
+HOP_CRITERIA  PATH_CRITERIA
+```
+
+Two things Phase 1 and Phase 2 have to know, both of which this document got wrong:
+
+1. **A joint hop has no edge behind it.** `scene.ts` already grew a path-aware `Trail`
+   for the Q&A walk, so §11.3 is out of date and Phase 2 is mostly wiring — but a
+   `FlowHop` whose `joint` is not null must map to a `TrailStep` with
+   `connected: false`. Drawing a line for it would invent a connection the graph does
+   not have, which is exactly what `connected` exists to stop.
+2. **The flow does not stop at the server address** (D84). It goes through the server
+   joint into the handler, so the "여기가 끝이에요 — 서버가 받는 곳까지 왔어요" sentence
+   fires only when the joint cannot be taken. The crossing is still findable: it is
+   the hop whose target is an `api_endpoint`, and `FlowPath.reachedEndpoint` says it
+   happened.
 
 **Phase 1 — the flow, read as a list.** The fourth `PanelMode`, the hop list narrated by Layers 0 and 1 only, the discovery block in the nothing-selected state, every refusal sentence in §7. **Zero LLM, zero schema change.** On the demo repo this already answers "주문이 어디서 이뤄지나요" with a numbered path whose every row opens a file. This is a complete feature.
 
@@ -403,15 +445,17 @@ This is a separate product decision, not a later phase of this one, and its voca
 
 Found by reading, listed so nobody rediscovers them.
 
-1. **`GraphConnection` carries no line number, and the data exists.** `analyzer.ts` writes `metadata: { line }` on every `calls`, `renders` and `fetches` edge, and `persist.ts` stores it. But `load.ts` does not select it and `view.ts` has no field for it. "PayButton.jsx 34줄에서" is materially better than no line, and it is already in the database. Small change, but it touches `view.ts` — the boundary file everything depends on — so it is a decision, not a patch.
+1. ~~**`GraphConnection` carries no line number, and the data exists.**~~ **Fixed 2026-09-21, D83.** `edges.metadata.line` is selected by `load.ts` and lands on `GraphConnection.line`, optional and absent-rather-than-null. Measured on the `shop` fixture: all 16 `calls`/`renders`/`fetches` edges carry one, and nothing else does.
 2. **The route/endpoint sibling shape (§2.1).** Stated again here because it is the thing that would silently produce "no path" on a repository that obviously has one.
-3. **`linkStrength` lights any link between two lit items.** A path highlight built on today's `Focus` would draw shortcuts that are not on the path, at full brightness, with no way for the user to tell.
+3. ~~**`linkStrength` lights any link between two lit items.**~~ **Out of date as of 2026-09-21.** `render/scene.ts` has since grown `Trail` / `TrailStep` / `trailOf` / `stepFor` for the Q&A investigation walk: an ordered set of *links*, matched on direction as well as on ends, with `itemStrength` and `linkStrength` already taking a trail. A flow maps onto it directly. **One rule to carry over:** a joint hop has no edge behind it, so it must become a `TrailStep` with `connected: false` — the field exists because drawing a line for a step the graph does not have would invent a connection (D79).
 4. **`lib/llm/types.ts` deliberately has no streaming.** So 실시간 cannot mean token streaming, and this plan does not ask for it to.
 5. **`purpose/groups.ts` has no caller and no storage.** `groupByPurpose` is exported and tested; nothing in `pipeline.ts` calls it; there is no column or table for the answers. "Built, not yet wired" is exact, and the wiring includes a schema addition.
 6. **`analysis/events.ts` declares a `semantic` phase and `feature.created` / `node.assigned` events that nothing emits**, while `panel/states.tsx` draws a 기능 이름 붙이는 중 step for it. Not this feature's bug; Phase 3 is the thing that would finally make that step true.
 7. **`mode.ts` states flatly that none of its three modes works — "There is no model wired up behind any of them" — and that is now out of date.** `lib/llm/config.ts` and `client.ts` exist, `qa/loop.ts` is built and tested. A fourth mode added today inherits a `notYet` regime whose premise has changed.
 8. **`panel/` and `lib/llm/` were being edited by other agents while this was written** (`connections-panel.tsx`, `model.ts`, `model-select.tsx`, `llm/config.ts`, `llm/client.ts`, `llm/types.ts`). Phase 1 touches `mode.ts` and `states.tsx`. Sequence after that work lands, and prefer a new `panel/flow-state.tsx` over an edit to `states.tsx`.
-9. **The demo repo's recorded edge counts predate `fetches`.** `DECISIONS.md` records 22 files / 38 symbols / 4 endpoints / 1 route / 3 packages and 119 edges with no `fetches` (D56 says they did not exist yet); `analyzer.ts` now emits them and D57 took the count to 121. The current figure is unmeasured. §8.2 needs the real number, so re-measure before writing ground truth.
+9. **The demo repo's recorded edge counts predate `fetches`, and they are STILL unmeasured.** `DECISIONS.md` records 22 files / 38 symbols / 4 endpoints / 1 route / 3 packages and 119 edges with no `fetches` (D56 says they did not exist yet); `analyzer.ts` now emits them and D57 took the count to 121. Phase 0 did **not** re-measure it: `heon-1219/coding-interview-prep` needs the network, and the live parser suite that reaches it is skipped by default. §8.1's ground truth is still owed.
+
+   What Phase 0 did measure, so the flow work is not resting on nothing, is `src/analysis/__fixtures__/shop` through the real parser and the real `buildGraphView`: **49 items, 63 connections — 27 `contains`, 15 `imports`, 10 `calls`, 5 `renders`, 5 `uses_package`, 1 `fetches`; 61 certain, 2 inferred.** Widest behaviour fork: 4. Entry points: 3 (`/`, `/checkout`, `/api/orders`), coverage 3 of 3. That fixture is the same tree `analyzer.test.ts` measures, and it is smaller and tamer than the demo repo — §8.3's surprise is exactly what "smaller and tamer" costs.
 
 ---
 
@@ -430,6 +474,12 @@ Stated rather than smoothed over.
 ## 13. Decisions this needs, for `DECISIONS.md`
 
 Listed, not written — `DECISIONS.md` is not edited by this document.
+
+**Phase 0 settled the first seven and eighth of these as D78–D86 (2026-09-21).** Two of
+them came out differently from the way they are written below, and both are marked in
+place: the `distanceToEndpoint` criterion's justification (§8.3, D81) and the server
+joint's effect on where a flow ends (D84). The remaining bullets — path-aware `Focus`,
+the SSE rule, purpose storage, runtime tracing — are untouched and still owed.
 
 - **The feature is 흐름 따라가기 and never 추적.** It narrates a path the code makes possible. 실행 · 추적 · 실시간 join `FORBIDDEN_WORDS` for flow sentences, with a test.
 - **A flow traverses `renders`, `calls` and `fetches` only.** `imports` is excluded because it makes everything reach everything; `uses_package` is an annotation on a hop, never a path member; `belongs_to` and `contains` are structure.
