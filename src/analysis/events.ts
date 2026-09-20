@@ -22,8 +22,24 @@ export type AnalysisEventType =
   | "edges.added"
   | "feature.created"
   | "node.assigned"
+  | "llm.coverage"
   | "run.completed"
   | "run.failed";
+
+/**
+ * Why the model stopped before it had opened every file.
+ *
+ * Two families, and they must not be collapsed into one sentence: a budget was
+ * a decision we took to keep the run quick and cheap, and a failure is
+ * something that went wrong. Someone told "문제가 생겼어요" about a cap we chose
+ * goes looking for a fault that does not exist; someone told "빨리 끝내려고
+ * 멈췄어요" about a broken key never fixes the key.
+ */
+export type LlmCoverageReason =
+  | "file_budget"
+  | "token_budget"
+  | "llm_error"
+  | "aborted";
 
 export type AnalysisEventPayloads = {
   "run.started": { analyzer: string; fileCount: number };
@@ -35,6 +51,28 @@ export type AnalysisEventPayloads = {
   "edges.added": { count: number; total: number; certain: number; inferred: number };
   "feature.created": { name: string; memberCount: number };
   "node.assigned": { count: number };
+  /**
+   * How much of the project the model actually opened, when it did not open
+   * all of it.
+   *
+   * **"We did not look" and "there is nothing there" are opposite claims**, and
+   * a map drawn from a half-read project looks exactly like a map of a project
+   * with few connections. This event is what lets the screen tell the two
+   * apart, so it is emitted only when there is a shortfall to report: a run
+   * with full coverage, and a run with no model at all, say nothing here rather
+   * than putting a zero on screen that reads as a fault.
+   *
+   * Counts, not paths. Eighty filenames in a persisted payload would make this
+   * row larger than everything else the run writes, and the number is the part
+   * a person can act on.
+   */
+  "llm.coverage": {
+    /** Files the model read. */
+    examined: number;
+    /** Files it never opened. Always above zero, or the event is not sent. */
+    notExamined: number;
+    reason: LlmCoverageReason;
+  };
   "run.completed": {
     nodeCount: number;
     edgeCount: number;

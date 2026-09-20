@@ -11,7 +11,7 @@ import {
   NO_CODE_MESSAGE,
   NOT_STORED_MESSAGE,
 } from "./ingest/restore";
-import { selectAnalyzer } from "./pipeline";
+import { llmCoveragePayload, selectAnalyzer } from "./pipeline";
 import { createRunStore } from "./run-store";
 import { createShallowAnalyzer } from "./shallow/analyzer";
 import { createTypescriptAnalyzer } from "./typescript/analyzer";
@@ -136,6 +136,66 @@ describe("analyzer selection", () => {
     const deep = createTypescriptAnalyzer();
     const contested = kinds.filter((kind) => shallow.handles(kind) && deep.handles(kind));
     expect(contested).toEqual([]);
+  });
+});
+
+/**
+ * What the run says about the files the model never opened.
+ *
+ * The one decision in it: when to stay silent. **"We did not look" and "there
+ * is nothing there" are opposite claims**, and this function is where both
+ * mistakes are possible — reporting a shortfall over a project that never had a
+ * model, or staying quiet about a cap that halved the answer. Tested without a
+ * database, a repository or a model, because it is the part that decides what a
+ * person is told.
+ */
+describe("the model's coverage, as the run reports it", () => {
+  it("says nothing for a project with no model configured", () => {
+    // The Python analyzer writes `llmExamined` only when a model pass ran, so
+    // with no model both counts are zero and there is no reason to report.
+    // The parser half still produced a graph, and that is not a failure.
+    expect(llmCoveragePayload({ examined: 0, notExamined: 0 }, null)).toBeNull();
+  });
+
+  it("says nothing when the model opened every file", () => {
+    expect(
+      llmCoveragePayload({ examined: 120, notExamined: 0 }, "completed"),
+    ).toBeNull();
+  });
+
+  it("refuses to report a gap it cannot explain", () => {
+    // Counts with no reason behind them. Silence beats a cause we made up.
+    expect(llmCoveragePayload({ examined: 40, notExamined: 80 }, null)).toBeNull();
+  });
+
+  it("carries both counts and the reason when the file cap stopped it", () => {
+    expect(
+      llmCoveragePayload({ examined: 40, notExamined: 80 }, "file_budget"),
+    ).toEqual({ examined: 40, notExamined: 80, reason: "file_budget" });
+  });
+
+  it("keeps a budget and a failure apart", () => {
+    const budget = llmCoveragePayload({ examined: 40, notExamined: 80 }, "token_budget");
+    const broke = llmCoveragePayload({ examined: 40, notExamined: 80 }, "llm_error");
+
+    expect(budget?.reason).toBe("token_budget");
+    expect(broke?.reason).toBe("llm_error");
+  });
+
+  it("calls a pass that finished with files left over a failure, not a budget", () => {
+    // `stopped: "completed"` with files in `notExamined` is the one case that
+    // needs translating: a retryable model call failed on those files and the
+    // pass walked past them. Nothing was capped, so reporting a budget would
+    // send someone looking for a limit that was never reached.
+    expect(
+      llmCoveragePayload({ examined: 39, notExamined: 1 }, "completed")?.reason,
+    ).toBe("llm_error");
+  });
+
+  it("reports a run that was stopped as stopped", () => {
+    expect(
+      llmCoveragePayload({ examined: 12, notExamined: 30 }, "aborted")?.reason,
+    ).toBe("aborted");
   });
 });
 

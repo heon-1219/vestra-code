@@ -9,7 +9,7 @@ import {
   type RepoComparison,
 } from "@/lib/github/api";
 
-import type { EventSink } from "./events";
+import type { AnalysisEventPayloads, EventSink } from "./events";
 import {
   ANALYZER_VERSION,
   FULL_REASON_NOTES,
@@ -39,6 +39,9 @@ import {
   type RunStore,
 } from "./run-store";
 import { createPythonAnalyzer, pythonLlmCoverage } from "./python/analyzer";
+// Type only, and only for the reason the model pass stopped. The counts are
+// read back off the nodes; this is the one fact the graph itself cannot carry.
+import type { PythonLlmResult } from "./python/llm";
 import { createShallowAnalyzer } from "./shallow/analyzer";
 import type {
   AnalysisEmitter,
@@ -132,6 +135,24 @@ const NOTHING_READABLE_MESSAGE =
 class AnalysisFailure extends Error {}
 
 /**
+ * What an analyzer is built from: the model, and a way to hand back what the
+ * model pass could not reach.
+ *
+ * An object rather than a second positional argument, so an analyzer that never
+ * takes a model keeps ignoring the whole thing, and so adding a third fact
+ * later does not renumber anyone's parameters.
+ */
+type AnalyzerContext = {
+  llm: Llm | null;
+  /**
+   * Why the model stopped, when it stopped short. `Analyzer.analyze` returns
+   * nodes and edges, so there is nowhere in its return value for this — and the
+   * counts alone cannot say whether a cap or a failure produced them.
+   */
+  onLlmResult?: (result: PythonLlmResult) => void;
+};
+
+/**
  * The analyzers, in the order they are offered a project.
  *
  * A list and a `handles` call, not a registry with lifecycle and configuration:
@@ -142,7 +163,7 @@ class AnalysisFailure extends Error {}
  * Built per run rather than once at module load, so nothing an analyzer
  * accumulates about one repository can reach the next one.
  */
-const ANALYZERS: readonly ((llm: Llm | null) => Analyzer)[] = [
+const ANALYZERS: readonly ((context: AnalyzerContext) => Analyzer)[] = [
   () => createTypescriptAnalyzer(),
   /*
    * The one analyzer that takes a model, which is why the list is built from
@@ -152,7 +173,8 @@ const ANALYZERS: readonly ((llm: Llm | null) => Analyzer)[] = [
    * its parser half alone and produces a smaller honest graph. Python's
    * imports are `certain` without any model at all; only the calls need one.
    */
-  (llm) => createPythonAnalyzer({ llm }),
+  ({ llm, onLlmResult }) =>
+    createPythonAnalyzer({ llm, ...(onLlmResult ? { onLlmResult } : {}) }),
   // Last, and it has to stay last: `selectAnalyzer` takes the first analyzer
   // that says yes, and the shallow one claims `static_site` until the D6
   // static-site analyzer exists. Ahead of a deep analyzer it would shadow it
@@ -167,12 +189,56 @@ const ANALYZERS: readonly ((llm: Llm | null) => Analyzer)[] = [
 export function selectAnalyzer(
   kind: ProjectKind,
   llm: Llm | null = null,
+  onLlmResult?: (result: PythonLlmResult) => void,
 ): Analyzer | null {
   for (const create of ANALYZERS) {
-    const analyzer = create(llm);
+    const analyzer = create({
+      llm,
+      ...(onLlmResult ? { onLlmResult } : {}),
+    });
     if (analyzer.handles(kind)) return analyzer;
   }
   return null;
+}
+
+/**
+ * The coverage event's payload, or nothing when there is nothing to say.
+ *
+ * Nothing is the answer in two ordinary cases, and neither is a failure:
+ *
+ *   - **No model.** `pythonLlmCoverage` reads a flag the model pass writes onto
+ *     each file node, so a project with no model configured has no flags and
+ *     counts zero of each. The parser half ran alone and produced a smaller
+ *     honest graph; reporting "0개 열어 봤어요" over it would turn that into a
+ *     fault the user cannot fix and did not cause.
+ *   - **Full coverage.** Every file opened. A run with nothing missing must not
+ *     put a number on screen that reads as a shortfall.
+ *
+ * Separated out and exported so the mapping can be tested without a database, a
+ * repository or a model — it is the one piece of this that decides what a
+ * person is told.
+ */
+export function llmCoveragePayload(
+  coverage: { examined: number; notExamined: number },
+  stopped: PythonLlmResult["stopped"] | null,
+): AnalysisEventPayloads["llm.coverage"] | null {
+  if (coverage.notExamined <= 0) return null;
+  // No model pass ran, so we have counts we cannot explain. Unreachable while
+  // the flags and the callback come from the same block of the analyzer, and
+  // kept because a number with an invented cause is worse than silence.
+  if (stopped === null) return null;
+
+  return {
+    examined: coverage.examined,
+    notExamined: coverage.notExamined,
+    /*
+     * `completed` with files left over is the one case that needs translating:
+     * the pass walked past a file whose model call failed in a way worth
+     * retrying and finished the rest. Nothing was capped, so calling it a
+     * budget would be a lie — it belongs with the failures.
+     */
+    reason: stopped === "completed" ? "llm_error" : stopped,
+  };
 }
 
 /**
@@ -266,7 +332,20 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
     : createRunStore(db, runId);
   const emit = store.emit;
 
-  const analyzer = selectAnalyzer(project.kind, input.llm ?? null);
+  /*
+   * Why the model pass stopped, filled in by the analyzer during `analyze`.
+   *
+   * A box rather than a bare `let`, because the only writer is a callback and a
+   * variable assigned from one reads as permanently null to anyone skimming —
+   * including, in some positions, the compiler.
+   */
+  const modelPass: { stopped: PythonLlmResult["stopped"] | null } = {
+    stopped: null,
+  };
+
+  const analyzer = selectAnalyzer(project.kind, input.llm ?? null, (result) => {
+    modelPass.stopped = result.stopped;
+  });
   let cleanup: (() => Promise<void>) | null = null;
 
   try {
@@ -412,23 +491,29 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
     /*
      * How much of the project the model actually opened.
      *
-     * Read back off the nodes rather than plumbed through a callback, because
-     * the analyzer already writes it onto every file node and a second channel
-     * for the same fact is a second thing to keep in step.
+     * The counts are read back off the nodes rather than plumbed through a
+     * callback, because the analyzer already writes them onto every file node
+     * and a second channel for the same fact is a second thing to keep in step.
+     * Only the reason comes through the callback: it is the one part of this
+     * the graph cannot carry, and a cap and a broken key are not the same
+     * sentence.
      *
-     * The log is the honest minimum and not the end of this: "the model looked
-     * at 40 of your 120 files" belongs on screen, and putting it there needs an
-     * event type the contract does not have yet. Until then it must at least
-     * not be invisible — a cap that silently halves the answer is how "there is
-     * nothing there" gets said about files nobody read.
+     * Emitted rather than only logged, because a log reaches nobody who can act
+     * on it. A cap that silently halves the answer is exactly how "there is
+     * nothing there" gets said about files nobody opened — and the person
+     * reading the map cannot open the code to check. The event is persisted
+     * like every other, so a browser that reloads mid-run replays it.
      */
     const coverage = pythonLlmCoverage(graph.nodes);
-    if (coverage.notExamined > 0) {
+    const shortfall = llmCoveragePayload(coverage, modelPass.stopped);
+    if (shortfall) {
       console.log(
         "[pipeline] model coverage",
         runId,
-        `${coverage.examined} examined, ${coverage.notExamined} not opened`,
+        `${shortfall.examined} examined, ${shortfall.notExamined} not opened`,
+        shortfall.reason,
       );
+      await emit("llm.coverage", shortfall);
     }
 
     // D36's tripwire. Every silent-emptiness failure this parser has — `allowJs`

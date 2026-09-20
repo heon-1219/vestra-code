@@ -94,7 +94,13 @@ export type RunTone = "reading" | "drawn" | "stopped";
 
 const ko = (n: number) => n.toLocaleString("ko-KR");
 
-const READING = "지금 읽고 있어요";
+/**
+ * Exported because the 다시 읽기 button says the same thing while a run is
+ * going. One sentence for one state: a button reading 읽는 중이에요 beside a row
+ * reading 지금 읽고 있어요 is two wordings for one fact, which is the failure
+ * D69 was about.
+ */
+export const READING = "지금 읽고 있어요";
 /** Only when `error` is somehow empty. A failed run normally speaks for itself. */
 const STOPPED = "지도를 그리다가 멈췄어요";
 const UNCOMPARED = "이때 다시 읽었어요";

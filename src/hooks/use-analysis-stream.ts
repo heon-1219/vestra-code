@@ -38,6 +38,15 @@ export type StreamLink = "idle" | "connecting" | "open" | "closed";
 
 export type SkippedFile = { path: string; reason: string };
 
+/**
+ * How much of the project the model opened, when it did not open all of it.
+ *
+ * The payload as it comes off the wire. Null is the ordinary state and means
+ * there is nothing to report — full coverage, or no model on this
+ * installation at all — never "we do not know".
+ */
+export type AnalysisCoverage = AnalysisEventPayloads["llm.coverage"];
+
 export type AnalysisStreamState = {
   /** Null until the first event arrives. */
   phase: AnalysisPhase | null;
@@ -72,6 +81,15 @@ export type AnalysisStreamState = {
   certainCount: number;
   inferredCount: number;
   featureCount: number;
+
+  /**
+   * What the model did not open, straight from `llm.coverage`.
+   *
+   * Null until the run says otherwise, and it stays null for a run with full
+   * coverage or no model — the pipeline only emits when there is a shortfall,
+   * so a null here is never a missing measurement being read as zero.
+   */
+  coverage: AnalysisCoverage | null;
 
   /** True once the run ended, whether it worked or not. */
   finished: boolean;
@@ -115,6 +133,7 @@ const IDLE: AnalysisStreamState = {
   certainCount: 0,
   inferredCount: 0,
   featureCount: 0,
+  coverage: null,
   finished: false,
   failure: null,
   limits: [],
@@ -146,6 +165,11 @@ const PAYLOAD_SCHEMAS: {
   }),
   "feature.created": z.object({ name: z.string(), memberCount: count }),
   "node.assigned": z.object({ count }),
+  "llm.coverage": z.object({
+    examined: count,
+    notExamined: count,
+    reason: z.enum(["file_budget", "token_budget", "llm_error", "aborted"]),
+  }),
   "run.completed": z.object({
     nodeCount: count,
     edgeCount: count,
@@ -226,8 +250,25 @@ export function useAnalysisStream(
         payload: AnalysisEventPayloads[T],
         previous: AnalysisStreamState,
       ) => AnalysisStreamState,
-      terminal = false,
+      options: {
+        /** Nothing is coming after this one. */
+        terminal?: boolean;
+        /**
+         * Do not move the cursor past this event.
+         *
+         * For the one event that is said once and never restated. Every other
+         * payload here is a running total, so a reload that lands past it
+         * catches up on the next one — but `llm.coverage` is emitted once, in
+         * the seconds between the analysis ending and `run.completed`, and a
+         * cursor parked on it would replay straight over the fact that the
+         * model never opened eighty files. Leaving the cursor where it was
+         * costs a replay of the handful of events since the last write, all of
+         * which are absolute and land on the same numbers.
+         */
+        sticky?: boolean;
+      } = {},
     ) => {
+      const { terminal = false, sticky = false } = options;
       source.addEventListener(type, (event) => {
         const message = event as MessageEvent<string>;
 
@@ -253,7 +294,7 @@ export function useAnalysisStream(
           forgetCursor(runId);
           source.close();
           update((previous) => ({ ...previous, link: "closed" }));
-        } else {
+        } else if (!sticky) {
           rememberCursor(message.lastEventId);
         }
       });
@@ -325,6 +366,15 @@ export function useAnalysisStream(
 
     listen("node.assigned", (_payload, previous) => previous);
 
+    // The one fact on this stream that is not a number about what we found, but
+    // a number about what we never looked at. Sticky, so a refresh in the gap
+    // before `run.completed` cannot silently drop it — see `listen`.
+    listen(
+      "llm.coverage",
+      (payload, previous) => ({ ...previous, coverage: payload }),
+      { sticky: true },
+    );
+
     listen(
       "run.completed",
       (payload, previous) => ({
@@ -341,7 +391,7 @@ export function useAnalysisStream(
         finished: true,
         failure: null,
       }),
-      true,
+      { terminal: true },
     );
 
     listen(
@@ -351,7 +401,7 @@ export function useAnalysisStream(
         finished: true,
         failure: payload.message,
       }),
-      true,
+      { terminal: true },
     );
 
     return () => {

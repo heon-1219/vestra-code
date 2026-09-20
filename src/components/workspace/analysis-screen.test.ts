@@ -36,6 +36,7 @@ const EMPTY: AnalysisProgress = {
   recentFiles: [],
   skipped: [],
   failure: null,
+  coverage: null,
   completion: null,
 };
 

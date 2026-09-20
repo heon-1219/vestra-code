@@ -2,8 +2,10 @@
 
 import { useEffect, useRef, useState } from "react";
 
+import type { AnalysisCoverage } from "@/hooks/use-analysis-stream";
 import { CERTAINTY_WORDS } from "@/lib/graph/view";
 
+import { describeCoverage } from "./coverage";
 import { buildPhaseRows, PhaseChecklist } from "./phase-checklist";
 
 /**
@@ -81,6 +83,14 @@ export type AnalysisProgress = {
   skipped: readonly { path: string; reason: string }[];
   /** `run.failed.message` — already plain Korean, written for this reader. */
   failure: string | null;
+  /**
+   * `llm.coverage`, and null whenever there is nothing to report.
+   *
+   * Its own field rather than part of `completion`, because it is a different
+   * event with a different meaning: `completion` is what we found, and this is
+   * what we never looked at.
+   */
+  coverage: AnalysisCoverage | null;
   /** `run.completed` */
   completion: AnalysisCompletion | null;
 };
@@ -107,6 +117,16 @@ export type AnalysisScreenProps = {
  */
 const ARRIVAL_DWELL_MS = 1400;
 
+/**
+ * How long it holds when the run has something to admit.
+ *
+ * A beat is enough to read three numbers; it is not enough to read that the
+ * model never opened most of the project. The sentence is repeated over the map
+ * itself for exactly that reason, and this is so it is not gone before anyone
+ * has noticed it was there.
+ */
+const CAVEAT_DWELL_MS = 4600;
+
 export function AnalysisScreen({
   projectName,
   source,
@@ -129,9 +149,12 @@ export function AnalysisScreen({
   }, [onArrive]);
   useEffect(() => {
     if (!completion) return;
-    const timer = setTimeout(() => arriveRef.current?.(), ARRIVAL_DWELL_MS);
+    const timer = setTimeout(
+      () => arriveRef.current?.(),
+      progress.coverage ? CAVEAT_DWELL_MS : ARRIVAL_DWELL_MS,
+    );
     return () => clearTimeout(timer);
-  }, [completion]);
+  }, [completion, progress.coverage]);
 
   const hasNumbers =
     progress.filesOffered !== null ||
@@ -222,6 +245,7 @@ export function AnalysisScreen({
                 completion={completion}
                 certain={progress.certainCount}
                 inferred={progress.inferredCount}
+                coverage={progress.coverage}
                 onArrive={onArrive}
               />
             ) : null}
@@ -323,14 +347,17 @@ function Arrival({
   completion,
   certain,
   inferred,
+  coverage,
   onArrive,
 }: {
   completion: AnalysisCompletion;
   certain: number;
   inferred: number;
+  coverage: AnalysisCoverage | null;
   onArrive?: () => void;
 }) {
   const ko = (n: number) => n.toLocaleString("ko-KR");
+  const missed = describeCoverage(coverage);
 
   return (
     <div className="pointer-events-auto">
@@ -362,6 +389,25 @@ function Arrival({
             </>
           )}
         </p>
+      ) : null}
+
+      {/*
+        How much of the project the model actually opened.
+        Above the ingest limits and inside a box of its own, because it is not
+        a footnote to the numbers above — it is the condition under which those
+        numbers are true. A person who reads "121군데 정리했어요" and nothing else
+        has been told we read their whole project.
+      */}
+      {missed ? (
+        <div className="mt-4 rounded-xl border border-edge bg-ink-raised p-4">
+          <p className="text-[13px] leading-[1.8] text-said">{missed.said}</p>
+          <p className="mt-1.5 text-[13px] leading-[1.8] text-said-soft">
+            {missed.because}
+          </p>
+          <p className="mt-1.5 text-[13px] leading-[1.8] text-said-soft">
+            {missed.caution}
+          </p>
+        </div>
       ) : null}
 
       {completion.limits.length > 0 ? (

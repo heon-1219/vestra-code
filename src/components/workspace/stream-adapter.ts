@@ -72,6 +72,11 @@ export function toAnalysisProgress(
     recentFiles: newestFirst(stream.files),
     skipped: stream.skipped,
     failure: stream.failure,
+    // Passed through untouched, including the null that means "nothing to
+    // report". This is the one field where inventing a value — a zero, a
+    // default reason — would be the product telling someone we read their
+    // whole project when we did not.
+    coverage: stream.coverage,
     completion: done
       ? {
           itemCount: stream.itemCount,

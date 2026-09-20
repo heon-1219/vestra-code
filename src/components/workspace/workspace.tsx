@@ -5,12 +5,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { z } from "zod";
 
-import { useAnalysisStream } from "@/hooks/use-analysis-stream";
+import { useAnalysisStream, type AnalysisCoverage } from "@/hooks/use-analysis-stream";
 import { useAsk } from "@/hooks/use-ask";
 import { describeAll } from "@/lib/graph/describe";
 import type { GraphView } from "@/lib/graph/view";
 
 import { AnalysisScreen } from "./analysis-screen";
+import { describeCoverage } from "./coverage";
 import { HistoryBand, type ChangeLight } from "./history/history-band";
 import { DistrictMap } from "./map/district-map";
 import { beamOf, buildBeamIndex, runBeam, IDLE_BEAM } from "./map/beam";
@@ -119,6 +120,17 @@ export function Workspace({
   const [startError, setStartError] = useState<StartError | null>(null);
   const [reloadError, setReloadError] = useState<string | null>(null);
 
+  /**
+   * What the model did not open in the run that drew the map on screen.
+   *
+   * Held here rather than read off the stream where it is used, because
+   * `onArrive` drops the run id and the stream's state goes with it — which
+   * would take this sentence off the screen at the exact moment the person
+   * starts reading the map it qualifies. Cleared when a new reading is asked
+   * for, so the caveat can never outlive the map it was true of.
+   */
+  const [coverage, setCoverage] = useState<AnalysisCoverage | null>(null);
+
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [locks, setLocks] = useState<LockMap>({});
@@ -217,6 +229,21 @@ export function Workspace({
     setStarting(true);
     setStartError(null);
     setReloadError(null);
+    /*
+     * The shortfall is deliberately NOT cleared here.
+     *
+     * It reads "…그래서 열어 보지 못한 파일 안의 연결은 지도에 없어요" — a
+     * statement about the map currently on screen, not about the run being
+     * started. That map is still standing, and stays standing if this run
+     * fails, so the sentence stays true for exactly as long as the thing it
+     * describes is in front of the person.
+     *
+     * Clearing it here cost nothing when the run succeeded — `onArrive` hands
+     * over the new run's coverage, or null where there is none — and on a
+     * failed run it silently deleted a true caveat from a map that still had
+     * it. The band's re-read button does not clear it either; this is the two
+     * paths agreeing, and agreeing on the more correct answer.
+     */
 
     try {
       const response = await fetch(`/api/projects/${project.id}/analyze`, {
@@ -327,6 +354,8 @@ export function Workspace({
 
   const running = runId !== null;
   const hasGraph = view.items.length > 0;
+  /** Null whenever there is nothing to admit, which is most runs. */
+  const missed = describeCoverage(coverage);
 
   /*
    * How the workspace is divided, and which pane has the screen.
@@ -509,13 +538,49 @@ export function Workspace({
             />
           </div>
 
+          {/*
+            How much of this map the model actually looked at.
+
+            On the map rather than only on the screen that announced it, because
+            this is the room where the wrong conclusion gets drawn: a file with
+            no connections drawn on it reads as a file connected to nothing, and
+            the person cannot open the code to find out which it is. It stays
+            for as long as the map it qualifies is on screen, and it is absent
+            entirely — no empty row, no reassuring line — whenever the model
+            opened everything or there was no model to open anything.
+          */}
+          {!running && hasGraph && missed ? (
+            <div className="shrink-0 border-b border-edge px-4 py-2">
+              <p className="text-[12px] leading-[1.7] text-said-soft">
+                <span className="text-said">{missed.said}</span> {missed.because}
+              </p>
+              <p className="mt-0.5 text-[12px] leading-[1.7] text-said-faint">
+                {missed.caution}
+              </p>
+            </div>
+          ) : null}
+
           <div className="relative min-h-0 flex-1">
             {running ? (
               <AnalysisScreen
                 projectName={project.displayName}
                 source={project.source}
                 progress={progress}
-                onArrive={() => setRunId(null)}
+                onArrive={() => {
+                  /*
+                   * Taken out of the stream on the way past.
+                   *
+                   * Dropping the run id drops the stream's state with it, and
+                   * this is the one fact on it that is still true of the map
+                   * the person is about to read. Handed over here rather than
+                   * watched from an effect, because the handover is exactly
+                   * when it changes owners — and it is reached only for a run
+                   * that completed, so a failed run cannot leave its shortfall
+                   * over the older map that is still standing.
+                   */
+                  setCoverage(stream.coverage);
+                  setRunId(null);
+                }}
                 // Offered for an uploaded folder too, now that one can be read
                 // again from the copy we kept. The browser cannot tell whether
                 // this particular project has that copy — it is a row count —
@@ -686,6 +751,19 @@ export function Workspace({
           activeRunId={runId}
           lastRunId={view.lastRun?.id ?? null}
           lastRunStatus={view.lastRun?.status ?? null}
+          /*
+            The band's 다시 읽기 starts a real run, and this is where its id
+            lands. Adopted exactly as `start` adopts its own — the graph fetch
+            armed again first, then `runId` — so a run begun down there and one
+            begun by the button above are the same event to this screen.
+
+            Without it the run would be happening with nothing on screen saying
+            so, and the person would press again.
+          */
+          onStarted={(startedRunId) => {
+            loaded.current = null;
+            setRunId(startedRunId);
+          }}
           selectedSha={change?.sha ?? null}
           onLight={onLight}
         />

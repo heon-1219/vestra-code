@@ -34,6 +34,7 @@ function stream(overrides: Partial<AnalysisStreamState> = {}): AnalysisStreamSta
     certainCount: 0,
     inferredCount: 0,
     featureCount: 0,
+    coverage: null,
     finished: false,
     failure: null,
     limits: [],
@@ -112,6 +113,43 @@ describe("toAnalysisProgress", () => {
     );
 
     expect(progress.completion?.filesSkipped).toBe(2);
+  });
+
+  it("carries the model's coverage through untouched, null and all", () => {
+    // Null is an answer here, not a missing one: it is what a run with full
+    // coverage and a run with no model both look like, and the screen draws
+    // nothing for it. Inventing a zero would put a shortfall on a project that
+    // never had one.
+    expect(toAnalysisProgress(stream({ finished: true })).coverage).toBeNull();
+
+    const partial = toAnalysisProgress(
+      stream({
+        finished: true,
+        coverage: { examined: 40, notExamined: 80, reason: "file_budget" },
+      }),
+    );
+
+    expect(partial.coverage).toEqual({
+      examined: 40,
+      notExamined: 80,
+      reason: "file_budget",
+    });
+  });
+
+  it("keeps coverage out of the completion, because they answer different questions", () => {
+    // `completion` is what the run found. Coverage is what it never looked at.
+    // Folding one into the other is how a summary starts reading as complete.
+    const progress = toAnalysisProgress(
+      stream({
+        finished: true,
+        itemCount: 68,
+        connectionCount: 121,
+        coverage: { examined: 40, notExamined: 80, reason: "token_budget" },
+      }),
+    );
+
+    expect(progress.completion).not.toHaveProperty("coverage");
+    expect(progress.coverage?.notExamined).toBe(80);
   });
 
   it("never reports a completion for a run that stopped", () => {

@@ -19,6 +19,8 @@ import {
   type ChangesResponse,
 } from "./changes";
 import { layoutChanges } from "./lanes";
+import { hasDrawnMap, runIsGoing } from "./reread";
+import { RereadButton } from "./reread-button";
 import {
   buildRunEntries,
   runFacts,
@@ -115,6 +117,16 @@ export type HistoryBandProps = {
   selectedSha?: string | null;
   /** Light these places on the map, or null to hand the map back. */
   onLight?: (light: ChangeLight | null) => void;
+  /**
+   * A run the 다시 읽기 button started — or found already going — handed to
+   * whoever owns the screen.
+   *
+   * Required, not optional. The band does not own `runId` and cannot show a
+   * reading screen; a mount that dropped this would produce a run that is
+   * really happening while the workspace shows nothing, which is the one
+   * outcome this button must never have.
+   */
+  onStarted: (runId: string) => void;
 };
 
 export function HistoryBand({
@@ -125,6 +137,7 @@ export function HistoryBand({
   lastRunStatus,
   selectedSha = null,
   onLight,
+  onStarted,
 }: HistoryBandProps) {
   const [loaded, setLoaded] = useState<RunsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -339,17 +352,44 @@ export function HistoryBand({
    */
   const open = detail && detail.sha === selectedSha ? detail : null;
 
+  /*
+   * What the 다시 읽기 button needs to know, and the one word it changes.
+   *
+   * Whether a run is going comes from the workspace's two props rather than
+   * from the list above — see `runIsGoing` for why a `running` row we happen to
+   * be holding is the wrong thing to lock a button on. Whether a map exists
+   * comes from both, so the label is right in the first paint and stays right
+   * once the band's own list has arrived.
+   */
+  const going = runIsGoing({ activeRunId, lastRunStatus });
+  const drawn = hasDrawnMap({
+    lastRunStatus,
+    runStatuses: entries.map((entry) => entry.run.status),
+  });
+
   if (expanded) {
     return (
       <section
         aria-label="변경 기록"
         className="flex min-h-0 min-w-0 flex-1 flex-col self-stretch overflow-hidden"
       >
-        <div className="shrink-0 pb-2">
-          <h2 className="display-kr text-[15px] text-said">변경 기록</h2>
-          <p className="mt-1 text-[12px] leading-[1.7] text-said-faint">
-            코드를 바꿔 온 기록과, 그때마다 그린 지도를 나란히 보여드려요. 하나를 고르면 무엇이 바뀌었는지 알려드리고, 그 자리를 지도에서 밝혀요.
-          </p>
+        {/* The title and the one control, on one line. The button sits with
+            the heading rather than at the end of the lists, because it acts on
+            the project and not on any row in them. */}
+        <div className="flex shrink-0 items-start gap-3 pb-2">
+          <div className="min-w-0 flex-1">
+            <h2 className="display-kr text-[15px] text-said">변경 기록</h2>
+            <p className="mt-1 text-[12px] leading-[1.7] text-said-faint">
+              코드를 바꿔 온 기록과, 그때마다 그린 지도를 나란히 보여드려요. 하나를 고르면 무엇이 바뀌었는지 알려드리고, 그 자리를 지도에서 밝혀요.
+            </p>
+          </div>
+          <RereadButton
+            projectId={projectId}
+            expanded
+            going={going}
+            drawn={drawn}
+            onStarted={onStarted}
+          />
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
@@ -458,7 +498,10 @@ export function HistoryBand({
         </button>
       ) : null}
       {note ? (
-        <span className="truncate">{note}</span>
+        // `flex-1` so the one control below keeps the same corner whether the
+        // strip is showing its list or a sentence instead of one. A button that
+        // moves when a project finishes loading is a button people miss.
+        <span className="min-w-0 flex-1 truncate">{note}</span>
       ) : (
         /*
           Newest at the left, and the strip scrolls to the right.
@@ -479,6 +522,25 @@ export function HistoryBand({
           ) : null}
         </ol>
       )}
+
+      {/*
+        Last, so it is the right-hand end of the strip — the list and the
+        sentence above it both take the space between.
+
+        Icon-only here. `layout.history` rests at 0.045, which is a band of
+        roughly 19–31px, and its wrapper spends 13 of those on padding and a
+        border. So the mark is 14px — shorter than the chips it sits beside, and
+        therefore the last thing in this strip to be clipped — and a word beside
+        it would not fit at any of those heights. The word is still read aloud,
+        and it is on the hover.
+      */}
+      <RereadButton
+        projectId={projectId}
+        expanded={false}
+        going={going}
+        drawn={drawn}
+        onStarted={onStarted}
+      />
     </section>
   );
 }
