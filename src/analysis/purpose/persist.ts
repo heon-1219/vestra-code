@@ -109,7 +109,15 @@ export async function loadPurposeText(
       textLang: nodesTable.textLang,
     })
     .from(nodesTable)
-    .where(eq(nodesTable.projectId, projectId));
+    // Only rows the loop below keeps. Filtered in SQL so the rows nobody named
+    // do not cross the wire at all (D159) — the answer is the same map.
+    .where(
+      and(
+        eq(nodesTable.projectId, projectId),
+        eq(nodesTable.textLang, "ko"),
+        sql`(${nodesTable.label} is not null or ${nodesTable.summary} is not null)`,
+      ),
+    );
 
   const text = new Map<string, NodeText>();
   for (const row of rows) {
@@ -166,6 +174,44 @@ export async function writePurposes(
   }
 
   return written;
+}
+
+/**
+ * Take the sentence off connections this pass no longer stands behind (D169).
+ *
+ * Only ever handed the connections of purposes set aside (D160) — a test's
+ * helper, a fixture, anything only a test reaches for. Nobody asks about those
+ * any more, so a sentence an earlier run left there would never be refreshed
+ * and would go on describing whatever the code used to be, on the one run
+ * that tells the person the model did not read these files. The structural
+ * verb underneath is the parser's and stays.
+ *
+ * A budget stop never reaches this: a purpose the budget did not get to keeps
+ * its sentence, because that one is still the last true thing we knew.
+ * `origin <> 'user'` for the same reason as everywhere else in this pass.
+ */
+export async function clearPurposes(
+  db: GraphDb,
+  projectId: string,
+  edgeIds: readonly string[],
+): Promise<number> {
+  let cleared = 0;
+  for (const batch of chunk([...new Set(edgeIds)], CHUNK)) {
+    const updated = await db.execute(sql`
+      update ${edgesTable} as e
+      set metadata = e.metadata - 'purpose'
+      where e.project_id = ${projectId}
+        and e.id in (${sql.join(
+          batch.map((id) => sql`${id}`),
+          sql`, `,
+        )})
+        and e.origin <> 'user'
+        and e.metadata -> 'purpose' is not null
+      returning e.id
+    `);
+    cleared += rowCount(updated);
+  }
+  return cleared;
 }
 
 /**

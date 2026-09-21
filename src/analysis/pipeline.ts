@@ -46,10 +46,22 @@ import {
 import { createPythonAnalyzer, pythonLlmCoverage } from "./python/analyzer";
 // Type only, and only for the reason the model pass stopped. The counts are
 // read back off the nodes; this is the one fact the graph itself cannot carry.
-import type { PythonLlmResult } from "./python/llm";
+import type { PythonLlmResult, RememberedAnswer } from "./python/llm";
+import { loadRememberedAnswers } from "./python/memory";
 import { runPurposeLayer } from "./purpose";
 import { runSemanticLayer } from "./semantic";
+import { patientLlm, provenLlm } from "./model-pool";
+import {
+  countSetAside,
+  describeSetAside,
+  markSetAside,
+  resolveSetAside,
+  setAsideContext,
+  type SetAsideContext,
+  type SetAsideReason,
+} from "./set-aside";
 import { createShallowAnalyzer } from "./shallow/analyzer";
+import { phaseClock } from "./timing";
 import type {
   AnalysisEmitter,
   AnalyzedEdge,
@@ -121,6 +133,16 @@ export type RunAnalysisInput = {
   llm?: Llm | null;
   /** Injectable so a test can watch the sequence without a database. */
   sink?: EventSink;
+  /**
+   * Re-read everything as if this were the first analysis.
+   *
+   * For the measuring tool (`reanalyze.test.ts`), never for a route: a re-read
+   * of an unchanged repository is the zero-call carry-forward, and comparing
+   * the cost of two versions of the pipeline needs both of them to do the
+   * whole job. It changes what is asked, never what is true — a full run is
+   * always a correct run, only a more expensive one.
+   */
+  fullRead?: boolean;
 };
 
 /**
@@ -186,6 +208,17 @@ type AnalyzerContext = {
    * counts alone cannot say whether a cap or a failure produced them.
    */
   onLlmResult?: (result: PythonLlmResult) => void;
+  /**
+   * Files the model is not asked about (D160), decided over the analyzer's own
+   * graph by the same function that tags the rows afterwards (D168), so the
+   * model half and the count a person reads can never disagree about a file.
+   */
+  setAside?: (graph: {
+    nodes: readonly AnalyzedNode[];
+    edges: readonly AnalyzedEdge[];
+  }) => ReadonlyMap<string, SetAsideReason>;
+  /** What an earlier run was told about a file (D161). See `python/memory.ts`. */
+  recall?: (path: string) => RememberedAnswer | null;
 };
 
 /**
@@ -209,8 +242,13 @@ const ANALYZERS: readonly ((context: AnalyzerContext) => Analyzer)[] = [
    * its parser half alone and produces a smaller honest graph. Python's
    * imports are `certain` without any model at all; only the calls need one.
    */
-  ({ llm, onLlmResult }) =>
-    createPythonAnalyzer({ llm, ...(onLlmResult ? { onLlmResult } : {}) }),
+  ({ llm, onLlmResult, setAside, recall }) =>
+    createPythonAnalyzer({
+      llm,
+      ...(onLlmResult ? { onLlmResult } : {}),
+      ...(setAside ? { setAside } : {}),
+      ...(recall ? { recall } : {}),
+    }),
   // Last, and it has to stay last: `selectAnalyzer` takes the first analyzer
   // that says yes, and the shallow one claims `static_site` until the D6
   // static-site analyzer exists. Ahead of a deep analyzer it would shadow it
@@ -226,11 +264,13 @@ export function selectAnalyzer(
   kind: ProjectKind,
   llm: Llm | null = null,
   onLlmResult?: (result: PythonLlmResult) => void,
+  reading: Pick<AnalyzerContext, "setAside" | "recall"> = {},
 ): Analyzer | null {
   for (const create of ANALYZERS) {
     const analyzer = create({
       llm,
       ...(onLlmResult ? { onLlmResult } : {}),
+      ...reading,
     });
     if (analyzer.handles(kind)) return analyzer;
   }
@@ -309,6 +349,8 @@ export function startAnalysis(input: {
   upload?: UploadPayload;
   /** The model, for the analyzers that use one. See `RunAnalysisInput.llm`. */
   llm?: Llm | null;
+  /** See `RunAnalysisInput.fullRead`. */
+  fullRead?: boolean;
 }): Promise<StartAnalysisResult> {
   const pending = starting.get(input.project.id);
   if (pending) return pending;
@@ -326,8 +368,9 @@ async function start(input: {
   githubToken: string | null;
   upload?: UploadPayload;
   llm?: Llm | null;
+  fullRead?: boolean;
 }): Promise<StartAnalysisResult> {
-  const { db, project, githubToken, upload, llm } = input;
+  const { db, project, githubToken, upload, llm, fullRead } = input;
 
   if (!selectAnalyzer(project.kind)) {
     return { ok: false, message: UNSUPPORTED_MESSAGE };
@@ -347,7 +390,15 @@ async function start(input: {
   // it has work — no queue, no worker, no `after()` with a request-bound
   // duration cap. The cost is that a process restart mid-run abandons the run;
   // `reapStaleRun` is what notices and closes it out.
-  void runAnalysis({ db, project, runId, githubToken, upload, llm }).catch((error: unknown) => {
+  void runAnalysis({
+    db,
+    project,
+    runId,
+    githubToken,
+    upload,
+    llm,
+    ...(fullRead ? { fullRead } : {}),
+  }).catch((error: unknown) => {
     // `runAnalysis` handles its own failures, so reaching here means the failure
     // path itself failed. On Node 22 an unhandled rejection ends the process,
     // which would take every other user's run down with it.
@@ -368,6 +419,10 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
     : createRunStore(db, runId);
   const emit = store.emit;
 
+  // Where the wall clock goes. Logged once at the end of a successful run, so
+  // the next decision about what to make faster starts from a number.
+  const clock = phaseClock();
+
   /*
    * Why the model pass stopped, filled in by the analyzer during `analyze`.
    *
@@ -375,14 +430,70 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
    * variable assigned from one reads as permanently null to anyone skimming —
    * including, in some positions, the compiler.
    */
-  const modelPass: { stopped: PythonLlmResult["stopped"] | null } = {
+  const modelPass: {
+    stopped: PythonLlmResult["stopped"] | null;
+    /** Files it had nothing to ask about, left out of "opened" (D179). */
+    nothingToAsk: readonly string[];
+  } = {
     stopped: null,
+    nothingToAsk: [],
   };
 
+  /*
+   * The model every pass talks to, made patient once for all of them.
+   *
+   * Each pass now keeps several questions in flight (`model-pool.ts`), which
+   * makes a rate limit something this run can walk into rather than something
+   * it only ever read about. A refusal is waited out — every caller pauses
+   * together — rather than costing the batch that met it; one that outlasts
+   * the retries is counted exactly as before, as files not opened.
+   */
+  const llm = input.llm
+    ? provenLlm(
+        patientLlm(input.llm, {
+          onRefused: (kind, attempt, waitMs) =>
+            console.warn("[pipeline] model refused, waiting", runId, { kind, attempt, waitMs }),
+        }),
+      )
+    : null;
+
+  /*
+   * Which files the model is not asked about, known only once they arrive.
+   *
+   * A box, because the analyzer is built before ingest and asks its question
+   * during `analyze`; until the files are in hand the answer is "none", which
+   * is the old behaviour and never wrong.
+   */
+  const reading: {
+    context: SetAsideContext | null;
+    /** The Python model half's answers from the last run (D161). */
+    remembered: ReadonlyMap<string, RememberedAnswer> | null;
+  } = { context: null, remembered: null };
+
   const chooseAnalyzer = (kind: ProjectKind) =>
-    selectAnalyzer(kind, input.llm ?? null, (result) => {
-      modelPass.stopped = result.stopped;
-    });
+    selectAnalyzer(
+      kind,
+      llm,
+      (result) => {
+        modelPass.stopped = result.stopped;
+        modelPass.nothingToAsk = result.nothingToAsk;
+        console.log("[pipeline] parser model", runId, {
+          calls: result.spent.calls,
+          input: result.spent.inputTokens,
+          output: result.spent.outputTokens,
+          examined: result.examined.length,
+          nothingToAsk: result.nothingToAsk.length,
+          recalled: result.recalled.length,
+          notExamined: result.notExamined.length,
+          stopped: result.stopped,
+        });
+      },
+      {
+        setAside: (graph) =>
+          reading.context !== null ? resolveSetAside(graph, reading.context) : new Map(),
+        recall: (path) => reading.remembered?.get(path) ?? null,
+      },
+    );
 
   /*
    * Chosen twice: once from what we recorded, once from what actually arrived.
@@ -448,7 +559,9 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
       headSha: commitSha,
       githubToken,
       runId,
+      fullRead: input.fullRead === true,
     });
+    clock.lap("plan");
 
     let outcome: IngestOutcome;
     if (project.source === "upload") {
@@ -475,9 +588,15 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
         // 중" in the user's list of files as if it were one. The download is the
         // longest silent stretch of a run, so this is a real gap in the UI — it
         // wants an event of its own, not a misused one.
-        (message) => console.log("[pipeline] ingest", runId, message),
+        (message) => {
+          // The download ends where extraction begins, and this callback is
+          // the only place that moment is visible from.
+          if (message === "파일을 여는 중") clock.lap("download");
+          console.log("[pipeline] ingest", runId, message);
+        },
       );
     }
+    clock.lap(project.source === "github" ? "extract" : "ingest");
     if (!outcome.ok) throw new AnalysisFailure(outcome.message);
 
     const { root, files, skipped, limitsHit } = outcome.value;
@@ -522,6 +641,23 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
       }
     }
     if (!analyzer) throw new AnalysisFailure(UNSUPPORTED_MESSAGE);
+    const readingContext = setAsideContext(files.map((file) => file.path));
+    reading.context = readingContext;
+
+    /*
+     * Last run's answers, for the one analyzer that asks a model about each
+     * file (D161). Never on a re-read asked for by name: that exists to time
+     * the whole job. A failure here costs the saving and nothing else — every
+     * file is simply asked, the way it was before this existed.
+     */
+    if (llm && analyzer.name === "python" && input.fullRead !== true) {
+      try {
+        reading.remembered = await loadRememberedAnswers(db, project.id);
+      } catch (error) {
+        console.error("[pipeline] could not read remembered answers", runId, error);
+      }
+    }
+    clock.lap("detect");
 
     // The denominator for progress. Assets are excluded because they are never
     // read at all, which on a repo of photographs would leave the bar a third
@@ -533,6 +669,7 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
 
     await emit("run.started", { analyzer: analyzer.name, fileCount: files.length });
 
+    const parserModel = { started: false };
     let filesParsed = 0;
     let nodeTotal = 0;
     let edgeTotal = 0;
@@ -563,6 +700,14 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
        */
       phase: (phase) => {
         if (phase === "done") return;
+        // The Python analyzer announces `semantic` when its parser half ends
+        // and its model half begins — the one boundary inside `analyze` worth
+        // timing on its own, because one side is CPU and the other is a queue
+        // of network calls.
+        if (phase === "semantic" && !parserModel.started) {
+          parserModel.started = true;
+          clock.lap("parse");
+        }
         setPhase(phase);
       },
       fileParsed: (path) => {
@@ -594,7 +739,17 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
     };
 
     const graph = await analyzer.analyze(files, root, emitter);
+    clock.lap(parserModel.started ? "parse_model" : "parse");
     await store.flush();
+    clock.lap("events");
+
+    /*
+     * Tag the files the model will not be asked about, before anything is
+     * written, so the reason is on the row and every later pass reads it off
+     * the same node (D160). Nothing leaves the graph: this only decides where
+     * the model's attention goes.
+     */
+    const setAside = markSetAside(graph, readingContext);
 
     /*
      * How much of the project the model actually opened.
@@ -618,7 +773,7 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
      * the second silently overwriting the first.
      */
     const parserCoverage = llmCoveragePayload(
-      pythonLlmCoverage(graph.nodes),
+      pythonLlmCoverage(graph.nodes, modelPass.nothingToAsk),
       modelPass.stopped,
     );
 
@@ -711,6 +866,7 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
         written.droppedSamples,
       );
     }
+    clock.lap("persist");
 
     /*
      * Pass 2, the semantic layer.
@@ -734,12 +890,16 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
       db,
       projectId: project.id,
       runId,
-      llm: input.llm ?? null,
+      llm,
       graph,
       scope: changeScope,
       emit,
+      // Once the parser's own model half has been answered, the key is known
+      // to work and the first naming batch need not go alone.
+      ...(llm?.proven ? { budget: { probeFirst: false } } : {}),
     });
     await store.flush();
+    clock.lap("pass2");
 
     /*
      * Pass 3, the purpose layer.
@@ -761,9 +921,10 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
     const purpose = await runPurposeLayer({
       db,
       projectId: project.id,
-      llm: input.llm ?? null,
+      llm,
       graph,
       scope: changeScope,
+      ...(llm?.proven ? { budget: { probeFirst: false } } : {}),
     });
     if (purpose.purposes > 0 || purpose.spent.calls > 0) {
       console.log(
@@ -773,6 +934,7 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
           `on ${purpose.connectionsWritten} connections, ${purpose.spent.calls} calls`,
       );
     }
+    clock.lap("pass3");
 
     /*
      * One coverage line for the run, from whichever pass fell furthest short.
@@ -815,6 +977,7 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
       [...skippedPaths],
       writeScope.mode === "incremental" ? writeScope.carryForward : [],
     );
+    clock.lap("sweep");
 
     // What the user is told is the size of the map, not the size of this run's
     // write. A full run is left counting exactly what it counted before, so the
@@ -846,14 +1009,33 @@ export async function runAnalysis(input: RunAnalysisInput): Promise<void> {
       })
       .where(eq(analysisRuns.id, runId));
 
+    /*
+     * What we chose not to show the model, said once, in its own words.
+     *
+     * Only when there is a model: with none configured nothing was read by
+     * one, and "we did not show these to the model" over a run that showed it
+     * nothing would be a true sentence that misleads.
+     */
+    const setAsideCounts = llm ? countSetAside(setAside) : [];
+    const setAsideSentence = describeSetAside(setAsideCounts);
+    if (setAsideCounts.length > 0) {
+      console.log("[pipeline] set aside", runId, JSON.stringify(setAsideCounts));
+    }
+
     await emit("run.completed", {
       nodeCount: measured.nodes,
       edgeCount: measured.edges,
       filesParsed,
       filesSkipped: skippedPaths.size,
-      limits: limitsHit.map((limit) => LIMIT_MESSAGES[limit]),
+      limits: [
+        ...limitsHit.map((limit) => LIMIT_MESSAGES[limit]),
+        ...(setAsideSentence ? [setAsideSentence] : []),
+      ],
+      ...(setAsideCounts.length > 0 ? { setAside: setAsideCounts } : {}),
     });
     await store.flush();
+    clock.lap("finish");
+    console.log("[pipeline] timings", runId, JSON.stringify(clock.report()));
   } catch (error) {
     const message =
       error instanceof AnalysisFailure ? error.message : GENERIC_FAILURE_MESSAGE;
@@ -910,7 +1092,11 @@ async function planRun(input: {
   headSha: string | null;
   githubToken: string | null;
   runId: string;
+  fullRead: boolean;
 }): Promise<ChangeScope> {
+  // Asked for by name, so there is nothing to plan.
+  if (input.fullRead) return { mode: "full", reason: "requested" };
+
   // Every failure in here is a failure of an optimisation, never of the run.
   // A connection blip while reading the base run would otherwise turn "we
   // could have written fewer rows" into "your analysis failed", which is a

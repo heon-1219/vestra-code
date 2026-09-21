@@ -190,3 +190,31 @@ describe("the imports relation, which is the only one whose target already has w
     expect(asks[0].targetKind).toBe("file");
   });
 });
+
+describe("what the model is shown of a set-aside file (D177)", () => {
+  it("never shows a test as an example caller, even when the tests come first", () => {
+    // The tests reach for `formatPrice` before any component does, in the
+    // order the analyzer found the edges. Two examples were taken from the
+    // front of that order, so the question showed the model only tests.
+    const graph = sharedHelperGraph(3);
+    const testFiles = ["src/lib/format.test.ts", "src/lib/price.test.ts"];
+    const nodes = [
+      ...graph.nodes,
+      ...testFiles.map((path) => ({ ...file(path), metadata: { setAside: "tests" } })),
+      ...testFiles.map((path, at) => symbol(path, `checks${at}`, "function", 1)),
+    ];
+    const edges = [
+      ...testFiles.map((path, at) =>
+        calls(path, `checks${at}`, "src/lib/format.ts", "formatPrice"),
+      ),
+      ...graph.edges,
+    ];
+
+    const { asks, groups } = buildPurposeAsks({ nodes, edges });
+    const ask = askFor(asks, "calls", "formatPrice");
+    expect(ask.examples).toEqual(["Card0", "Card1"]);
+    // Still one purpose over every connection, tests' included: only what the
+    // model is shown changed, not where the sentence lands.
+    expect(groups.find((group) => group.key === ask.key)?.edgeIds).toHaveLength(5);
+  });
+});

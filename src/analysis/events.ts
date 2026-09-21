@@ -1,3 +1,5 @@
+import type { SetAsideCount } from "./set-aside";
+
 /**
  * The analysis event stream.
  *
@@ -80,6 +82,20 @@ export type AnalysisEventPayloads = {
     filesSkipped: number;
     /** Limits ingest hit, so the UI can say what is missing. */
     limits: string[];
+    /**
+     * Files we chose not to show the model, counted by why (D160).
+     *
+     * On the terminal event rather than on `llm.coverage`, because that event
+     * is only sent when there is a shortfall and its `reason` is always a
+     * budget or a failure — and a choice is neither. A run that read every
+     * file it meant to and set aside a hundred tests has nothing to report
+     * there and something to report here. The same fact also arrives as a
+     * Korean sentence in `limits`, which every screen already shows.
+     *
+     * Optional: absent when nothing was set aside or no model is configured,
+     * and absent from every stream written before this existed.
+     */
+    setAside?: SetAsideCount[];
   };
   /** Plain language for the user. Technical detail goes to logs, not here. */
   "run.failed": { message: string };

@@ -1,5 +1,6 @@
 import type { NodeRef } from "../ids";
 import { normalizePath } from "../ids";
+import { setAsideOf, type SetAsideReason } from "../set-aside";
 import type { AnalyzedEdge, AnalyzedNode, SymbolKind } from "../types";
 
 /**
@@ -65,6 +66,13 @@ export type OutlineFile = OutlineEntry & {
   packages: string[];
   /** Addresses it serves: `/checkout`, `POST /api/orders`. */
   addresses: string[];
+  /**
+   * Why the model is not asked about this file, when it is not (D160).
+   *
+   * Read off the node, where the pipeline wrote it, so the outline and the
+   * database agree on which files were set aside without a second list.
+   */
+  setAside: SetAsideReason | null;
 };
 
 export type Outline = {
@@ -123,6 +131,7 @@ export function buildOutline(
         pointsAt: [],
         packages: [],
         addresses: [],
+        setAside: setAsideOf(node),
       });
       continue;
     }

@@ -6,6 +6,8 @@ import type { ChangedFile, GithubFailure, RepoComparison } from "@/lib/github/ap
 
 import { nodeId, normalizePath } from "./ids";
 import type { GraphDb } from "./persist";
+import { SET_ASIDE_KEY, setAsideOf } from "./set-aside";
+import { isSetAsideReason, type SetAsideReason } from "./set-aside-words";
 import type { AnalyzedEdge, AnalyzedNode, Confidence } from "./types";
 
 /**
@@ -54,7 +56,7 @@ import type { AnalyzedEdge, AnalyzedNode, Confidence } from "./types";
  * declared in, an edge by the file its source sits in — so the question is
  * precisely: whose owned rows can differ when someone else's file changed?
  *
- * Three answers, and the third is the one that is easy to miss:
+ * Four answers, and the third is the one that is easy to miss:
  *
  *   1. **The changed files themselves.** Obvious.
  *   2. **Whoever pointed at them, one hop, in either graph.** If `orders.ts`
@@ -84,6 +86,21 @@ import type { AnalyzedEdge, AnalyzedNode, Confidence } from "./types";
  *      before. Re-stating all of those covers it exactly, with no guard to get
  *      subtly wrong. On a repository where nearly everything is inferred this
  *      degenerates towards a full write — which is correct, and self-limiting.
+ *
+ *   4. **Everyone whose set-aside answer moved (D175).** A file row says
+ *      whether the model was asked about it (`metadata.setAside`, D160), and
+ *      that answer is a question about the whole project: a fixture stops
+ *      being set aside when a page starts importing it, and `src/tests/X.tsx`
+ *      becomes a test's data the moment somebody adds `X.test.tsx` beside it.
+ *      Neither file changed, and a verifier showed both being carried forward
+ *      with last run's tag — the row said "read" while Pass 2 was clearing its
+ *      name for being set aside. Rather than chase every dependency the rule
+ *      has (imports, loads, folders, journals, schemas), this compares the
+ *      answer itself: every file whose tag this run differs from the one its
+ *      stored row carries is re-stated. That is exact by construction, and it
+ *      stays exact when the rule grows a dependency nobody lists here. On an
+ *      unchanged project it adds nothing — measured, 0 of 325 rows on
+ *      `vestra-code` disagree with today's rule.
  *
  * ## Two analyzers, two closures
  *
@@ -157,7 +174,20 @@ import type { AnalyzedEdge, AnalyzedNode, Confidence } from "./types";
  * heal: an edge with no sentence is simply one nobody has answered for yet.)
  * One full write per project, then incremental again.
  */
-export const ANALYZER_VERSION = "4";
+/*
+ * Bumped to 5 when the model passes began setting files aside (D160).
+ *
+ * Two things a carried-forward row would get wrong. A version-4 Python graph
+ * holds `inferred` calls the model read out of test files, and version 5 no
+ * longer asks for them — so an incremental write would stamp those edges as
+ * current on every test file nobody edited, and `incremental(A -> B)` would
+ * stop equalling `full(B)`, which is the one property this file exists for.
+ * And every file node now says on its row why the model did or did not read
+ * it (`metadata.setAside`); a carried row from version 4 would say nothing,
+ * which reads as "read" on a file that was not. One full write per project,
+ * then incremental again.
+ */
+export const ANALYZER_VERSION = "5";
 
 /**
  * Above this share of the analysed tree, an incremental write is bookkeeping
@@ -190,7 +220,9 @@ export type FullReason =
   /** A different analyzer, or a different version of it, produced the base. */
   | "analyzer_changed"
   /** The set of API addresses moved, which can change any file's fetch edges. */
-  | "endpoints_changed";
+  | "endpoints_changed"
+  /** Somebody measuring asked for a whole re-read (`RunAnalysisInput.fullRead`). */
+  | "requested";
 
 /** The last completed run, as the decision below needs it. */
 export type BaseRun = {
@@ -302,6 +334,9 @@ export type FileDependency = {
   confidence: Confidence;
 };
 
+/** A file the previous graph's row says the model was not asked about, and why. */
+export type StoredSetAside = { path: string; reason: SetAsideReason };
+
 /** As much of the previous graph as deciding the write scope requires. */
 export type PreviousGraphShape = {
   dependencies: readonly FileDependency[];
@@ -313,6 +348,11 @@ export type PreviousGraphShape = {
    * appearing or disappearing is what moves other files' edges.
    */
   packageNames: readonly string[];
+  /**
+   * Every file row that carries a set-aside reason (`metadata.setAside`).
+   * A file absent from this list was stored as read. See hop 4 below.
+   */
+  setAside: readonly StoredSetAside[];
 };
 
 /**
@@ -357,6 +397,22 @@ export async function loadPreviousShape(
       ),
     );
 
+  // Only the rows that carry a reason: on `vestra-code` that is 128 of 325
+  // files, and "absent" already says "stored as read".
+  const tagged = await db
+    .select({
+      path: nodesTable.filePath,
+      reason: sql<string | null>`${nodesTable.metadata} ->> ${SET_ASIDE_KEY}`,
+    })
+    .from(nodesTable)
+    .where(
+      and(
+        eq(nodesTable.projectId, projectId),
+        eq(nodesTable.type, "file"),
+        sql`${nodesTable.metadata} ->> ${SET_ASIDE_KEY} is not null`,
+      ),
+    );
+
   const dependencies: FileDependency[] = [];
   for (const row of rows) {
     // A package node has no path of its own, so an edge *out of* one is not a
@@ -370,10 +426,17 @@ export async function loadPreviousShape(
     });
   }
 
+  const setAside: StoredSetAside[] = [];
+  for (const row of tagged) {
+    if (row.path === null || !isSetAsideReason(row.reason)) continue;
+    setAside.push({ path: normalizePath(row.path), reason: row.reason });
+  }
+
   return {
     dependencies,
     endpointIds: global.filter((row) => row.type === "api_endpoint").map((r) => r.id),
     packageNames: global.filter((row) => row.type === "package").map((r) => r.name),
+    setAside,
   };
 }
 
@@ -416,6 +479,11 @@ export function shapeOfGraph(
     packageNames: graph.nodes
       .filter((node) => node.ref.type === "package")
       .map((node) => node.ref.name ?? ""),
+    setAside: graph.nodes.flatMap((node) => {
+      if (node.ref.type !== "file") return [];
+      const reason = setAsideOf(node);
+      return reason ? [{ path: normalizePath(node.ref.filePath), reason }] : [];
+    }),
   };
 }
 
@@ -498,6 +566,16 @@ export function resolveWriteScope(input: {
     }
   }
 
+  // Hop 4: whoever changed answer about being read. See the header.
+  const storedReason = new Map(
+    previous.setAside.map((entry) => [normalizePath(entry.path), entry.reason] as const),
+  );
+  for (const node of graph.nodes) {
+    if (node.ref.type !== "file") continue;
+    const path = normalizePath(node.ref.filePath);
+    if ((storedReason.get(path) ?? null) !== setAsideOf(node)) touched.add(path);
+  }
+
   const analysed = analysedPaths.map(normalizePath);
   const carryForward = analysed.filter((path) => !touched.has(path));
 
@@ -575,4 +653,5 @@ export const FULL_REASON_NOTES: Record<FullReason, string> = {
   too_many_changes: "too much changed for the saving to be real",
   analyzer_changed: "a different analyzer or analyzer version produced the base",
   endpoints_changed: "the set of API addresses changed",
+  requested: "a full re-read was asked for by name",
 };

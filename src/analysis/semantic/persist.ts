@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 
 import { edges as edgesTable, nodes as nodesTable } from "@/db/schema";
 
@@ -52,6 +52,12 @@ export async function loadSemanticState(
   db: GraphDb,
   projectId: string,
 ): Promise<SemanticState> {
+  /*
+   * Only the two types the loop below reads, and no `metadata`: nothing here
+   * ever looked at it. Measured on `vestra-code` (D159), this read was 3.0 s of
+   * Pass 2 — 1,992 rows with their `jsonb` crossing the wire so that 334 of
+   * them could be used. The answer is the same map either way.
+   */
   const rows = await db
     .select({
       id: nodesTable.id,
@@ -61,10 +67,11 @@ export async function loadSemanticState(
       label: nodesTable.label,
       summary: nodesTable.summary,
       textLang: nodesTable.textLang,
-      metadata: nodesTable.metadata,
     })
     .from(nodesTable)
-    .where(eq(nodesTable.projectId, projectId));
+    .where(
+      and(eq(nodesTable.projectId, projectId), inArray(nodesTable.type, ["file", "feature"])),
+    );
 
   const known = new Map<string, KnownText>();
   const featureRows = new Map<string, { key: string; label: string | null }>();
@@ -243,6 +250,55 @@ export async function clearSemanticText(
           eq(nodesTable.projectId, projectId),
           ne(nodesTable.origin, "user"),
           inArray(nodesTable.id, batch),
+        ),
+      )
+      .returning({ id: nodesTable.id });
+    cleared += updated.length;
+  }
+  return cleared;
+}
+
+/**
+ * Clear the Korean off every row that lives in a file we set aside (D169).
+ *
+ * The one case where blanking is right, and the opposite of the budget case
+ * `clearSemanticText` stays out of: a file the budget did not reach keeps its
+ * last name because we meant to read it and could not, while a set-aside file
+ * is one we decided not to read at all. Its name and sentence were written by
+ * an earlier version about the code as it was then, nobody will refresh them,
+ * and the run that sets it aside tells the person "모델이 읽어야 알 수 있는
+ * 이름, 설명 … 만 없어요". Measured on production before this existed: all 128
+ * set-aside files of `vestra-code` and all 5 of `Kim-and-Chang-` still carried
+ * a model's name and sentence — 화면 꾸미기 설정, 메모 프로그램 설정, 인공지능 비서
+ * 설정, the exact waste the founder asked to be rid of — and 27 of the 265
+ * pieces inside them did too.
+ *
+ * By path rather than by id, so the file and every piece inside it go in one
+ * statement without this having to know every piece's ref. Only rows that
+ * hold something, so after the first run it changes nothing and costs one
+ * round trip. `origin <> 'user'` and `project_id = $1`, as everywhere here: a
+ * name the person typed is theirs.
+ */
+export async function clearSetAsideText(
+  db: GraphDb,
+  projectId: string,
+  paths: readonly string[],
+): Promise<number> {
+  let cleared = 0;
+  for (const batch of chunk([...new Set(paths.map(normalizePath))], CHUNK)) {
+    const updated = await db
+      .update(nodesTable)
+      .set({ label: null, summary: null, textLang: null, updatedAt: new Date() })
+      .where(
+        and(
+          eq(nodesTable.projectId, projectId),
+          ne(nodesTable.origin, "user"),
+          inArray(nodesTable.filePath, batch),
+          or(
+            isNotNull(nodesTable.label),
+            isNotNull(nodesTable.summary),
+            isNotNull(nodesTable.textLang),
+          ),
         ),
       )
       .returning({ id: nodesTable.id });

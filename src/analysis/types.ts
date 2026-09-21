@@ -65,6 +65,29 @@ export type AnalyzedEdge = {
   metadata?: Record<string, unknown>;
 };
 
+/**
+ * A file another file loads while it runs, rather than imports at the top.
+ *
+ * `import("./QuizRunner")` — what `next/dynamic` and `React.lazy` wrap — and
+ * `require("./x")`, resolved by the compiler to a file in the repository.
+ *
+ * Reported beside the graph and never drawn on it (D176). Drawing one is a new
+ * row on a file nobody edited, which means a new `ANALYZER_VERSION` and one
+ * full re-read — every Pass 2 name and Pass 3 sentence asked again — for
+ * every project. What needs it today is only the set-aside rule: a component
+ * a page loads this way is part of the program a person asks about, whatever
+ * folder it sits in (`set-aside.ts#resolveSetAside`).
+ */
+export type FileLoad = { from: string; to: string };
+
+/** What an analyzer hands back. */
+export type AnalyzedGraph = {
+  nodes: AnalyzedNode[];
+  edges: AnalyzedEdge[];
+  /** Files loaded while running. Optional: only the TypeScript analyzer finds them. */
+  loads?: FileLoad[];
+};
+
 /** Progress, streamed to the browser over SSE and persisted as it goes. */
 export type AnalysisEmitter = {
   phase: (phase: "ingest" | "static" | "semantic" | "done") => void;
@@ -107,5 +130,5 @@ export type Analyzer = {
     files: SourceFile[],
     root: string,
     emit: AnalysisEmitter,
-  ) => Promise<{ nodes: AnalyzedNode[]; edges: AnalyzedEdge[] }>;
+  ) => Promise<AnalyzedGraph>;
 };

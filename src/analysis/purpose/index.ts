@@ -5,12 +5,13 @@ import type { Llm } from "@/lib/llm/types";
 
 import { edgeId, nodeId } from "../ids";
 import type { ChangeScope } from "../incremental";
+import { phaseClock } from "../timing";
 import type { AnalyzedEdge, AnalyzedNode } from "../types";
 
 import { buildPurposeAsks, type PurposeBudget } from "./ask";
 import { spreadPurpose } from "./groups";
 import { runPurposePass, type PurposeStop } from "./pass";
-import { loadPurposeText, loadStoredPurposes, writePurposes } from "./persist";
+import { clearPurposes, loadPurposeText, loadStoredPurposes, writePurposes } from "./persist";
 
 export { DEFAULT_PURPOSE_BUDGET, type PurposeBudget } from "./ask";
 export { runPurposePass, type PurposeResult } from "./pass";
@@ -71,6 +72,7 @@ export async function runPurposeLayer(input: {
   const { db, projectId, graph, scope } = input;
 
   try {
+    const clock = phaseClock();
     /*
      * Hashing happens here and nowhere else in this folder. `groupByPurpose`
      * is told to name each edge by its row id, so `spreadPurpose` hands back a
@@ -90,7 +92,12 @@ export async function runPurposeLayer(input: {
       loadStoredPurposes(db, projectId),
     ]);
 
-    const { asks, groups } = buildPurposeAsks(graph, text, rowIdOf);
+    const { asks, groups, setAside, setAsideEdgeIds } = buildPurposeAsks(
+      graph,
+      text,
+      rowIdOf,
+    );
+    clock.lap("load");
 
     // What an earlier run already answered, mapped from edge rows back onto
     // purposes. The first stored sentence in a group wins: they are written
@@ -115,6 +122,7 @@ export async function runPurposeLayer(input: {
       ...(input.budget ? { budget: input.budget } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
     });
+    clock.lap("model");
 
     /*
      * Spread, then write every connection in every answered group — including
@@ -129,11 +137,25 @@ export async function runPurposeLayer(input: {
     const byEdge = spreadPurpose(groups, result.answers);
     const connectionsWritten = await writePurposes(db, projectId, byEdge);
 
+    /*
+     * And take the sentence off connections we no longer ask about (D169).
+     *
+     * Only with a model, for the reason the pipeline only says the set-aside
+     * sentence with one: that sentence is what this makes true on the rows,
+     * and a run with no model changes no one's words. Only the rows that carry
+     * a sentence, so after the first run this is no statement at all.
+     */
+    const stale = input.llm ? setAsideEdgeIds.filter((id) => stored.has(id)) : [];
+    const cleared = stale.length > 0 ? await clearPurposes(db, projectId, stale) : 0;
+    clock.lap("write");
+
     console.log("[purpose]", projectId, {
       purposes: result.answers.size,
       answered: result.answered,
       carried: result.carried,
       notAnswered: result.notAnswered,
+      setAside,
+      clearedFromSetAside: cleared,
       connections: connectionsWritten,
       calls: result.spent.calls,
       // In and out separately, not only the sum: the two cost different money
@@ -142,6 +164,7 @@ export async function runPurposeLayer(input: {
       output: result.spent.outputTokens,
       stopped: result.stopped,
       drops: result.drops,
+      ms: clock.report(),
       ...(result.error ? { error: result.error } : {}),
     });
 

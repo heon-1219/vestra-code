@@ -13,8 +13,10 @@ import { normalizePath, type NodeRef } from "@/analysis/ids";
 import type {
   AnalysisEmitter,
   AnalyzedEdge,
+  AnalyzedGraph,
   AnalyzedNode,
   Analyzer,
+  FileLoad,
   SourceFile,
   SymbolKind,
 } from "@/analysis/types";
@@ -56,7 +58,7 @@ function run(
   files: SourceFile[],
   repoRoot: string,
   emit: AnalysisEmitter,
-): { nodes: AnalyzedNode[]; edges: AnalyzedEdge[] } {
+): AnalyzedGraph {
   emit.phase("static");
 
   const sourceFiles = files.filter(
@@ -224,6 +226,9 @@ function run(
 
   const edges: AnalyzedEdge[] = [];
   const seenEdges = new Set<string>();
+  const loads: FileLoad[] = [];
+  const seenLoads = new Set<string>();
+  const checker = project.getTypeChecker().compilerObject;
 
   const addEdge = (edge: AnalyzedEdge) => {
     // D35: never point at something we did not create. A JSX tag bound to a
@@ -375,12 +380,60 @@ function run(
       endpointUrls,
       endpointFileByUrl,
     });
+
+    for (const target of collectLoads(source, checker, repoRoot)) {
+      if (target === repoPath) continue;
+      if (!declared.has(refKey({ type: "file", filePath: target }))) continue;
+      const key = JSON.stringify([repoPath, target]);
+      if (seenLoads.has(key)) continue;
+      seenLoads.add(key);
+      loads.push({ from: repoPath, to: target });
+    }
   }
 
   emit.edges(edges);
   emit.phase("done");
 
-  return { nodes, edges };
+  return { nodes, edges, loads };
+}
+
+/**
+ * Files this one loads while it runs: `import("…")` and `require("…")` with a
+ * literal specifier, resolved by the same compiler that resolves its imports.
+ *
+ * Not edges (see `FileLoad`). Walked on the raw TypeScript tree, and only in
+ * a file whose text mentions either word at all, because wrapping every call
+ * expression of a 300-file project in ts-morph objects to find the handful
+ * that load something is most of the cost of looking.
+ */
+function collectLoads(
+  source: TsSourceFile,
+  checker: ts.TypeChecker,
+  repoRoot: string,
+): string[] {
+  const text = source.getFullText();
+  if (!text.includes("import(") && !text.includes("require(")) return [];
+
+  const found: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && node.arguments.length > 0) {
+      const callee = node.expression;
+      const loadsModule =
+        callee.kind === ts.SyntaxKind.ImportKeyword ||
+        (ts.isIdentifier(callee) && callee.text === "require");
+      const argument = node.arguments[0];
+      if (loadsModule && ts.isStringLiteralLike(argument)) {
+        const declaration = checker.getSymbolAtLocation(argument)?.declarations?.[0];
+        if (declaration && ts.isSourceFile(declaration)) {
+          const target = normalizePath(path.relative(repoRoot, declaration.fileName));
+          if (!target.startsWith("..")) found.push(target);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source.compilerNode);
+  return found;
 }
 
 // ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ import {
   resolveWriteScope,
   selectOwnedRows,
   shapeOfGraph,
+  type PreviousGraphShape,
   type WriteScope,
 } from "./incremental";
 import {
@@ -19,6 +20,7 @@ import {
   resolveEdgeEndpoints,
   type CarryForwardScope,
 } from "./persist";
+import { markSetAside, setAsideContext } from "./set-aside";
 import { createShallowAnalyzer } from "./shallow/analyzer";
 import type { AnalysisEmitter, AnalyzedEdge, AnalyzedNode, SourceFile } from "./types";
 import { createTypescriptAnalyzer } from "./typescript/analyzer";
@@ -189,6 +191,8 @@ function runIncremental(
   next: Analysed,
   previous: Analysed,
   changed: readonly ChangedFile[],
+  /** What the write reads of the stored graph. Overridden only to prove a hop matters. */
+  shape: PreviousGraphShape = shapeOfGraph(PROJECT, previous.graph),
 ): WriteScope {
   const scope = planChangeScope({
     source: "github",
@@ -210,7 +214,7 @@ function runIncremental(
           scope,
           analysedPaths: next.paths,
           graph: next.graph,
-          previous: shapeOfGraph(PROJECT, previous.graph),
+          previous: shape,
         })
       : scope;
 
@@ -471,6 +475,148 @@ describe("incremental re-analysis of a TypeScript project", () => {
   }, 60_000);
 });
 
+describe("incremental re-analysis when a file nobody edited changes set-aside answer (D175)", () => {
+  /** Tag the graph the way the pipeline does, between analysis and write. */
+  const tag = (analysed: Analysed): Analysed => {
+    markSetAside(analysed.graph, setAsideContext(analysed.paths));
+    return analysed;
+  };
+
+  const reasonOn = (store: Store, path: string): unknown => {
+    const row = [...store.nodes.values()].find(
+      (candidate) => candidate.type === "file" && candidate.filePath === path,
+    );
+    return (row?.metadata as Record<string, unknown> | undefined)?.setAside ?? null;
+  };
+
+  /**
+   * The same incremental write with hop 4 blinded: the stored tags are made
+   * to agree with this run's, so only hops 1 to 3 decide. What that leaves on
+   * the rows is what the verifier found in production.
+   */
+  const withoutHop4 = (
+    before: Analysed,
+    after: Analysed,
+    changed: readonly ChangedFile[],
+  ): Store => {
+    const store = emptyStore();
+    runFull(store, "run-a", before);
+    runIncremental(store, "run-b", after, before, changed, {
+      ...shapeOfGraph(PROJECT, before.graph),
+      setAside: shapeOfGraph(PROJECT, after.graph).setAside,
+    });
+    return store;
+  };
+
+  const QUIZ_RUNNER =
+    'import { Score } from "./Score";\n\n' +
+    "export default function QuizRunner() {\n  return <Score points={3} />;\n}\n";
+  const SCORE =
+    "export function Score({ points }: { points: number }) {\n  return <p>{points}</p>;\n}\n";
+  const QUIZ_TEST = 'import QuizRunner from "./QuizRunner";\n\nexport const rendered = QuizRunner();\n';
+
+  it("re-states a fixture a page starts importing", async () => {
+    // Probe 1: `demo.ts` is imported only by its test, so it is a test's data.
+    // Then the page starts importing it, which makes it part of the program.
+    const demo = "export const demoOrder = { id: 1, cents: 1200 };\n";
+    const demoTest =
+      'import { demoOrder } from "./demo";\n\nexport const checked = demoOrder.id === 1;\n';
+    const before = tag(
+      await analyseShop({ "src/fixtures/demo.ts": demo, "src/fixtures/demo.test.ts": demoTest }),
+    );
+    const page = before.sources.get("src/app/page.tsx") as string;
+    const after = tag(
+      await analyseShop({
+        "src/fixtures/demo.ts": demo,
+        "src/fixtures/demo.test.ts": demoTest,
+        "src/app/page.tsx": `import { demoOrder } from "../fixtures/demo";\n${page}`,
+      }),
+    );
+    const changed = [change("src/app/page.tsx", "modified")];
+
+    const { store, writeScope } = equivalent(before, after, changed);
+    expect(touchedOf(writeScope)).toContain("src/fixtures/demo.ts");
+    expect(reasonOn(store, "src/fixtures/demo.ts")).toBeNull();
+    // Without hop 4 the carried row keeps last run's answer.
+    expect(reasonOn(withoutHop4(before, after, changed), "src/fixtures/demo.ts")).toBe("tests");
+  }, 60_000);
+
+  it("re-states the files a new test turns into a test folder", async () => {
+    // Probe 2: `src/tests/` holds a quiz and nothing named like a test, so it
+    // is somebody's folder and both files are read. One added test makes it
+    // a test folder, and both files — unedited — become a test's data.
+    const quiz = { "src/tests/QuizRunner.tsx": QUIZ_RUNNER, "src/tests/Score.tsx": SCORE };
+    const before = tag(await analyseShop(quiz));
+    const after = tag(
+      await analyseShop({ ...quiz, "src/tests/QuizRunner.test.tsx": QUIZ_TEST }),
+    );
+    const changed = [change("src/tests/QuizRunner.test.tsx", "added")];
+
+    const { store, writeScope } = equivalent(before, after, changed);
+    for (const path of ["src/tests/QuizRunner.tsx", "src/tests/Score.tsx"]) {
+      expect(touchedOf(writeScope), path).toContain(path);
+      expect(reasonOn(store, path), path).toBe("tests");
+      expect(reasonOn(withoutHop4(before, after, changed), path), path).toBeNull();
+    }
+  }, 60_000);
+
+  it("re-states a component a page starts loading while it runs", async () => {
+    const quiz = {
+      "src/tests/QuizRunner.tsx": QUIZ_RUNNER,
+      "src/tests/Score.tsx": SCORE,
+      "src/tests/QuizRunner.test.tsx": QUIZ_TEST,
+    };
+    const before = tag(await analyseShop(quiz));
+    const page = before.sources.get("src/app/page.tsx") as string;
+    const after = tag(
+      await analyseShop({
+        ...quiz,
+        "src/app/page.tsx": `${page}\nexport const loadQuiz = () => import("../tests/QuizRunner");\n`,
+      }),
+    );
+    const changed = [change("src/app/page.tsx", "modified")];
+
+    const { store, writeScope } = equivalent(before, after, changed);
+    for (const path of ["src/tests/QuizRunner.tsx", "src/tests/Score.tsx"]) {
+      expect(touchedOf(writeScope), path).toContain(path);
+      expect(reasonOn(store, path), path).toBeNull();
+    }
+    expect(reasonOn(store, "src/tests/QuizRunner.test.tsx")).toBe("tests");
+  }, 60_000);
+
+  it("adds nothing to the write when no answer moved", async () => {
+    const quiz = {
+      "src/tests/QuizRunner.tsx": QUIZ_RUNNER,
+      "src/tests/Score.tsx": SCORE,
+      "src/tests/QuizRunner.test.tsx": QUIZ_TEST,
+    };
+    const before = tag(await analyseShop(quiz));
+    const format = before.sources.get("src/lib/format.ts") as string;
+    const after = tag(
+      await analyseShop({ ...quiz, "src/lib/format.ts": `export const CURRENCY = "KRW";\n\n${format}` }),
+    );
+    const changed = [change("src/lib/format.ts", "modified")];
+
+    const { writeScope } = equivalent(before, after, changed);
+    // Every tag agrees with its row, so the closure is exactly hops 1 to 3.
+    const blind = resolveWriteScope({
+      projectId: PROJECT,
+      scope: planChangeScope({
+        source: "github",
+        baseRun: { commitSha: "a".repeat(40), analyzer: "fixture", analyzerVersion: ANALYZER_VERSION },
+        headSha: "b".repeat(40),
+        analyzer: "fixture",
+        comparison: { status: "ahead", files: changed, gap: null },
+        comparisonError: null,
+      }) as Extract<ReturnType<typeof planChangeScope>, { mode: "incremental" }>,
+      analysedPaths: after.paths,
+      graph: after.graph,
+      previous: { ...shapeOfGraph(PROJECT, before.graph), setAside: shapeOfGraph(PROJECT, after.graph).setAside },
+    });
+    expect([...touchedOf(writeScope)].sort()).toEqual([...touchedOf(blind)].sort());
+  }, 60_000);
+});
+
 describe("incremental re-analysis of a project the shallow analyzer reads", () => {
   /**
    * Most real projects here never reach the TypeScript analyzer — a static
@@ -656,7 +802,7 @@ describe("when it refuses to go incremental", () => {
         scope,
         analysedPaths: ["a.ts", "b.ts", "c.ts", "d.ts"],
         graph: { nodes: [], edges: [] },
-        previous: { dependencies: [], endpointIds: [], packageNames: [] },
+        previous: { dependencies: [], endpointIds: [], packageNames: [], setAside: [] },
       }),
     ).toEqual({ mode: "full", reason: "too_many_changes" });
   });

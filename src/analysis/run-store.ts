@@ -48,6 +48,15 @@ export async function createRun(db: Db, projectId: string): Promise<string> {
   return id;
 }
 
+/**
+ * Events per statement. Five bound columns each, so far under Postgres's
+ * 65,535-parameter ceiling; the number only has to stop one statement growing
+ * without bound on a repository of thousands of files.
+ */
+const EVENT_BATCH = 500;
+
+type EventRow = typeof analysisEvents.$inferInsert;
+
 export function createRunStore(db: Db, runId: string): RunStore {
   let seq = 0;
 
@@ -58,24 +67,56 @@ export function createRunStore(db: Db, runId: string): RunStore {
    * reader has stepped past and will never come back for — a progress line
    * missing from one browser and present in another, with nothing to show for
    * it in any log.
+   *
+   * **Chained, but not one row at a time.** Events that arrive while a write
+   * is in flight wait in `pending` and go out together in the next statement.
+   * Measured on a full re-read of `vestra-code` (D159): 268 `file.parsed`
+   * events took **22.9 seconds** to reach the database one round trip at a
+   * time, while the parser that produced them was long finished — the run's
+   * "parse" phase was mostly this queue. A multi-row insert is one statement
+   * and so commits all or nothing, and the statements are still issued one
+   * after another in sequence order, so no reader can ever see a higher
+   * number before a lower one. The ordering argument above is untouched.
    */
   let tail: Promise<void> = Promise.resolve();
+  const pending: EventRow[] = [];
+  let scheduled = false;
+
+  const write = async () => {
+    scheduled = false;
+    while (pending.length > 0) {
+      const rows = pending.splice(0, EVENT_BATCH);
+      try {
+        await db.insert(analysisEvents).values(rows);
+      } catch (error) {
+        // One bad row must not cost its neighbours their progress lines, so a
+        // statement that fails is retried row by row and only what still
+        // fails is dropped. Rows keep their order, so the rule above holds.
+        console.error("[run-store] event batch failed, writing one by one", runId, error);
+        for (const row of rows) {
+          try {
+            await db.insert(analysisEvents).values(row);
+          } catch (rowError) {
+            // A dropped progress line must never take the analysis down with
+            // it. The reader orders by sequence, so the gap is stepped over
+            // rather than waited on. Technical detail to the log, per section 8.
+            console.error("[run-store] event insert failed", runId, row.seq, row.type, rowError);
+          }
+        }
+      }
+    }
+  };
 
   const emit: EventSink = (type, payload) => {
     seq += 1;
-    const row = { id: randomUUID(), runId, seq, type, payload };
+    pending.push({ id: randomUUID(), runId, seq, type, payload });
 
-    tail = tail.then(async () => {
-      try {
-        await db.insert(analysisEvents).values(row);
-      } catch (error) {
-        // A dropped progress line must never take the analysis down with it.
-        // The reader orders by sequence, so the gap is stepped over rather than
-        // waited on. Technical detail to the log, per section 8.
-        console.error("[run-store] event insert failed", runId, seq, type, error);
-      }
-    });
-
+    // One write queued at a time. A write that has not started yet will take
+    // this row with it; one that has started is followed by another.
+    if (!scheduled) {
+      scheduled = true;
+      tail = tail.then(write);
+    }
     return tail;
   };
 

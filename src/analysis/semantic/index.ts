@@ -6,11 +6,17 @@ import type { Llm } from "@/lib/llm/types";
 import type { EventSink } from "../events";
 import type { ChangeScope } from "../incremental";
 import { persistGraph } from "../persist";
+import { phaseClock } from "../timing";
 import type { AnalyzedEdge, AnalyzedNode } from "../types";
 
 import { buildOutline } from "./outline";
 import { runSemanticPass, type SemanticEmitter, type SemanticStop } from "./pass";
-import { loadSemanticState, sweepStaleFeatureLinks, writeSemanticText } from "./persist";
+import {
+  clearSetAsideText,
+  loadSemanticState,
+  sweepStaleFeatureLinks,
+  writeSemanticText,
+} from "./persist";
 import type { SemanticBudget } from "./select";
 
 export { DEFAULT_SEMANTIC_BUDGET, type SemanticBudget } from "./select";
@@ -72,8 +78,10 @@ export async function runSemanticLayer(input: {
   const { db, projectId, runId, graph, scope, emit } = input;
 
   try {
+    const clock = phaseClock();
     const state = await loadSemanticState(db, projectId);
     const outline = buildOutline(graph, state.known);
+    clock.lap("load");
 
     /*
      * Events are fired as the pass finds things rather than collected and
@@ -110,6 +118,7 @@ export async function runSemanticLayer(input: {
       ...(input.signal ? { signal: input.signal } : {}),
     });
     await Promise.all(pending);
+    clock.lap("model");
 
     // Nodes first, then edges, in one call — `persistGraph` already does both
     // in that order (D31), and a `belongs_to` edge points at a file Pass 1 wrote
@@ -123,6 +132,17 @@ export async function runSemanticLayer(input: {
       { origin: "llm" },
     );
     const namedCount = await writeSemanticText(db, projectId, result.text);
+    /*
+     * And the files we chose not to read lose whatever an earlier run wrote on
+     * them (D169), so the sentence the run ends with — that a set-aside file
+     * has no model-written name or description — is true of the rows and not
+     * only of this run. `result.setAside` is empty when no model ran, which
+     * changes nobody's words, the same as the sentence is then not said.
+     */
+    const clearedFromSetAside =
+      result.setAside.length > 0
+        ? await clearSetAsideText(db, projectId, result.setAside)
+        : 0;
 
     /*
      * A `belongs_to` from a file that did not change is stamped by
@@ -134,6 +154,7 @@ export async function runSemanticLayer(input: {
      * sweep runs.
      */
     const stale = await sweepStaleFeatureLinks(db, projectId, runId);
+    clock.lap("write");
 
     if (written.edgesDropped > 0 || written.nodesDropped > 0) {
       console.warn("[semantic] dropped rows", runId, {
@@ -150,6 +171,8 @@ export async function runSemanticLayer(input: {
       examined: result.examined.length,
       carried: result.carried.length,
       notExamined: result.notExamined.length,
+      setAside: result.setAside.length,
+      clearedFromSetAside,
       staleLinksRemoved: stale,
       calls: result.spent.calls,
       // In and out separately, not only the sum: the two cost different money
@@ -158,6 +181,7 @@ export async function runSemanticLayer(input: {
       output: result.spent.outputTokens,
       stopped: result.stopped,
       drops: result.drops,
+      ms: clock.report(),
       ...(result.error ? { error: result.error } : {}),
     });
 

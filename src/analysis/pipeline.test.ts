@@ -35,17 +35,20 @@ type Insert = { seq: number; type: string };
  * Later inserts resolve sooner, which is what an unchained emitter would do to
  * a real connection pool under load, only reliably.
  */
-function adversarialDb(committed: Insert[], failOnSeq?: number) {
+function adversarialDb(committed: Insert[], failOnSeq?: number, statements?: number[]) {
+  // One row or many, the way drizzle's `values` takes either. A statement that
+  // holds the failing row fails whole, the way a real one does.
   const values = (row: unknown) => {
-    const insert = row as Insert;
-    const delay = Math.max(0, 40 - insert.seq * 4);
+    const rows = (Array.isArray(row) ? row : [row]) as Insert[];
+    statements?.push(rows.length);
+    const delay = Math.max(0, 40 - rows[0].seq * 4);
     return new Promise<void>((resolve, reject) => {
       setTimeout(() => {
-        if (insert.seq === failOnSeq) {
+        if (rows.some((insert) => insert.seq === failOnSeq)) {
           reject(new Error("connection reset"));
           return;
         }
-        committed.push({ seq: insert.seq, type: insert.type });
+        for (const insert of rows) committed.push({ seq: insert.seq, type: insert.type });
         resolve();
       }, delay);
     });
@@ -93,6 +96,50 @@ describe("run store", () => {
     // A dropped progress line must not reject into the analysis behind it.
     await expect(store.flush()).resolves.toBeUndefined();
     expect(committed.map((row) => row.seq)).toEqual([1, 3]);
+  });
+
+  it("sends a burst of events in a few statements rather than one round trip each", async () => {
+    /*
+     * D159. A full re-read of `vestra-code` spent 22.9 s writing 268
+     * `file.parsed` rows one round trip at a time, after the parser that
+     * produced them had finished. The rows still have to arrive in order;
+     * they do not have to arrive one by one.
+     */
+    const committed: Insert[] = [];
+    const statements: number[] = [];
+    const store = createRunStore(adversarialDb(committed, undefined, statements), randomUUID());
+
+    for (let i = 1; i <= 300; i += 1) {
+      store.emit("file.parsed", { path: `src/file-${i}.ts`, parsed: i, total: 300 });
+    }
+    await store.flush();
+
+    expect(committed.map((row) => row.seq)).toEqual(
+      Array.from({ length: 300 }, (_, at) => at + 1),
+    );
+    expect(statements.length).toBeLessThanOrEqual(2);
+    expect(statements.reduce((sum, rows) => sum + rows, 0)).toBe(300);
+  });
+
+  it("keeps order while events keep arriving during a write", async () => {
+    const committed: Insert[] = [];
+    const statements: number[] = [];
+    const store = createRunStore(adversarialDb(committed, undefined, statements), randomUUID());
+
+    for (let i = 1; i <= 10; i += 1) {
+      store.emit("file.parsed", { path: `src/a-${i}.ts`, parsed: i, total: 20 });
+      // Let the first statement leave before the next events are queued.
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+    for (let i = 11; i <= 20; i += 1) {
+      store.emit("file.parsed", { path: `src/b-${i}.ts`, parsed: i, total: 20 });
+    }
+    await store.flush();
+
+    expect(committed.map((row) => row.seq)).toEqual(
+      Array.from({ length: 20 }, (_, at) => at + 1),
+    );
+    expect(statements.length).toBeLessThan(20);
   });
 });
 

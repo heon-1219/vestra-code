@@ -81,6 +81,53 @@ describe.skipIf(!projectId)("re-reading one project for real", () => {
     console.log(`  edges ${JSON.stringify(before.edgesByType)}`);
     console.log(`  certain ${before.certain} / inferred ${before.inferred}`);
 
+    /*
+     * Every model call, tallied by what asked for it.
+     *
+     * The run log says how many calls each pass made; it does not say how long
+     * they took or whether any were refused, and "the model is the slow part"
+     * is a claim that needs both. Keyed by the JSON schema name, which is the
+     * one field every pass sets and no two passes share.
+     */
+    const real = llmFromEnv();
+    const tally = new Map<
+      string,
+      { calls: number; ms: number; input: number; output: number; errors: number; peak: number }
+    >();
+    let inFlight = 0;
+    const watched = real
+      ? {
+          async complete(request: Parameters<typeof real.complete>[0]) {
+            const key = request.jsonSchema?.name ?? "other";
+            const row = tally.get(key) ?? {
+              calls: 0,
+              ms: 0,
+              input: 0,
+              output: 0,
+              errors: 0,
+              peak: 0,
+            };
+            tally.set(key, row);
+            inFlight += 1;
+            row.peak = Math.max(row.peak, inFlight);
+            const at = Date.now();
+            try {
+              const reply = await real.complete(request);
+              row.calls += 1;
+              row.input += reply.usage.inputTokens;
+              row.output += reply.usage.outputTokens;
+              return reply;
+            } catch (error) {
+              row.errors += 1;
+              throw error;
+            } finally {
+              row.ms += Date.now() - at;
+              inFlight -= 1;
+            }
+          },
+        }
+      : null;
+
     const started = await startAnalysis({
       db,
       project:
@@ -95,7 +142,11 @@ describe.skipIf(!projectId)("re-reading one project for real", () => {
             }
           : { id: project.id, source: "upload", kind: project.kind },
       githubToken: null,
-      llm: llmFromEnv(),
+      llm: watched,
+      // `VESTRA_REANALYZE_FULL=1` re-reads everything, the way a first
+      // analysis would, so two versions of the pipeline can be timed doing the
+      // same job. Without it an unchanged repository is carried forward.
+      ...(process.env.VESTRA_REANALYZE_FULL === "1" ? { fullRead: true } : {}),
     });
     expect(started.ok, started.ok ? "" : started.message).toBe(true);
     if (!started.ok) return;
@@ -149,6 +200,15 @@ describe.skipIf(!projectId)("re-reading one project for real", () => {
     console.log(
       `\nCHANGE: nodes ${before.nodes} -> ${after.nodes}, edges ${before.edges} -> ${after.edges}`,
     );
+    console.log(
+      `run wall clock: ${run?.startedAt && run.finishedAt ? run.finishedAt.getTime() - run.startedAt.getTime() : "-"}ms`,
+    );
+    for (const [name, row] of tally) {
+      console.log(
+        `model ${name}: ${row.calls} calls, ${row.errors} refused, ${row.input} in / ${row.output} out, ` +
+          `${row.ms}ms summed, ${row.calls ? Math.round(row.ms / row.calls) : 0}ms each, peak ${row.peak} at once`,
+      );
+    }
 
     expect(status).toBe("completed");
   }, 16 * 60_000);

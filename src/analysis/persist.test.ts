@@ -12,7 +12,8 @@ import { edges, nodes, projects, user } from "@/db/schema";
 
 import { nodeId } from "./ids";
 import { loadPreviousShape } from "./incremental";
-import { loadStoredPurposes, writePurposes } from "./purpose/persist";
+import { clearPurposes, loadStoredPurposes, writePurposes } from "./purpose/persist";
+import { clearSetAsideText, writeSemanticText } from "./semantic/persist";
 import {
   carryForwardSkipped,
   persistGraph,
@@ -446,6 +447,36 @@ withDb("persistGraph against a real database", () => {
     expect(pairs).toEqual(["a.ts -> a.ts", "a.ts -> b.ts", "b.ts -> b.ts"]);
     expect(shape.packageNames).toEqual([]);
     expect(shape.endpointIds).toEqual([]);
+    expect(shape.setAside).toEqual([]);
+  });
+
+  it("reads which file rows say they were set aside, and nothing else (D175)", async () => {
+    await persistGraph(
+      db,
+      projectId,
+      "run-1",
+      [
+        { ref: { type: "file", filePath: "src/a.test.ts" }, metadata: { setAside: "tests" } },
+        { ref: { type: "file", filePath: ".claude/settings.json" }, metadata: { setAside: "tool_settings" } },
+        // A value that is not a reason reads as "read", like no value at all.
+        { ref: { type: "file", filePath: "src/odd.ts" }, metadata: { setAside: "maybe" } },
+        { ref: { type: "file", filePath: "src/a.ts" }, metadata: { size: 10 } },
+        // Only file rows carry the answer.
+        {
+          ref: { type: "symbol", filePath: "src/a.ts", name: "alpha" },
+          kind: "function",
+          metadata: { setAside: "tests" },
+        },
+      ],
+      [],
+    );
+    await promoteRun(db, projectId, "run-1");
+
+    const shape = await loadPreviousShape(db, projectId);
+    expect([...shape.setAside].sort((x, y) => x.path.localeCompare(y.path))).toEqual([
+      { path: ".claude/settings.json", reason: "tool_settings" },
+      { path: "src/a.test.ts", reason: "tests" },
+    ]);
   });
 
   it("resolves an existing project's node ids without a hash collision", async () => {
@@ -540,6 +571,76 @@ withDb("persistGraph against a real database", () => {
         new Map([[target!.id, "여기서 값을 바꿔요."]]),
       );
       expect(written).toBe(0);
+    });
+
+    it("is taken off a connection Pass 3 set aside, and the rest of the blob stays", async () => {
+      // D169: a sentence nobody will refresh is taken off, the call-site line
+      // beside it is not, and a user's connection is not touched at all.
+      await write("run-1");
+      const rows = await readEdges();
+      const calls = rows.find((row) => row.type === "calls")!;
+      const importsRow = rows.find((row) => row.type === "imports")!;
+      await writePurposes(
+        db,
+        projectId,
+        new Map([
+          [calls.id, "여기서 값을 바꿔요."],
+          [importsRow.id, "필요한 것을 가져와요."],
+        ]),
+      );
+      await db.update(edges).set({ origin: "user" }).where(eq(edges.id, importsRow.id));
+
+      expect(await clearPurposes(db, "vestra-test-persist-somebody-else", [calls.id])).toBe(0);
+      expect(await clearPurposes(db, projectId, [calls.id, importsRow.id])).toBe(1);
+      // Nothing left to take: a second run changes nothing.
+      expect(await clearPurposes(db, projectId, [calls.id])).toBe(0);
+
+      const stored = await loadStoredPurposes(db, projectId);
+      expect(stored.has(calls.id)).toBe(false);
+      expect(stored.get(importsRow.id)).toBe("필요한 것을 가져와요.");
+      const after = (await readEdges()).find((edge) => edge.id === calls.id);
+      expect((after?.metadata as { line?: number }).line).toBe(34);
+    });
+  });
+
+  describe("the Korean on a file the model no longer reads", () => {
+    it("is cleared from the file and every piece inside it, and nowhere else", async () => {
+      await persistGraph(db, projectId, "run-1", fixtureNodes(), fixtureEdges());
+      await writeSemanticText(db, projectId, [
+        { ref: { type: "file", filePath: "a.ts" }, label: "주문 화면", summary: "주문을 받아요." },
+        { ref: { type: "symbol", filePath: "a.ts", name: "alpha" }, label: "주문 버튼", summary: null },
+        { ref: { type: "file", filePath: "b.ts" }, label: "주문 검사", summary: "주문을 검사해요." },
+        { ref: { type: "symbol", filePath: "b.ts", name: "beta" }, label: "검사 하나", summary: null },
+      ]);
+
+      // Another project's file of the same name is not this one.
+      expect(await clearSetAsideText(db, "vestra-test-persist-somebody-else", ["b.ts"])).toBe(0);
+      expect(await clearSetAsideText(db, projectId, ["b.ts"])).toBe(2);
+      // Nothing left on them, so the next run changes nothing.
+      expect(await clearSetAsideText(db, projectId, ["b.ts"])).toBe(0);
+
+      const byName = new Map((await readNodes()).map((row) => [row.name, row]));
+      const text = (name: string) => {
+        const row = byName.get(name);
+        return [row?.label ?? null, row?.summary ?? null, row?.textLang ?? null];
+      };
+      expect(text("a.ts")).toEqual(["주문 화면", "주문을 받아요.", "ko"]);
+      expect(text("alpha")).toEqual(["주문 버튼", null, "ko"]);
+      expect(text("b.ts")).toEqual([null, null, null]);
+      expect(text("beta")).toEqual([null, null, null]);
+    });
+
+    it("keeps a name the person typed", async () => {
+      await persistGraph(db, projectId, "run-1", fixtureNodes(), fixtureEdges());
+      const fileId = nodeId(projectId, { type: "file", filePath: "b.ts" });
+      await db
+        .update(nodes)
+        .set({ label: "내가 붙인 이름", origin: "user" })
+        .where(eq(nodes.id, fileId));
+
+      expect(await clearSetAsideText(db, projectId, ["b.ts"])).toBe(0);
+      const row = (await readNodes()).find((node) => node.id === fileId);
+      expect(row?.label).toBe("내가 붙인 이름");
     });
   });
 });

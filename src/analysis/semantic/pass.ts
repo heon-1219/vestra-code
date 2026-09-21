@@ -8,6 +8,8 @@ import type { AnalyzedEdge, AnalyzedNode } from "../types";
 // test of it, unimportable on a machine with no API key.
 import { LlmError, type Llm } from "@/lib/llm/types";
 
+import { runInOrder } from "../model-pool";
+
 import { featureKey, type PreviousFeature } from "./features";
 import type { Outline, OutlineFile } from "./outline";
 import {
@@ -121,6 +123,8 @@ export type SemanticResult = {
    * exactly like a map of a project with little in it.
    */
   notExamined: string[];
+  /** Files we chose not to ask about (D160). Never in `notExamined`. */
+  setAside: string[];
   stopped: SemanticStop | null;
   /** The failure, in Korean, when one happened. */
   error: string | null;
@@ -162,6 +166,7 @@ export async function runSemanticPass(
     examined: [],
     carried: [],
     notExamined: [],
+    setAside: [],
     stopped: "completed",
     error: null,
     spent: { calls: 0, inputTokens: 0, outputTokens: 0 },
@@ -183,127 +188,83 @@ export async function runSemanticPass(
   const selection = selectTargets(input.outline, input.scope, budget);
   result.carried = selection.carried.map((file) => file.filePath);
   result.notExamined = selection.skipped.map((file) => file.filePath);
+  result.setAside = selection.setAside.map((file) => file.filePath);
   if (selection.skipped.length > 0) result.stopped = "file_budget";
 
   const labelled = new Map<number, string>();
   const groups = batches(selection.targets, budget.batchSize);
 
-  for (let at = 0; at < groups.length; at += 1) {
-    const group = groups[at];
-    const paths = group.map((target) => target.file.filePath);
+  /*
+   * Several batches at once, folded back in the order they were built.
+   *
+   * Measured on `vestra-code` (D159): 28 naming calls one after another took
+   * 117 of the run's 348 seconds. The batches never depended on each other —
+   * each one names its own twelve files — so the only thing the old loop
+   * bought by waiting was an order, and `runInOrder` keeps the order without
+   * the waiting.
+   *
+   * What gets launched is decided on the fly and may differ between two runs;
+   * what gets KEPT is decided below by walking the batches in order, with the
+   * same three stopping rules the one-at-a-time loop had. That is what keeps
+   * the rows identical: a batch the old loop would never have asked is thrown
+   * away here even if it was asked, and its files are counted as not opened.
+   */
+  let settledSpend = 0;
+  let fatalSeen = false;
+  const slots = await runInOrder(
+    groups,
+    budget.concurrency,
+    async (group) => {
+      const outcome = await nameBatch(llm, group, budget, input.outline, input.signal);
+      settledSpend += outcome.spent.inputTokens + outcome.spent.outputTokens;
+      if (outcome.fatal !== null) fatalSeen = true;
+      return outcome;
+    },
+    // Only a way to stop spending. Each of these being true means the fold
+    // below would discard the batch anyway — see `runInOrder`.
+    () => !input.signal?.aborted && !fatalSeen && settledSpend < budget.maxTokens,
+    budget.probeFirst,
+  );
 
-    if (input.signal?.aborted) {
-      result.stopped = "aborted";
-      result.notExamined.push(...pathsFrom(groups, at));
-      break;
-    }
-    if (spent(result) >= budget.maxTokens) {
+  let keptSpend = 0;
+  for (let at = 0; at < groups.length; at += 1) {
+    const slot = slots[at];
+    // Every batch that ran was paid for, kept or not. What it cost is a fact
+    // about the run; whether its answer is used is a separate question.
+    if (slot.ran) addSpend(result.spent, slot.value.spent);
+
+    if (keptSpend >= budget.maxTokens) {
       // Out of budget, not out of files. Everything from here is a file nobody
       // opened, and saying which is the whole point of the distinction.
       result.stopped = "token_budget";
       result.notExamined.push(...pathsFrom(groups, at));
+      spendTheRest(result, slots, at);
       break;
     }
-
-    let asked: NamingTarget[] = [...group];
-    let fatalError: unknown = null;
-    /** Whether the model actually got as far as answering about these files. */
-    let opened = false;
-
-    /*
-     * Two attempts at most, and the second one is narrower rather than the same
-     * question again.
-     *
-     * A truncated reply is not a reply — half a JSON object would name the
-     * first few files and lose the rest with nothing on screen to say any are
-     * missing. Measured on a real project: one batch of 20 files carrying 120
-     * pieces answered at 1,985 tokens against a flat 2,000-token ceiling and
-     * was thrown away whole, so every source file in that repository came back
-     * unnamed while its documentation was named perfectly.
-     *
-     * `outputCeilingFor` is the fix for that; this is the belt. Dropping the
-     * pieces cuts the answer by roughly two thirds and keeps the part D52 says
-     * is the point: the file's own name and sentence.
-     */
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const prompt = buildNamingPrompt(asked);
-      const codeNames = new Map<number, string>();
-      for (const target of asked) {
-        codeNames.set(target.file.index, target.file.filePath);
-        for (const piece of target.pieces) codeNames.set(piece.index, piece.name);
-      }
-
-      let reply;
-      try {
-        reply = await llm.complete({
-          messages: [
-            { role: "system", content: NAMING_SYSTEM_PROMPT },
-            { role: "user", content: prompt.text },
-          ],
-          maxOutputTokens: outputCeilingFor(asked, budget),
-          temperature: 0,
-          jsonSchema: { name: "vestra_naming", schema: NAMING_JSON_SCHEMA },
-          effort: "fast",
-          ...(input.signal ? { signal: input.signal } : {}),
-        });
-      } catch (error) {
-        /*
-         * One batch's failure is not the run's failure — unless retrying cannot
-         * help. A wrong key will still be wrong on the sixth batch, and six
-         * requests spent discovering that is the user's time.
-         */
-        result.error = describeFailure(error);
-        fatalError = fatal(error) ? error : null;
-        if (!fatalError) result.notExamined.push(...paths);
-        break;
-      }
-
-      result.spent.calls += 1;
-      result.spent.inputTokens += reply.usage.inputTokens;
-      result.spent.outputTokens += reply.usage.outputTokens;
-      // The model read them. Whether its answer survived the parser is a
-      // separate question from whether the files were opened, and the coverage
-      // sentence a user reads is about the second one.
-      if (!opened) {
-        result.examined.push(...paths);
-        opened = true;
-      }
-
-      if (reply.finishReason === "length") {
-        // Counted, always. A batch silently discarded is the exact failure this
-        // retry exists for, and it must show up as a number in the run log
-        // rather than as a map that quietly has fewer words on it.
-        result.drops.truncated += 1;
-        const narrower = asked.filter((target) => target.pieces.length > 0);
-        if (attempt === 0 && narrower.length > 0) {
-          asked = asked.map((target) => ({ file: target.file, pieces: [] }));
-          continue;
-        }
-        break;
-      }
-
-      const named = parseNamingReply(
-        reply.text,
-        prompt.allowed,
-        prompt.files,
-        codeNames,
-        result.drops,
-      );
-
-      for (const item of named.items) {
-        const entry = input.outline.byIndex.get(item.index);
-        if (!entry) continue;
-        result.text.push({ ref: entry.ref, label: item.label, summary: item.summary });
-        if (entry.kind === "file") labelled.set(item.index, item.label);
-      }
-      break;
-    }
-
-    if (fatalError) {
-      result.stopped = stopFor(fatalError);
+    if (!slot.ran) {
+      // Never launched, and not for the budget — the check above would have
+      // caught that — nor for a failure, which ends the fold before here. So
+      // the run was cancelled.
+      result.stopped = "aborted";
       result.notExamined.push(...pathsFrom(groups, at));
       break;
     }
+
+    const outcome = slot.value;
+    keptSpend += outcome.spent.inputTokens + outcome.spent.outputTokens;
+    addDrops(result.drops, outcome.drops);
+    if (outcome.opened) result.examined.push(...outcome.paths);
+    if (outcome.error !== null) result.error = outcome.error;
+    result.text.push(...outcome.text);
+    for (const [index, label] of outcome.labelled) labelled.set(index, label);
+
+    if (outcome.fatal !== null) {
+      result.stopped = stopFor(outcome.fatal);
+      result.notExamined.push(...pathsFrom(groups, at));
+      spendTheRest(result, slots, at);
+      break;
+    }
+    if (outcome.lost) result.notExamined.push(...outcome.paths);
   }
 
   await nameFeatures({
@@ -322,6 +283,161 @@ export async function runSemanticPass(
 }
 
 // ---------------------------------------------------------------------------
+
+/** What one naming batch produced, before anything is decided about it. */
+type BatchOutcome = {
+  paths: string[];
+  spent: SemanticResult["spent"];
+  /** Whether the model got as far as answering about these files. */
+  opened: boolean;
+  text: SemanticText[];
+  /** File index and the label it was given, for the feature question. */
+  labelled: [number, string][];
+  drops: Drops;
+  /** The failure, in Korean, when there was one. */
+  error: string | null;
+  /** A failure that retrying cannot help. Ends the fold where it lands. */
+  fatal: unknown;
+  /** A failure worth trying again another time. The files were not opened. */
+  lost: boolean;
+};
+
+/**
+ * Ask about one batch, and hand back everything it produced.
+ *
+ * It writes nothing shared, so any number of these can be in flight at once
+ * and the fold in `runSemanticPass` alone decides what is kept.
+ */
+async function nameBatch(
+  llm: Llm,
+  group: readonly NamingTarget[],
+  budget: SemanticBudget,
+  outline: Outline,
+  signal: AbortSignal | undefined,
+): Promise<BatchOutcome> {
+  const outcome: BatchOutcome = {
+    paths: group.map((target) => target.file.filePath),
+    spent: { calls: 0, inputTokens: 0, outputTokens: 0 },
+    opened: false,
+    text: [],
+    labelled: [],
+    drops: noDrops(),
+    error: null,
+    fatal: null,
+    lost: false,
+  };
+
+  let asked: NamingTarget[] = [...group];
+
+  /*
+   * Two attempts at most, and the second one is narrower rather than the same
+   * question again.
+   *
+   * A truncated reply is not a reply — half a JSON object would name the
+   * first few files and lose the rest with nothing on screen to say any are
+   * missing. Measured on a real project: one batch of 20 files carrying 120
+   * pieces answered at 1,985 tokens against a flat 2,000-token ceiling and
+   * was thrown away whole, so every source file in that repository came back
+   * unnamed while its documentation was named perfectly.
+   *
+   * `outputCeilingFor` is the fix for that; this is the belt. Dropping the
+   * pieces cuts the answer by roughly two thirds and keeps the part D52 says
+   * is the point: the file's own name and sentence.
+   */
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const prompt = buildNamingPrompt(asked);
+    const codeNames = new Map<number, string>();
+    for (const target of asked) {
+      codeNames.set(target.file.index, target.file.filePath);
+      for (const piece of target.pieces) codeNames.set(piece.index, piece.name);
+    }
+
+    let reply;
+    try {
+      reply = await llm.complete({
+        messages: [
+          { role: "system", content: NAMING_SYSTEM_PROMPT },
+          { role: "user", content: prompt.text },
+        ],
+        maxOutputTokens: outputCeilingFor(asked, budget),
+        temperature: 0,
+        jsonSchema: { name: "vestra_naming", schema: NAMING_JSON_SCHEMA },
+        effort: "fast",
+        ...(signal ? { signal } : {}),
+      });
+    } catch (error) {
+      /*
+       * One batch's failure is not the run's failure — unless retrying cannot
+       * help. A wrong key will still be wrong on the sixth batch, and six
+       * requests spent discovering that is the user's time.
+       */
+      outcome.error = describeFailure(error);
+      if (fatal(error)) outcome.fatal = error;
+      else outcome.lost = true;
+      return outcome;
+    }
+
+    outcome.spent.calls += 1;
+    outcome.spent.inputTokens += reply.usage.inputTokens;
+    outcome.spent.outputTokens += reply.usage.outputTokens;
+    // The model read them. Whether its answer survived the parser is a
+    // separate question from whether the files were opened, and the coverage
+    // sentence a user reads is about the second one.
+    outcome.opened = true;
+
+    if (reply.finishReason === "length") {
+      // Counted, always. A batch silently discarded is the exact failure this
+      // retry exists for, and it must show up as a number in the run log
+      // rather than as a map that quietly has fewer words on it.
+      outcome.drops.truncated += 1;
+      const narrower = asked.filter((target) => target.pieces.length > 0);
+      if (attempt === 0 && narrower.length > 0) {
+        asked = asked.map((target) => ({ file: target.file, pieces: [] }));
+        continue;
+      }
+      return outcome;
+    }
+
+    const named = parseNamingReply(
+      reply.text,
+      prompt.allowed,
+      prompt.files,
+      codeNames,
+      outcome.drops,
+    );
+
+    for (const item of named.items) {
+      const entry = outline.byIndex.get(item.index);
+      if (!entry) continue;
+      outcome.text.push({ ref: entry.ref, label: item.label, summary: item.summary });
+      if (entry.kind === "file") outcome.labelled.push([item.index, item.label]);
+    }
+    return outcome;
+  }
+
+  return outcome;
+}
+
+function addSpend(into: SemanticResult["spent"], from: SemanticResult["spent"]): void {
+  into.calls += from.calls;
+  into.inputTokens += from.inputTokens;
+  into.outputTokens += from.outputTokens;
+}
+
+/** The batches after a stop still cost what they cost, though none is kept. */
+function spendTheRest(
+  result: SemanticResult,
+  slots: readonly { ran: boolean; value?: BatchOutcome }[],
+  at: number,
+): void {
+  for (const later of slots.slice(at + 1)) {
+    if (later.ran && later.value) addSpend(result.spent, later.value.spent);
+  }
+}
+
+function addDrops(into: Drops, from: Drops): void {
+  for (const key of Object.keys(from) as (keyof Drops)[]) into[key] += from[key];
+}
 
 /**
  * The one feature call.
@@ -558,10 +674,6 @@ function carryFeaturesForward(
 
 function pathsFrom(groups: readonly { file: OutlineFile }[][], from: number): string[] {
   return groups.slice(from).flatMap((group) => group.map((target) => target.file.filePath));
-}
-
-function spent(result: SemanticResult): number {
-  return result.spent.inputTokens + result.spent.outputTokens;
 }
 
 function fatal(error: unknown): boolean {

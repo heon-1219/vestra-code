@@ -7,6 +7,8 @@ import { noDrops, type Drops } from "../semantic/parse";
 // test of it, unimportable on a machine with no API key.
 import { LlmError, type Llm } from "@/lib/llm/types";
 
+import { runInOrder } from "../model-pool";
+
 import {
   batches,
   DEFAULT_PURPOSE_BUDGET,
@@ -146,33 +148,133 @@ export async function runPurposePass(
   if (selection.skipped.length > 0) result.stopped = "group_budget";
 
   /*
-   * A work queue rather than a for-loop, because a truncated reply is re-asked
-   * **narrower** rather than lost.
+   * Several batches at once, folded back in the order they were built.
    *
-   * D88 is the precedent and the reason: Pass 2's first real run sent a flat
+   * Measured on `vestra-code` (D159): 45 purpose calls one after another took
+   * 162 of the run's 348 seconds — the single largest phase of the whole
+   * analysis. No batch depends on another, so waiting bought only an order,
+   * and the fold below restores the order without the waiting.
+   *
+   * A truncated reply is still re-asked **narrower** rather than lost. D88 is
+   * the precedent and the reason: Pass 2's first real run sent a flat
    * ceiling, one batch answered 15 tokens under it with `finishReason:
    * "length"`, and the whole batch was discarded with nothing on screen to say
    * so. `outputCeilingFor` scales with the batch here from the start; splitting
-   * in half on truncation is the belt, and it loses nothing — both halves go
-   * back on the queue.
+   * in half on truncation is the belt, and it loses nothing — both halves are
+   * asked, inside the same unit of work, before that unit reports back.
    */
-  const queue = batches([...selection.asks], budget.batchSize);
+  const units = batches([...selection.asks], budget.batchSize);
+
+  let settledSpend = 0;
+  let fatalSeen = false;
+  const slots = await runInOrder(
+    units,
+    budget.concurrency,
+    async (unit) => {
+      const outcome = await askUnit(llm, unit, budget, input.signal);
+      settledSpend += outcome.spent.inputTokens + outcome.spent.outputTokens;
+      if (outcome.fatal !== null || outcome.aborted) fatalSeen = true;
+      return outcome;
+    },
+    // Only a way to stop spending: each of these means the fold would discard
+    // the unit anyway. See `runInOrder`.
+    () => !input.signal?.aborted && !fatalSeen && settledSpend < budget.maxTokens,
+    budget.probeFirst,
+  );
+
+  const asksIn = (from: number) =>
+    units.slice(from).reduce((total, unit) => total + unit.length, 0);
+
+  let keptSpend = 0;
+  for (let at = 0; at < units.length; at += 1) {
+    const slot = slots[at];
+    if (slot.ran) addSpend(result.spent, slot.value.spent);
+
+    if (keptSpend >= budget.maxTokens) {
+      // Out of budget, not out of questions. Everything from here keeps its
+      // verb, and saying which is the whole point of the distinction.
+      result.stopped = "token_budget";
+      result.notAnswered += asksIn(at);
+      spendTheRest(result, slots, at);
+      break;
+    }
+    if (!slot.ran) {
+      // Never launched, not for the budget (caught above) and not after a
+      // failure (which ends the fold first): the run was cancelled.
+      result.stopped = "aborted";
+      result.notAnswered += asksIn(at);
+      break;
+    }
+
+    const outcome = slot.value;
+    keptSpend += outcome.spent.inputTokens + outcome.spent.outputTokens;
+    addDrops(result.drops, outcome.drops);
+    if (outcome.error !== null) result.error = outcome.error;
+    for (const [key, sentence] of outcome.answers) result.answers.set(key, sentence);
+    result.answered += outcome.answers.length;
+    result.notAnswered += outcome.notAnswered;
+
+    if (outcome.fatal !== null || outcome.aborted) {
+      result.stopped = outcome.aborted ? "aborted" : stopFor(outcome.fatal);
+      result.notAnswered += asksIn(at + 1);
+      spendTheRest(result, slots, at);
+      break;
+    }
+  }
+
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+
+/** What one unit of questions produced, before anything is decided about it. */
+type UnitOutcome = {
+  /** In the order they were answered: the same order the old queue produced. */
+  answers: [string, string][];
+  notAnswered: number;
+  spent: PurposeResult["spent"];
+  drops: Drops;
+  error: string | null;
+  /** A failure retrying cannot help. Ends the fold where it lands. */
+  fatal: unknown;
+  /** The run was cancelled partway through this unit. */
+  aborted: boolean;
+};
+
+/**
+ * Ask one batch, splitting it on truncation, and hand back what came of it.
+ *
+ * The split halves stay inside the unit and are asked one after the other, in
+ * the order the old work queue asked them — depth first, left half first — so
+ * a unit's answers are exactly the answers that queue produced for the same
+ * batch. It writes nothing shared.
+ */
+async function askUnit(
+  llm: Llm,
+  unit: readonly PurposeAsk[],
+  budget: PurposeBudget,
+  signal: AbortSignal | undefined,
+): Promise<UnitOutcome> {
+  const outcome: UnitOutcome = {
+    answers: [],
+    notAnswered: 0,
+    spent: { calls: 0, inputTokens: 0, outputTokens: 0 },
+    drops: noDrops(),
+    error: null,
+    fatal: null,
+    aborted: false,
+  };
+  const queue: PurposeAsk[][] = [[...unit]];
+  const left = () => queue.reduce((total, group) => total + group.length, 0);
 
   while (queue.length > 0) {
     const group = queue.shift();
     if (!group || group.length === 0) continue;
 
-    if (input.signal?.aborted) {
-      result.stopped = "aborted";
-      result.notAnswered += countLeft(group, queue);
-      break;
-    }
-    if (spent(result) >= budget.maxTokens) {
-      // Out of budget, not out of questions. Everything from here keeps its
-      // verb, and saying which is the whole point of the distinction.
-      result.stopped = "token_budget";
-      result.notAnswered += countLeft(group, queue);
-      break;
+    if (signal?.aborted) {
+      outcome.aborted = true;
+      outcome.notAnswered += group.length + left();
+      return outcome;
     }
 
     const prompt = buildPurposePrompt(group);
@@ -188,7 +290,7 @@ export async function runPurposePass(
         temperature: 0,
         jsonSchema: { name: "vestra_purpose", schema: PURPOSE_JSON_SCHEMA },
         effort: "fast",
-        ...(input.signal ? { signal: input.signal } : {}),
+        ...(signal ? { signal } : {}),
       });
     } catch (error) {
       /*
@@ -196,60 +298,70 @@ export async function runPurposePass(
        * help. A wrong key will still be wrong on the thirtieth batch, and
        * thirty requests spent discovering that is the user's time.
        */
-      result.error = describeFailure(error);
+      outcome.error = describeFailure(error);
       if (fatal(error)) {
-        result.stopped = stopFor(error);
-        result.notAnswered += countLeft(group, queue);
-        break;
+        outcome.fatal = error;
+        outcome.notAnswered += group.length + left();
+        return outcome;
       }
-      result.notAnswered += group.length;
+      outcome.notAnswered += group.length;
       continue;
     }
 
-    result.spent.calls += 1;
-    result.spent.inputTokens += reply.usage.inputTokens;
-    result.spent.outputTokens += reply.usage.outputTokens;
+    outcome.spent.calls += 1;
+    outcome.spent.inputTokens += reply.usage.inputTokens;
+    outcome.spent.outputTokens += reply.usage.outputTokens;
 
     if (reply.finishReason === "length") {
       // Counted, always. A batch silently discarded is the exact failure this
       // split exists for, and it has to show up as a number in the run log
       // rather than as a map that quietly has fewer sentences on it.
-      result.drops.truncated += 1;
+      outcome.drops.truncated += 1;
       if (group.length > 1) {
         const half = Math.ceil(group.length / 2);
         queue.unshift(group.slice(0, half), group.slice(half));
       } else {
-        result.notAnswered += 1;
+        outcome.notAnswered += 1;
       }
       continue;
     }
 
-    const answered = parsePurposeReply(reply.text, prompt.allowed, result.drops);
+    const answered = parsePurposeReply(reply.text, prompt.allowed, outcome.drops);
     const byIndex = new Map(group.map((ask) => [ask.index, ask]));
 
     for (const item of answered.items) {
       const ask = byIndex.get(item.index);
       if (!ask) continue;
-      result.answers.set(ask.key, item.sentence);
-      result.answered += 1;
+      outcome.answers.push([ask.key, item.sentence]);
     }
     // Whatever the model did not answer for, or whatever the parser refused,
     // keeps its verb. Counted so a prompt that has started producing rubbish
     // shows up as a number rather than as a quietly emptier map.
-    result.notAnswered += group.length - answered.items.length;
+    outcome.notAnswered += group.length - answered.items.length;
   }
 
-  return result;
+  return outcome;
 }
 
-// ---------------------------------------------------------------------------
-
-function countLeft(current: readonly PurposeAsk[], queue: readonly PurposeAsk[][]): number {
-  return current.length + queue.reduce((total, group) => total + group.length, 0);
+function addSpend(into: PurposeResult["spent"], from: PurposeResult["spent"]): void {
+  into.calls += from.calls;
+  into.inputTokens += from.inputTokens;
+  into.outputTokens += from.outputTokens;
 }
 
-function spent(result: PurposeResult): number {
-  return result.spent.inputTokens + result.spent.outputTokens;
+/** Units after a stop still cost what they cost, though none is kept. */
+function spendTheRest(
+  result: PurposeResult,
+  slots: readonly { ran: boolean; value?: UnitOutcome }[],
+  at: number,
+): void {
+  for (const later of slots.slice(at + 1)) {
+    if (later.ran && later.value) addSpend(result.spent, later.value.spent);
+  }
+}
+
+function addDrops(into: Drops, from: Drops): void {
+  for (const key of Object.keys(from) as (keyof Drops)[]) into[key] += from[key];
 }
 
 function fatal(error: unknown): boolean {

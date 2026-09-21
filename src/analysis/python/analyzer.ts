@@ -15,6 +15,7 @@ import {
   type PythonLlmBudget,
   type PythonLlmResult,
   type PythonSymbol,
+  type RememberedAnswer,
 } from "./llm";
 import {
   createModuleIndex,
@@ -96,7 +97,36 @@ export type PythonAnalyzerOptions = {
    * `metadata.llmExamined`, so it survives into the database either way.
    */
   onLlmResult?: (result: PythonLlmResult) => void;
+  /**
+   * Files whose calls the model is not asked to read (D160): tests, generated
+   * files, a tool's own settings. They are parsed like every other file and
+   * keep every `certain` import; only the model half skips them, and they get
+   * no `llmExamined` flag, so they are counted as set aside rather than as a
+   * shortfall.
+   *
+   * Handed this analyzer's whole parser-half graph — files, symbols, the
+   * Streamlit pages and every import — rather than one path at a time, and
+   * that is the fix for a measured defect (D168). Asked per path, the question
+   * could not see that `pages/ab_test.py` serves `/ab_test`, so a Streamlit
+   * page named like a test lost its model reading with no flag and no count:
+   * its flow led nowhere and nothing on screen said why. The graph carries
+   * the address, what the file defines and who imports it, which is
+   * everything `set-aside.ts#resolveSetAside` needs — and the pipeline asks
+   * the same function of the finished graph, so the two answers agree.
+   */
+  setAside?: (graph: {
+    nodes: readonly AnalyzedNode[];
+    edges: readonly AnalyzedEdge[];
+  }) => ReadonlyMap<string, unknown>;
+  /**
+   * What an earlier run was told about a file (D161). Written back onto each
+   * file node as `metadata.llmAnswer`, which is where the next run finds it.
+   */
+  recall?: (path: string) => RememberedAnswer | null;
 };
+
+/** Where a file's remembered answer lives on its node. */
+export const LLM_ANSWER_KEY = "llmAnswer";
 
 /**
  * A key that identifies a node ref without hashing it. Analyzers never hash.
@@ -491,7 +521,11 @@ async function run(
   const symbolsByFile = new Map<string, PythonSymbol[]>();
   for (const entry of parsed) symbolsByFile.set(entry.file.path, entry.symbols);
 
-  const facts: PythonFileFacts[] = parsed.map((entry) => ({
+  // Asked of the graph as it stands: every node and every import the parser
+  // half produced, and none of what the model is about to add.
+  const setAside = options.setAside?.({ nodes, edges }) ?? new Map<string, unknown>();
+  const read = parsed.filter((entry) => !setAside.has(normalizePath(entry.file.path)));
+  const facts: PythonFileFacts[] = read.map((entry) => ({
     path: entry.file.path,
     source: contents.get(entry.file.path) ?? "",
     code: entry.code,
@@ -508,6 +542,7 @@ async function run(
     declared: (ref) => declared.has(refKey(ref)),
     ...(options.budget ? { budget: options.budget } : {}),
     ...(options.signal ? { signal: options.signal } : {}),
+    ...(options.recall ? { recall: options.recall } : {}),
   });
 
   const inferred: AnalyzedEdge[] = [];
@@ -529,11 +564,21 @@ async function run(
     node.metadata = { ...node.metadata, role, roleOrigin: "llm" };
   }
 
-  const examined = new Set(llmResult.examined);
-  for (const entry of parsed) {
+  // A file with nothing to ask is flagged exactly as it always was: nothing
+  // in it is missing. Only the sentence's count of files opened leaves it
+  // out (D179, `pythonLlmCoverage`), so no stored row changes meaning.
+  const examined = new Set([...llmResult.examined, ...llmResult.nothingToAsk]);
+  for (const entry of read) {
     const node = nodeByKey.get(refKey({ type: "file", filePath: entry.file.path }));
     if (!node) continue;
-    node.metadata = { ...node.metadata, llmExamined: examined.has(entry.file.path) };
+    const remembered = llmResult.remembered.get(entry.file.path);
+    node.metadata = {
+      ...node.metadata,
+      llmExamined: examined.has(entry.file.path),
+      // Kept on the node the pipeline persists, so the next run can recall it
+      // instead of asking the same question again.
+      ...(remembered ? { [LLM_ANSWER_KEY]: remembered } : {}),
+    };
   }
 
   options.onLlmResult?.(llmResult);
@@ -550,17 +595,28 @@ async function run(
  * graph has been round-tripped through the database — which is where the number
  * is read from when somebody opens a project a day later.
  */
-export function pythonLlmCoverage(nodes: readonly AnalyzedNode[]): {
+export function pythonLlmCoverage(
+  nodes: readonly AnalyzedNode[],
+  /**
+   * Files this run's model half had nothing to ask about
+   * (`PythonLlmResult.nothingToAsk`). Flagged as looked at, because nothing
+   * in them is missing, and left out of `examined`, because the sentence built
+   * from it says the model opened them and it did not (D179).
+   */
+  nothingToAsk: readonly string[] = [],
+): {
   examined: number;
   notExamined: number;
 } {
   let examined = 0;
   let notExamined = 0;
+  const unasked = new Set(nothingToAsk.map(normalizePath));
 
   for (const node of nodes) {
     const flag = (node.metadata as { llmExamined?: unknown } | undefined)?.llmExamined;
-    if (flag === true) examined += 1;
-    else if (flag === false) notExamined += 1;
+    if (flag === true) {
+      if (!unasked.has(normalizePath(node.ref.filePath))) examined += 1;
+    } else if (flag === false) notExamined += 1;
   }
 
   return { examined, notExamined };

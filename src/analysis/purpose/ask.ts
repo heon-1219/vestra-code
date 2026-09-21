@@ -1,4 +1,6 @@
 import type { ChangeScope } from "../incremental";
+import { MODEL_CONCURRENCY } from "../model-pool";
+import { setAsideOf } from "../set-aside";
 import { normalizePath, type NodeRef } from "../ids";
 import type { AnalyzedEdge, AnalyzedNode, NodeType, SymbolKind } from "../types";
 
@@ -110,22 +112,70 @@ export function buildPurposeAsks(
    * project id, and an analyzer never hashes anything (`ids.ts`).
    */
   edgeIdOf: (edge: AnalyzedEdge) => string = edgeKey,
-): { asks: PurposeAsk[]; groups: PurposeGroup[] } {
+): {
+  asks: PurposeAsk[];
+  groups: PurposeGroup[];
+  /**
+   * Purposes not asked because of the files involved (D160): the target lives
+   * in a file we set aside, or every place that reaches for it does. Those
+   * connections keep their structural verb, which is true.
+   */
+  setAside: number;
+  /**
+   * Every connection in those purposes, named by `edgeIdOf`. The layer clears
+   * any sentence an earlier run left on them (D169): nobody refreshes it any
+   * more, so it would go on describing whatever the code used to be.
+   */
+  setAsideEdgeIds: string[];
+} {
   const nodeByKey = new Map<string, AnalyzedNode>();
   for (const node of graph.nodes) nodeByKey.set(refKey(node.ref), node);
 
+  const setAsidePaths = new Set<string>();
+  for (const node of graph.nodes) {
+    if (node.ref.type === "file" && setAsideOf(node) !== null) {
+      setAsidePaths.add(normalizePath(node.ref.filePath));
+    }
+  }
+
   const groups = groupByPurpose(graph.edges, edgeIdOf, (edge) => refKey(edge.target));
+
+  /*
+   * Which purposes somebody we read actually reaches for.
+   *
+   * A sentence about what calling a thing is for is shown on the lines that
+   * call it. When every one of those lines starts in a test, the sentence is
+   * only ever read on a test's connections — measured on `vestra-code`, 69 of
+   * 1,103 purposes were exactly that, and 60 more had their target inside a
+   * test or its data.
+   */
+  const reachedFromRead = new Set<string>();
+  if (setAsidePaths.size > 0) {
+    for (const edge of graph.edges) {
+      if (setAsidePaths.has(normalizePath(edge.source.filePath))) continue;
+      reachedFromRead.add(purposeKey(edge.type, refKey(edge.target)));
+    }
+  }
 
   // Example callers, collected in one pass so the order is the order the
   // analyzer found them in rather than a set's iteration order. Only for keys
   // that became a group: `contains` is the commonest relation in any graph and
   // has no purpose to explain, so collecting for it would grow a map the size
   // of the project for nothing.
+  //
+  // And never a caller in a set-aside file (D177). A purpose is asked only
+  // when somebody we read reaches for it, so there is always one to show —
+  // but examples were taken in the order the edges came, and on `vestra-code`
+  // 38 of 1,031 questions showed the model only test helpers
+  // (`byteLength <- analyseTree, materializeFixture`), which is a set-aside
+  // file shown to the model by the back door, and the worst evidence for what
+  // the product calls the thing for.
   const wanted = new Set(groups.map((group) => group.key));
   const examplesByKey = new Map<string, string[]>();
   for (const edge of graph.edges) {
     const key = purposeKey(edge.type, refKey(edge.target));
     if (!wanted.has(key)) continue;
+    if (setAsidePaths.has(normalizePath(edge.source.filePath))) continue;
     const list = examplesByKey.get(key) ?? [];
     if (list.length >= EXAMPLES_SHOWN) continue;
     const name = nameOf(edge.source);
@@ -136,10 +186,20 @@ export function buildPurposeAsks(
 
   const asks: PurposeAsk[] = [];
   let index = 0;
+  let setAside = 0;
+  const setAsideEdgeIds: string[] = [];
 
   for (const group of groups) {
     const node = nodeByKey.get(group.targetId);
     if (!node) continue;
+    if (
+      setAsidePaths.size > 0 &&
+      (setAsidePaths.has(normalizePath(node.ref.filePath)) || !reachedFromRead.has(group.key))
+    ) {
+      setAside += 1;
+      setAsideEdgeIds.push(...group.edgeIds);
+      continue;
+    }
 
     const own = text.get(group.targetId) ?? { label: null, summary: null };
     const home =
@@ -164,9 +224,17 @@ export function buildPurposeAsks(
   }
 
   // Groups whose target is not on the map are dropped from BOTH lists, so a
-  // sentence can never be spread onto a connection nobody can be shown.
+  // sentence can never be spread onto a connection nobody can be shown. The
+  // same goes for a purpose set aside: no sentence is spread onto its lines,
+  // and its connections are handed back so the layer can clear what an earlier
+  // run wrote there — the rule Pass 2 follows for a set-aside file's name.
   const named = new Set(asks.map((ask) => ask.key));
-  return { asks, groups: groups.filter((group) => named.has(group.key)) };
+  return {
+    asks,
+    groups: groups.filter((group) => named.has(group.key)),
+    setAside,
+    setAsideEdgeIds,
+  };
 }
 
 /** Two. Enough to show that this is shared, short enough not to be a list. */
@@ -185,6 +253,16 @@ export type PurposeBudget = {
    * cannot eat the pass.
    */
   maxOutputTokens: number;
+  /**
+   * Batches in flight at once. Not a budget on money but on the provider's
+   * patience; see `MODEL_CONCURRENCY`. One reproduces the old loop.
+   */
+  concurrency: number;
+  /**
+   * Whether the first batch goes alone, so a wrong key costs one request. The
+   * pipeline turns it off once an earlier pass of the same run was answered.
+   */
+  probeFirst: boolean;
 };
 
 /*
@@ -212,6 +290,8 @@ export const DEFAULT_PURPOSE_BUDGET: PurposeBudget = {
   batchSize: 25,
   maxTokens: 300_000,
   maxOutputTokens: 4_000,
+  concurrency: MODEL_CONCURRENCY,
+  probeFirst: true,
 };
 
 /*

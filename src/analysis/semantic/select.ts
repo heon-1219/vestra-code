@@ -1,4 +1,5 @@
 import type { ChangeScope } from "../incremental";
+import { MODEL_CONCURRENCY } from "../model-pool";
 import { normalizePath } from "../ids";
 
 import type { Outline, OutlineEntry, OutlineFile } from "./outline";
@@ -51,6 +52,16 @@ export type SemanticBudget = {
   maxOutputTokens: number;
   /** Ceiling on the feature reply, which is one call and answers about everything. */
   maxFeatureOutputTokens: number;
+  /**
+   * Naming batches in flight at once. Not a budget on money but on the
+   * provider's patience; see `MODEL_CONCURRENCY`. One reproduces the old loop.
+   */
+  concurrency: number;
+  /**
+   * Whether the first batch goes alone, so a wrong key costs one request. The
+   * pipeline turns it off once an earlier pass of the same run was answered.
+   */
+  probeFirst: boolean;
 };
 
 /*
@@ -99,6 +110,8 @@ export const DEFAULT_SEMANTIC_BUDGET: SemanticBudget = {
   maxTokens: 400_000,
   maxOutputTokens: 4_000,
   maxFeatureOutputTokens: 8_000,
+  concurrency: MODEL_CONCURRENCY,
+  probeFirst: true,
 };
 
 /*
@@ -173,6 +186,12 @@ export type Selection = {
   carried: readonly OutlineFile[];
   /** Files the budget could not reach. Neither asked nor already known. */
   skipped: readonly OutlineFile[];
+  /**
+   * Files we chose not to ask about (D160). Not a shortfall and never counted
+   * as one: `skipped` is "we meant to and could not", this is "we did not
+   * mean to", and the sentence a person reads is different for each.
+   */
+  setAside: readonly OutlineFile[];
 };
 
 /**
@@ -196,8 +215,16 @@ export function selectTargets(
 
   const carried: OutlineFile[] = [];
   const candidates: OutlineFile[] = [];
+  const setAside: OutlineFile[] = [];
 
   for (const file of outline.files) {
+    // First, before the carry-forward check: a file we do not read is neither
+    // asked nor carried, whatever an earlier run wrote on it.
+    if (file.setAside !== null) {
+      setAside.push(file);
+      continue;
+    }
+
     // Already named, and nothing in it moved. There is no work to do: the row
     // keeps the text it has, because Pass 1's upsert never writes these
     // columns (see `persist.ts`) and the sweep is what carries the row itself.
@@ -235,7 +262,7 @@ export function selectTargets(
       : [],
   }));
 
-  return { targets, carried, skipped };
+  return { targets, carried, skipped, setAside };
 }
 
 /** Cut a selection into requests. One shape, so the parser has one job. */
@@ -258,7 +285,13 @@ export function featureOutline(
   outline: Outline,
   budget: SemanticBudget = DEFAULT_SEMANTIC_BUDGET,
 ): readonly OutlineFile[] {
-  return [...outline.files].sort(compareFiles).slice(0, budget.maxOutlineFiles);
+  // Without the files we set aside. The last full answer on `vestra-code` put
+  // none of them in any territory (98 of 98 members were source), so listing
+  // them only made the one call longer.
+  return [...outline.files]
+    .filter((file) => file.setAside === null)
+    .sort(compareFiles)
+    .slice(0, budget.maxOutlineFiles);
 }
 
 /**

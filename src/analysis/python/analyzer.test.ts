@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { AnalyzedEdge, AnalyzedNode } from "@/analysis/types";
+import { LlmError, type Llm } from "@/lib/llm/types";
 
 import { recorder, replyJson, scriptedLlm, tree, type Scripted } from "./__fixtures__/repo";
 import {
@@ -486,6 +487,42 @@ describe("the budget, and saying what was not looked at", () => {
     expect(reported?.examined).toEqual(["app/broker.py"]);
     expect(reported?.notExamined).toEqual(["app/main.py"]);
     expect(pythonLlmCoverage(nodes)).toEqual({ examined: 1, notExamined: 1 });
+  });
+
+  it("does not count a file with nothing to ask as one the model opened (D179)", async () => {
+    // A spending cap: every question refused. `config.py` declares nothing
+    // that could call anything, so it is never put to the model at all.
+    const refusing: Llm = {
+      complete: () => Promise.reject(new LlmError("429", "rate_limit", 429)),
+    };
+    let llmResult: PythonLlmResult | null = null;
+    const { nodes } = await analyze(
+      { ...CALLER, "app/config.py": "RATE = 3\n" },
+      {
+        llm: refusing,
+        onLlmResult: (result) => {
+          llmResult = result;
+        },
+      },
+    );
+
+    const reported = llmResult as PythonLlmResult | null;
+    expect(reported?.examined).toEqual([]);
+    expect(reported?.nothingToAsk).toEqual(["app/config.py"]);
+    expect([...(reported?.notExamined ?? [])].sort()).toEqual(["app/broker.py", "app/main.py"]);
+
+    // The row still says nothing is missing from it, as it always did…
+    const config = nodes.find(
+      (node) => node.ref.type === "file" && node.ref.filePath === "app/config.py",
+    );
+    expect(config?.metadata?.llmExamined).toBe(true);
+    // …and the sentence no longer says the model opened it. Before, this
+    // read "the model opened 1 file" over a pass that got 0 answers.
+    expect(pythonLlmCoverage(nodes)).toEqual({ examined: 1, notExamined: 2 });
+    expect(pythonLlmCoverage(nodes, reported?.nothingToAsk)).toEqual({
+      examined: 0,
+      notExamined: 2,
+    });
   });
 
   it("stops when the tokens run out rather than spending more", async () => {

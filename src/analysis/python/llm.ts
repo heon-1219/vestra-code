@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { z } from "zod";
 
 import type { NodeRef } from "@/analysis/ids";
@@ -9,6 +11,8 @@ import type { AnalyzedEdge } from "@/analysis/types";
 // taken from the index it would make this module, and every test of it,
 // unimportable on a machine with no API key.
 import { LlmError, type Llm } from "@/lib/llm/types";
+
+import { MODEL_CONCURRENCY, runInOrder } from "../model-pool";
 
 /**
  * The half of the Python analyzer a model produces, and the rules that keep it
@@ -84,6 +88,8 @@ export type PythonLlmBudget = {
   maxTokens: number;
   /** Ceiling on one reply, so a runaway answer cannot eat the budget alone. */
   maxOutputTokens: number;
+  /** Files asked about at once. See `MODEL_CONCURRENCY`. One reproduces the old loop. */
+  concurrency: number;
 };
 
 export const DEFAULT_PYTHON_LLM_BUDGET: PythonLlmBudget = {
@@ -96,6 +102,7 @@ export const DEFAULT_PYTHON_LLM_BUDGET: PythonLlmBudget = {
   maxCandidates: 120,
   maxTokens: 300_000,
   maxOutputTokens: 1_500,
+  concurrency: MODEL_CONCURRENCY,
 };
 
 /** Why a claim was thrown away. Counted, so a bad prompt shows up as a number. */
@@ -112,8 +119,17 @@ export type PythonLlmResult = {
   edges: AnalyzedEdge[];
   /** One short sentence about what a thing is for, to sit on the node. */
   roles: { ref: NodeRef; role: string }[];
-  /** Files the model actually read. */
+  /** Files the model actually read: answered this run, or answered before (D161). */
   examined: string[];
+  /**
+   * Files with no question to ask — nothing in them can call anything the
+   * project declares. Nothing is missing from them, so they are not a
+   * shortfall; and the model never saw them, so they are not "opened" either
+   * (D179). Measured under a spending cap on `Kim-and-Chang-`, counting them
+   * as read told a person 모델이 파일 2개를 열어 봤고 over a pass that got 0
+   * answers.
+   */
+  nothingToAsk: string[];
   /**
    * Files it did not. **"We did not look" and "there is nothing there" are
    * opposite claims**, and the caller has to be able to say which one happened.
@@ -125,7 +141,56 @@ export type PythonLlmResult = {
   error: string | null;
   spent: { calls: number; inputTokens: number; outputTokens: number };
   dropped: Record<DropReason, number>;
+  /**
+   * Every answer this run stands behind, by file, keyed by the exact question
+   * — fresh and remembered together, so the caller can keep them on the file
+   * node for the next run to recall.
+   */
+  remembered: Map<string, RememberedAnswer>;
+  /** Files answered from memory this run, without a call. */
+  recalled: string[];
 };
+
+/** A parsed answer, before any of it is checked against the file. */
+export type PythonAnswer = z.infer<typeof replySchema>;
+
+/**
+ * One file's answer, as it is kept between runs.
+ *
+ * `key` is a digest of the whole question — the rules, the file's text as it
+ * was shown, the list of names it could call — so an answer is only ever
+ * reused for a question asked in exactly the same words. That is a stricter
+ * test than "the file did not change": a file whose imports gained a function
+ * is asked a different question, because its candidate list is different, and
+ * the digest says so where a path comparison would not.
+ *
+ * The answer is kept raw — indices, not edges — and goes back through
+ * `collect` on recall, so a remembered answer is checked against the file with
+ * exactly the same four rules as a fresh one, and can never produce an edge a
+ * fresh answer could not.
+ */
+export type RememberedAnswer = { key: string; answer: PythonAnswer };
+
+/** Read a remembered answer off a row, or nothing if it is not one. */
+export function readRememberedAnswer(value: unknown): RememberedAnswer | null {
+  if (typeof value !== "object" || value === null) return null;
+  const record = value as { key?: unknown; answer?: unknown };
+  if (typeof record.key !== "string" || record.key === "") return null;
+  const parsed = replySchema.safeParse(record.answer);
+  return parsed.success ? { key: record.key, answer: parsed.data } : null;
+}
+
+/** The digest of one question, rules included, so a new prompt is a new key. */
+function questionKey(prompt: FilePrompt, budget: PythonLlmBudget): string {
+  return createHash("sha256")
+    .update(SYSTEM_PROMPT)
+    .update("\u0000")
+    .update(String(budget.maxOutputTokens))
+    .update("\u0000")
+    .update(prompt.text)
+    .digest("hex")
+    .slice(0, 32);
+}
 
 /**
  * Words a model reaches for and the product does not allow.
@@ -215,6 +280,12 @@ export async function runPythonLlmPass(input: {
   declared: (ref: NodeRef) => boolean;
   budget?: Partial<PythonLlmBudget>;
   signal?: AbortSignal;
+  /**
+   * What an earlier run was told about a file, if anything (D161). An answer
+   * whose question is byte-identical to this run's is used instead of asking
+   * again; anything else is ignored and the file is asked as usual.
+   */
+  recall?: (path: string) => RememberedAnswer | null;
 }): Promise<PythonLlmResult> {
   const budget = { ...DEFAULT_PYTHON_LLM_BUDGET, ...input.budget };
 
@@ -222,6 +293,7 @@ export async function runPythonLlmPass(input: {
     edges: [],
     roles: [],
     examined: [],
+    nothingToAsk: [],
     notExamined: [],
     stopped: "completed",
     error: null,
@@ -235,6 +307,8 @@ export async function runPythonLlmPass(input: {
       name_not_on_line: 0,
       undeclared: 0,
     },
+    remembered: new Map(),
+    recalled: [],
   };
 
   const ordered = rankFiles(input.files);
@@ -243,79 +317,213 @@ export async function runPythonLlmPass(input: {
   result.notExamined = skipped.map((file) => file.path);
   if (skipped.length > 0) result.stopped = "file_budget";
 
-  for (const file of chosen) {
-    if (input.signal?.aborted) {
-      result.stopped = "aborted";
-      break;
-    }
-    if (spentTokens(result) >= budget.maxTokens) {
+  /*
+   * Several files at once, folded back in the order they were ranked.
+   *
+   * Measured on `Kim-and-Chang-` (D159): 17 calls one after another took 42 of
+   * the run's 113 seconds. Each file is its own question, so the only thing the
+   * old loop bought by waiting was an order — and the edges and roles below
+   * are collected by walking the files in that order, with the loop's own
+   * stopping rules, so what reaches the map is what the loop would have put
+   * there for the same answers.
+   */
+  let settledSpend = 0;
+  let fatalSeen = false;
+  const slots = await runInOrder(
+    chosen,
+    budget.concurrency,
+    async (file) => {
+      const outcome = await askFile(
+        input.llm,
+        file,
+        input.symbolsByFile,
+        budget,
+        input.signal,
+        input.recall,
+      );
+      settledSpend += outcome.spent.inputTokens + outcome.spent.outputTokens;
+      if (outcome.fatal !== null) fatalSeen = true;
+      return outcome;
+    },
+    // Only a way to stop spending: each of these means the fold would discard
+    // the file anyway. See `runInOrder`.
+    () => !input.signal?.aborted && !fatalSeen && settledSpend < budget.maxTokens,
+  );
+
+  let keptSpend = 0;
+  for (let at = 0; at < chosen.length; at += 1) {
+    const file = chosen[at];
+    const slot = slots[at];
+    if (slot.ran) addSpend(result.spent, slot.value.spent);
+
+    if (keptSpend >= budget.maxTokens) {
       // Out of budget, not out of files. Everything from here on is a file we
       // did not look at, and saying so is the whole point of the distinction.
       result.stopped = "token_budget";
       result.notExamined.push(...remaining(chosen, file));
+      spendTheRest(result, slots, at);
+      break;
+    }
+    if (!slot.ran) {
+      // Never launched, and neither the budget nor a failure stopped it: the
+      // run was cancelled.
+      result.stopped = "aborted";
       break;
     }
 
-    const prompt = buildFilePrompt(file, input.symbolsByFile, budget);
-    if (prompt === null) {
-      // Nothing in this file can call anything we know about. A question with
-      // no possible answer is a question not worth its tokens.
-      result.examined.push(file.path);
-      continue;
-    }
+    const outcome = slot.value;
+    keptSpend += outcome.spent.inputTokens + outcome.spent.outputTokens;
+    if (outcome.error !== null) result.error = outcome.error;
 
-    let reply;
-    try {
-      reply = await input.llm.complete({
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          { role: "user", content: prompt.text },
-        ],
-        maxOutputTokens: budget.maxOutputTokens,
-        temperature: 0,
-        jsonSchema: { name: "python_calls", schema: REPLY_JSON_SCHEMA },
-        effort: "fast",
-        ...(input.signal ? { signal: input.signal } : {}),
-      });
-    } catch (error) {
-      /*
-       * One file's failure is not the run's failure — unless retrying cannot
-       * help. A wrong key will still be wrong on the fortieth file, and forty
-       * requests spent discovering that is the user's time.
-       */
-      const fatal = !(error instanceof LlmError) || !error.retryable;
-      result.error = describeFailure(error);
-      if (fatal) {
-        result.stopped = error instanceof LlmError && error.kind === "aborted"
+    if (outcome.fatal !== null) {
+      result.stopped =
+        outcome.fatal instanceof LlmError && outcome.fatal.kind === "aborted"
           ? "aborted"
           : "llm_error";
-        result.notExamined.push(...remaining(chosen, file));
-        break;
-      }
+      result.notExamined.push(...remaining(chosen, file));
+      spendTheRest(result, slots, at);
+      break;
+    }
+    if (outcome.lost) {
       result.notExamined.push(file.path);
       continue;
     }
 
-    result.spent.calls += 1;
-    result.spent.inputTokens += reply.usage.inputTokens;
-    result.spent.outputTokens += reply.usage.outputTokens;
+    if (outcome.prompt === null) {
+      result.nothingToAsk.push(file.path);
+      continue;
+    }
     result.examined.push(file.path);
-
-    // A truncated reply is not a reply. Half a JSON object parses to nothing
-    // useful anyway, and treating what did parse as complete would silently
-    // keep the first few calls and lose the rest without saying so.
-    if (reply.finishReason === "length") continue;
-
-    const answer = parseReply(reply.text);
-    if (!answer) continue;
-
-    collect(answer, file, prompt, input.declared, result);
+    if (outcome.recalled) result.recalled.push(file.path);
+    if (outcome.answer && outcome.prompt) {
+      collect(outcome.answer, file, outcome.prompt, input.declared, result);
+      if (outcome.key) result.remembered.set(file.path, { key: outcome.key, answer: outcome.answer });
+    }
   }
 
   return result;
 }
 
 // ---------------------------------------------------------------------------
+
+/** What asking about one file produced, before anything is decided about it. */
+type FileOutcome = {
+  prompt: FilePrompt | null;
+  /** The parsed answer, when there was a complete one. */
+  answer: ReturnType<typeof parseReply>;
+  spent: PythonLlmResult["spent"];
+  error: string | null;
+  /** A failure retrying cannot help. Ends the fold where it lands. */
+  fatal: unknown;
+  /** A failure worth trying again another time. The file was not opened. */
+  lost: boolean;
+  /** The digest of the question asked, for the answer to be kept under. */
+  key: string | null;
+  /** Answered from an earlier run's memory, without a call. */
+  recalled: boolean;
+};
+
+/**
+ * Ask about one file. Writes nothing shared — `collect` runs in the fold, in
+ * order, so the edges come out in the order they always did.
+ */
+async function askFile(
+  llm: Llm,
+  file: PythonFileFacts,
+  symbolsByFile: ReadonlyMap<string, PythonSymbol[]>,
+  budget: PythonLlmBudget,
+  signal: AbortSignal | undefined,
+  recall: ((path: string) => RememberedAnswer | null) | undefined,
+): Promise<FileOutcome> {
+  const outcome: FileOutcome = {
+    prompt: null,
+    answer: null,
+    spent: { calls: 0, inputTokens: 0, outputTokens: 0 },
+    error: null,
+    fatal: null,
+    lost: false,
+    key: null,
+    recalled: false,
+  };
+
+  const prompt = buildFilePrompt(file, symbolsByFile, budget);
+  // Nothing in this file can call anything we know about. A question with no
+  // possible answer is a question not worth its tokens — and the file is not
+  // a shortfall, because there was nothing more to see. Nor is it counted as
+  // opened: see `PythonLlmResult.nothingToAsk`.
+  if (prompt === null) return outcome;
+  outcome.prompt = prompt;
+  outcome.key = questionKey(prompt, budget);
+
+  /*
+   * The same question, word for word, as a run that already got an answer.
+   *
+   * Measured on `Kim-and-Chang-` (D161): a re-read with nothing pushed asked
+   * all 17 files again — 54,110 input tokens and 13 of the run's 21 seconds —
+   * while Pass 2 and Pass 3 beside it cost nothing. The answer to an identical
+   * question at temperature 0 is the answer we already have.
+   */
+  const memory = recall?.(file.path);
+  if (memory && memory.key === outcome.key) {
+    outcome.answer = memory.answer;
+    outcome.recalled = true;
+    return outcome;
+  }
+
+  let reply;
+  try {
+    reply = await llm.complete({
+      messages: [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: prompt.text },
+      ],
+      maxOutputTokens: budget.maxOutputTokens,
+      temperature: 0,
+      jsonSchema: { name: "python_calls", schema: REPLY_JSON_SCHEMA },
+      effort: "fast",
+      ...(signal ? { signal } : {}),
+    });
+  } catch (error) {
+    /*
+     * One file's failure is not the run's failure — unless retrying cannot
+     * help. A wrong key will still be wrong on the fortieth file, and forty
+     * requests spent discovering that is the user's time.
+     */
+    outcome.error = describeFailure(error);
+    if (!(error instanceof LlmError) || !error.retryable) outcome.fatal = error;
+    else outcome.lost = true;
+    return outcome;
+  }
+
+  outcome.spent.calls += 1;
+  outcome.spent.inputTokens += reply.usage.inputTokens;
+  outcome.spent.outputTokens += reply.usage.outputTokens;
+
+  // A truncated reply is not a reply. Half a JSON object parses to nothing
+  // useful anyway, and treating what did parse as complete would silently
+  // keep the first few calls and lose the rest without saying so.
+  if (reply.finishReason === "length") return outcome;
+
+  outcome.answer = parseReply(reply.text);
+  return outcome;
+}
+
+function addSpend(into: PythonLlmResult["spent"], from: PythonLlmResult["spent"]): void {
+  into.calls += from.calls;
+  into.inputTokens += from.inputTokens;
+  into.outputTokens += from.outputTokens;
+}
+
+/** Files after a stop still cost what they cost, though none is kept. */
+function spendTheRest(
+  result: PythonLlmResult,
+  slots: readonly { ran: boolean; value?: FileOutcome }[],
+  at: number,
+): void {
+  for (const later of slots.slice(at + 1)) {
+    if (later.ran && later.value) addSpend(result.spent, later.value.spent);
+  }
+}
 
 type FilePrompt = {
   text: string;
@@ -350,10 +558,6 @@ function remaining(
 ): string[] {
   const at = ordered.indexOf(from);
   return at === -1 ? [] : ordered.slice(at).map((file) => file.path);
-}
-
-function spentTokens(result: PythonLlmResult): number {
-  return result.spent.inputTokens + result.spent.outputTokens;
 }
 
 /**
