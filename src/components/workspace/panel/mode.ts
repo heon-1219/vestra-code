@@ -27,20 +27,28 @@
  * shared one.
  *
  * **This file used to say flatly that none of its modes works — "There is no
- * model wired up behind any of them" — and that premise has expired.**
- * `lib/llm/config.ts` and `client.ts` exist and `qa/loop.ts` is built and
- * tested, so the claim is no longer true of the whole file. It is corrected
- * here only for 흐름 따라가기, which is the one mode this wave wired; whether
- * 물어보기 / 프롬프트 만들기 / 설명하기 still need their apology is a question about
- * screens somebody else owns, and answering it from here would be this file
- * making a claim about work it has not seen.
+ * model wired up behind any of them" — and that premise has expired.** Every
+ * mode has a handler behind it now, and the workspace hands each one over:
+ * 물어보기 runs the investigation loop (`qa/loop.ts`); 흐름 따라가기 walks the
+ * graph in the browser (`lib/graph/flow.ts`); 프롬프트 만들기 builds its prompt
+ * from the graph with a template (`lib/prompt/build.ts`) and uses a model only
+ * to restate the goal, and builds it without one when none is connected;
+ * 설명하기 answers first from what the graph already holds, with no model at
+ * all (`explain/known.ts`), and runs the same loop pointed at one place only
+ * when the person asks for the deep read. What a user sees for all four is the
+ * `promise`. `notYet` stays, per mode, for a screen that does not hand a mode
+ * its handler — the panel's own fallback — and so that such a screen still
+ * says something true rather than nothing.
  *
- * 흐름 따라가기 is also the one mode whose promise **needs no model at all.** The
- * walk is `lib/graph/flow.ts` over a graph the browser already holds: zero
+ * 흐름 따라가기 is the one mode that **never calls a model, on any path.** (설명하기
+ * does not either until its deep read is asked for, and 프롬프트 만들기 works
+ * without one; both can use one.) The walk is `lib/graph/flow.ts` over a graph the browser already holds: zero
  * model calls, warm or cold (`FLOW_TRACKING.md` §4). Its `notYet` is therefore
  * not a wait for a key — it is what a screen that does not hand this mode a
  * handler should say, and the workspace always hands it one.
  */
+
+import type { ItemKind } from "@/lib/graph/view";
 
 /** The four things the box can be pointed at. */
 export type PanelMode = "ask" | "prompt" | "explain" | "flow";
@@ -90,8 +98,34 @@ export type ModeWords = {
    * lights it, or from whatever is already chosen. Requiring both would refuse
    * the question; requiring only the selection would leave the box that the
    * question goes in doing nothing.
+   *
+   * `both` is 프롬프트 만들기's. A prompt is instructions about a place — its
+   * 바꿀 곳, 고쳐도 되는 것 and 건드리지 말 것 are all read off the selection
+   * and its switches — so a request with nothing selected has nowhere to be
+   * about, and a request-less selection has nothing to ask for.
    */
-  needs: "text" | "selection" | "either";
+  needs: "text" | "selection" | "either" | "both";
+  /**
+   * What the footer says when this mode needs a selection and there is none.
+   *
+   * Without it the send button sat greyed out beside a sentence promising the
+   * mode would work, and nothing said the missing piece was a click on the
+   * map. Only the modes that need a selection have one.
+   */
+  pick?: string;
+  /**
+   * Kinds of selection this mode cannot act on, each with the sentence that
+   * says why and what to pick instead.
+   *
+   * 프롬프트 만들기's, for two kinds. A feature is a grouping a model made and a
+   * package is somebody else's code, and neither is a place an agent can be
+   * sent to change — yet both are one click away on the map, and 기능 is the
+   * sidebar's first tab. Without this, a feature produced a prompt whose 바꿀 곳
+   * was its internal id (`feature:1c8e949eccd7`), and a package one that gave
+   * an agent permission to edit `dotenv`. Data rather than a branch in the box,
+   * for the reason `needs` is.
+   */
+  cannot?: Partial<Record<ItemKind, string>>;
 };
 
 /**
@@ -123,7 +157,14 @@ export const MODE_WORDS: Record<PanelMode, ModeWords> = {
     promise: "바꾸고 싶은 걸 적으면, 열어 둔 것만 고치라고 적힌 글을 만들어 드려요.",
     notYet:
       "바꾸고 싶은 걸 적으면 열어 둔 것만 고치라고 적힌 글을 만들어 드릴 거예요. 만드는 건 아직 준비 중이에요.",
-    needs: "text",
+    needs: "both",
+    pick: "지도에서 바꿀 곳을 먼저 골라 주세요.",
+    cannot: {
+      feature:
+        "기능은 저희가 묶어 둔 이름이라서 고칠 코드가 따로 없어요. 기능 안에 있는 것을 하나 골라 주세요.",
+      package:
+        "밖에서 가져온 도구는 이 프로젝트에서 고칠 코드가 아니에요. 이 도구를 쓰는 곳을 하나 골라 주세요.",
+    },
   },
   explain: {
     name: "설명하기",
@@ -131,6 +172,7 @@ export const MODE_WORDS: Record<PanelMode, ModeWords> = {
     notYet:
       "고른 것이 무슨 일을 하는지 평소 쓰는 말로 풀어 드릴 거예요. 풀어 드리는 건 아직 준비 중이에요.",
     needs: "selection",
+    pick: "지도에서 설명을 들을 곳을 먼저 골라 주세요.",
   },
   flow: {
     name: "흐름 따라가기",

@@ -29,21 +29,104 @@ import type { Neighbour } from "./neighbourhood";
 export type ConnectionLock = "editable" | "locked";
 
 /**
- * Everything connected starts locked.
+ * Everything connected starts locked — everything *around* the selection.
  *
  * The user pointed at one thing. Letting an agent edit its neighbours because
  * nobody said otherwise is exactly the sprawl this product exists to stop, and
  * "stop and explain why" (brief 6.4) is a much better failure than a change
  * nobody asked for. Opening a neighbour is one click and it is the user's
  * choice to make.
+ *
+ * What is written *inside* the selection is not a neighbour, and `lockFor`
+ * opens it. A file's pieces locked by default made every prompt
+ * about a file contradict itself — 238 of 238 such files on this repository's
+ * own map: 고쳐도 되는 것 said the whole file, 건드리지 말 것 said every line
+ * of it.
  */
 export const DEFAULT_LOCK: ConnectionLock = "locked";
 
 export type LockMap = Readonly<Record<string, ConnectionLock>>;
 
+/** The lock as the user set it, with no regard to what is selected. */
 export function lockOf(locks: LockMap, id: string): ConnectionLock {
   return locks[id] ?? DEFAULT_LOCK;
 }
+
+/**
+ * Where a row's code sits against the selection's, read off path and lines.
+ *
+ *   - `same`   — the same lines. A Next.js `page.tsx` is both a file and the
+ *                page it serves, and a Streamlit `pages/log.py` both a file and
+ *                `/log`; the map holds each twice, and selecting one of the pair
+ *                makes the other the very code being changed.
+ *   - `inside` — lines within the selection's: a piece written in the selected
+ *                file, a method inside the selected class.
+ *   - `around` — everything else, including the file a selected piece is
+ *                written in, which *holds* the selection rather than sitting in
+ *                it.
+ *
+ * By lines rather than by `contains`, because the question is "would changing
+ * the selection change this?", and that is a question about where the code is.
+ * A page and its file are joined by `contains` in one direction only, and would
+ * have come out as one inside the other.
+ */
+export type Standing = "same" | "inside" | "around";
+
+export function standingOf(item: GraphItem, selected: GraphItem): Standing {
+  if (item.id === selected.id) return "same";
+  if (!item.path || item.path !== selected.path) return "around";
+  if (selected.startLine === null) return item.startLine === null ? "same" : "inside";
+  if (item.startLine === null) return "around";
+  const selectedEnd = selected.endLine ?? selected.startLine;
+  const itemEnd = item.endLine ?? item.startLine;
+  if (item.startLine === selected.startLine && itemEnd === selectedEnd) return "same";
+  return selected.startLine <= item.startLine && itemEnd <= selectedEnd ? "inside" : "around";
+}
+
+/** The closest standing among several selections: same, then inside, then around. */
+export function standingAmong(item: GraphItem, selection: readonly GraphItem[]): Standing {
+  let best: Standing = "around";
+  for (const selected of selection) {
+    const standing = standingOf(item, selected);
+    if (standing === "same") return "same";
+    if (standing === "inside") best = "inside";
+  }
+  return best;
+}
+
+/**
+ * The lock a row is under while `selection` is selected.
+ *
+ * `same` is always open and cannot be closed — it is the selection. `inside`
+ * starts open and can be closed ("this file, but leave that component alone"),
+ * which the prompt then words as a carve-out rather than as a contradiction.
+ * `around` starts locked, as it always has. What the person set by hand wins
+ * over both defaults, and is remembered by id as before.
+ */
+export function lockFor(
+  locks: LockMap,
+  item: GraphItem,
+  selection: readonly GraphItem[],
+): ConnectionLock {
+  const standing = standingAmong(item, selection);
+  if (standing === "same") return "editable";
+  return locks[item.id] ?? (standing === "inside" ? "editable" : DEFAULT_LOCK);
+}
+
+/**
+ * Whether a row has a lock at all.
+ *
+ * A feature is a grouping a model made, not code anyone can edit, so a switch
+ * on it changed nothing an agent could act on — and the prompt printed its
+ * internal id under 건드리지 말 것 for every file that belonged to one (152
+ * prompts on this repository's map).
+ */
+export function hasLock(item: GraphItem): boolean {
+  return item.kind !== "feature";
+}
+
+/** Said on hover where a row's switch would be, when the row is the selection's own code. */
+export const SAME_CODE = "고른 것과 같은 코드라서 따로 잠글 수 없어요.";
 
 /**
  * How far away, in words rather than in a count.
@@ -72,11 +155,14 @@ export function displayName(item: GraphItem): string {
 export function ConnectionRow({
   neighbour,
   lock,
+  standing = "around",
   onLockChange,
   onSelect,
 }: {
   neighbour: Neighbour;
   lock: ConnectionLock;
+  /** How this row's code stands to the selection's. `same` has no switch. */
+  standing?: Standing;
   onLockChange: (id: string, lock: ConnectionLock) => void;
   onSelect: (id: string) => void;
 }) {
@@ -169,20 +255,38 @@ export function ConnectionRow({
         </span>
       </button>
 
-      <button
-        type="button"
-        role="switch"
-        aria-checked={editable}
-        aria-label={`${name} 편집 허용`}
-        onClick={() => onLockChange(item.id, editable ? "locked" : "editable")}
-        className={`mt-2 shrink-0 rounded-md border px-2 py-1 text-[12px] font-medium transition-colors ${
-          editable
-            ? "border-lamp-dim bg-lamp/10 text-lamp"
-            : "border-edge-lit text-said-faint hover:text-said-soft"
-        }`}
-      >
-        {editable ? "편집 허용" : "잠금"}
-      </button>
+      {/*
+        No switch where one would change nothing. A feature is our grouping,
+        not code; a row that IS the selection's own code (a page and the file
+        it is) cannot be locked without locking the thing being changed. The
+        second says so in the switch's place, so the row does not look like one
+        whose switch failed to render.
+      */}
+      {!hasLock(item) ? null : standing === "same" ? (
+        <span
+          title={SAME_CODE}
+          className="mt-2 shrink-0 rounded-md border border-lamp-dim/60 px-2 py-1 text-[12px] font-medium text-lamp"
+        >
+          바꿀 곳
+        </span>
+      ) : (
+        <button
+          type="button"
+          role="switch"
+          aria-checked={editable}
+          aria-label={`${name} 편집 허용`}
+          onClick={() => onLockChange(item.id, editable ? "locked" : "editable")}
+          // 44 px on a phone, both ways (D174): this switch is 프롬프트 만들기's
+          // one input, and at 30 px tall it was the smallest thing on the panel.
+          className={`mt-2 flex shrink-0 items-center justify-center rounded-md border px-2 py-1 text-[12px] font-medium transition-colors max-md:mt-1 max-md:min-h-11 max-md:min-w-11 ${
+            editable
+              ? "border-lamp-dim bg-lamp/10 text-lamp"
+              : "border-edge-lit text-said-faint hover:text-said-soft"
+          }`}
+        >
+          {editable ? "편집 허용" : "잠금"}
+        </button>
+      )}
     </li>
   );
 }

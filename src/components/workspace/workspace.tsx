@@ -7,6 +7,9 @@ import { z } from "zod";
 
 import { useAnalysisStream, type AnalysisCoverage } from "@/hooks/use-analysis-stream";
 import { useAsk } from "@/hooks/use-ask";
+import { explainKey, useExplain } from "@/hooks/use-explain";
+import { usePromptMaker } from "@/hooks/use-prompt";
+import { locksShown, type ScopeOpened } from "@/components/workspace/prompt/scope-open";
 import { describeAll } from "@/lib/graph/describe";
 import type { GraphView } from "@/lib/graph/view";
 
@@ -191,6 +194,40 @@ export function Workspace({
    */
   const { session: walk, ask } = useAsk(project.id);
 
+  /*
+   * 프롬프트 만들기 and 설명하기.
+   *
+   * Here beside `useAsk` rather than in the panel, for the rule the panel
+   * keeps about its results: one screen, one meaning. Only the component that
+   * owns all three can decide which one is in front.
+   *
+   * `front` is that decision, and it is the only thing starting another answer
+   * changes. Nothing is cleared: an investigation still running when the person
+   * pressed 설명하기 kept running and kept its tokens, where it used to be
+   * aborted and lost (D167). A hidden result comes back when the person
+   * picks its mode again (`onModeChange` below).
+   *
+   * `front === "explain"` is the free half's switch. It is not a request —
+   * nothing is fetched — it says the panel should explain whatever is
+   * selected, and it stays on as the selection moves, because explaining the
+   * next thing costs nothing. `explainAsked` is whatever was typed alongside,
+   * **with the place it was typed about**: it goes with that place's deep read
+   * and no other, where it used to ride along with the deep read of whatever
+   * was clicked next.
+   */
+  const promptMaker = usePromptMaker(project.id);
+  const { clear: clearPrompt } = promptMaker;
+  const { sessions: deepExplains, explain } = useExplain(project.id);
+  const [front, setFront] = useState<"ask" | "prompt" | "explain" | null>(null);
+  const [explainAsked, setExplainAsked] = useState<{ itemId: string | null; text: string }>({
+    itemId: null,
+    text: "",
+  });
+  const questionFor = useCallback(
+    (itemId: string) => (explainAsked.itemId === itemId ? explainAsked.text : ""),
+    [explainAsked],
+  );
+
   // Both consumers want the same numbers under different names; the translation
   // is one pure function so nobody has to remember which is which.
   const progress = useMemo(() => toAnalysisProgress(stream), [stream]);
@@ -289,7 +326,23 @@ export function Workspace({
     }
   }, [project.id]);
 
+  /*
+   * The place an "only here" answer opened, for the prompt that answer made.
+   *
+   * Not written into `locks`. It used to be, and a lock map is remembered by id
+   * for the whole visit, so the place stayed open for every later prompt that
+   * listed it — including an "everywhere" prompt about the same selection,
+   * which then read "열어 둔 1개는 같이 고쳐도 된다고 했어요" about a switch
+   * the person never touched (1,165 of 1,180 such choices on this repository's
+   * map). It is shown on that place's switch while that prompt is in front and
+   * its selection is selected, so the list the person sees still says what the
+   * agent reads, and it ends with the next request or with a click on that
+   * switch, which is the person taking the switch back (D172).
+   */
+  const [scopeOpened, setScopeOpened] = useState<ScopeOpened | null>(null);
+
   const onLockChange = useCallback((id: string, lock: ConnectionLock) => {
+    setScopeOpened((opened) => (opened?.placeId === id ? null : opened));
     setLocks((previous) => ({ ...previous, [id]: lock }));
   }, []);
 
@@ -319,6 +372,47 @@ export function Workspace({
   // Pulled out so the selection handler depends on one stable callback rather
   // than on the whole controls object, which is rebuilt every render.
   const { clear: clearFlow, follow: followFlow, ask: askFlow } = flow;
+
+  /*
+   * Starting one kind of answer puts it in front of the others.
+   *
+   * The panel shows one account at a time — two answers to two different
+   * requests stacked in one column is what `scene.ts` and §6 both refuse — and
+   * the map has one light. The others are hidden, not ended: an answer being
+   * found, a prompt whose goal a model restated and a deep read the person
+   * paid for all cost something, and each comes back (D167). A flow is the
+   * one thing ended, because it costs nothing to walk again and while one is
+   * showing it IS the panel.
+   */
+  const onlyThis = useCallback(
+    (keep: "ask" | "prompt" | "explain" | "flow") => {
+      if (keep !== "flow") clearFlow();
+      setFront(keep === "flow" ? null : keep);
+    },
+    [clearFlow],
+  );
+
+  /*
+   * Picking a mode brings back what that mode was showing, if anything is kept.
+   *
+   * 물어보기 and 프롬프트 만들기 only: their results cost a model's time and are
+   * not asked for again by pressing the button with an empty box, which is how
+   * 설명하기 comes back. Nothing is brought back that is not there — picking a
+   * mode with no result of its own leaves the panel as it was.
+   */
+  const panelLocks = useMemo(
+    () => locksShown(locks, scopeOpened, { promptInFront: front === "prompt", selectedId }),
+    [locks, scopeOpened, front, selectedId],
+  );
+
+  const promptKept = promptMaker.phase !== null;
+  const onModeChange = useCallback(
+    (mode: "ask" | "prompt" | "explain" | "flow") => {
+      if (mode === "ask" && walk) setFront("ask");
+      else if (mode === "prompt" && promptKept) setFront("prompt");
+    },
+    [walk, promptKept],
+  );
 
   const onSelect = useCallback(
     (id: string | null) => {
@@ -773,7 +867,7 @@ export function Workspace({
                 // they arrive would show a path being walked that may yet turn
                 // out to be a dead end, and the person cannot tell the
                 // difference until it stops.
-                trail={walk?.trail ?? null}
+                trail={front === "ask" ? (walk?.trail ?? null) : null}
                 // The flow being followed, trimmed to the steps the reader has
                 // been shown. It takes the lighting over from both the walk and
                 // the selection while it is set, and `centreOn` keeps the step
@@ -867,7 +961,7 @@ export function Workspace({
           view={view}
           selectedId={selectedId}
           run={running ? runProgress : null}
-          locks={locks}
+          locks={panelLocks}
           onLockChange={onLockChange}
           onSelect={onSelect}
           onRetry={start}
@@ -883,20 +977,87 @@ export function Workspace({
            * some other model — the name is on screen beside the answer, and
            * quietly swapping it is a difference the person has no way to see.
            */
-          onAsk={(text, request) =>
-            ask(text, {
+          onAsk={(text, request) => {
+            onlyThis("ask");
+            void ask(text, {
               ...(request.model ? { model: request.model } : {}),
               effort: request.effort,
-            })
-          }
-          walk={walk}
+            });
+          }}
+          walk={front === "ask" ? walk : null}
+          onModeChange={onModeChange}
+          /*
+           * 프롬프트 만들기. The prompt is built in the browser from the graph on
+           * screen and the switches as they are at this moment (D23's
+           * snapshot); the model is asked only to restate the goal, and not at
+           * all when none is connected.
+           */
+          onMakePrompt={(text, request) => {
+            if (!selectedId) return;
+            onlyThis("prompt");
+            // A new request asks "only here or everywhere?" again, so the
+            // last answer's opened place goes with the last prompt.
+            setScopeOpened(null);
+            promptMaker.make({
+              graph: view,
+              selectionId: selectedId,
+              request: text,
+              hops: request.hops,
+              locks,
+              model: request.model,
+            });
+          }}
+          promptPhase={front === "prompt" ? promptMaker.phase : null}
+          onChooseScope={(scope) => {
+            /*
+             * "Only on the checkout screen" cannot be done without touching the
+             * checkout screen, so `buildPrompt` opens that place for this
+             * prompt, and its switch shows it open while this prompt is in
+             * front — the list the person sees and the list the agent reads
+             * say the same thing. Nothing is written into the remembered locks
+             * (see `scopeOpened`).
+             */
+            const selectionId = promptMaker.phase?.selectionId ?? selectedId;
+            setScopeOpened(
+              scope.kind === "only_here" && selectionId
+                ? { selectionId, placeId: scope.placeId }
+                : null,
+            );
+            promptMaker.choose(scope, locks);
+          }}
+          onCancelPrompt={() => {
+            setScopeOpened(null);
+            clearPrompt();
+          }}
+          /*
+           * 설명하기. Pressing it costs nothing: it turns on the explanation of
+           * whatever is selected, computed in the panel from the graph already
+           * here. The deep read is the card's own button.
+           */
+          onExplain={(text) => {
+            onlyThis("explain");
+            setExplainAsked({ itemId: selectedId, text: text.trim() });
+          }}
+          explainOn={front === "explain"}
+          deepExplainFor={(itemId) => deepExplains[explainKey(itemId, questionFor(itemId))] ?? null}
+          onDeepExplain={(itemId, request) => {
+            const question = questionFor(itemId);
+            void explain(itemId, {
+              ...(request.model ? { model: request.model } : {}),
+              effort: request.effort,
+              ...(question ? { question } : {}),
+            });
+          }}
           /*
            * 흐름 따라가기. No model and no network, so nothing from the request
            * is read — the walk is arithmetic over the graph already on screen.
            * The typed text is resolved against the map by the map's own beam,
            * and falls back to whatever is selected when the box is empty.
            */
-          onFlow={(text) => askFlow(text, selectedId)}
+          onFlow={(text) => {
+            onlyThis("flow");
+            askFlow(text, selectedId);
+          }}
           onFollow={(itemId) => followFlow(itemId, "listed")}
           flow={flow}
         />

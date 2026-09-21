@@ -100,8 +100,14 @@ export function WalkView({
   );
 }
 
-/** The live narrative: what it is doing, as it does it. */
-function Working({ session }: { session: AskSession }) {
+/**
+ * The live narrative: what it is doing, as it does it.
+ *
+ * Exported so 설명하기's deep read shows its steps in exactly this shape. It is
+ * the same loop underneath, and two drawings of one loop's steps is how a
+ * person comes to think they are watching two different things.
+ */
+export function Working({ session }: { session: AskSession }) {
   if (session.steps.length === 0) {
     return (
       <p className="mt-3 text-[13px] text-said-faint">
@@ -143,7 +149,7 @@ function Working({ session }: { session: AskSession }) {
  * stood is worth showing even when nothing led to it — that is what a restart
  * looks like, and a list built only from crossings would silently drop it.
  */
-function Walk({
+export function Walk({
   session,
   nameOf,
   onSelect,
@@ -192,7 +198,12 @@ function Walk({
               <button
                 type="button"
                 onClick={() => onSelect(point.id)}
-                className={`flex w-full items-baseline gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-ink-raised ${
+                /*
+                  44px on a phone. Measured at 414px with 설명하기's deep read on
+                  screen, these rows were the only targets under the line:
+                  30px tall, the same rows `/ask` shows.
+                */
+                className={`flex w-full items-baseline gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-ink-raised max-md:min-h-11 max-md:items-center ${
                   point.critical ? "text-said" : "text-said-faint"
                 }`}
               >

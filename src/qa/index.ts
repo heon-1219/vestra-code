@@ -10,6 +10,7 @@
  * and GitHub, and this file is what a test imports.
  */
 export { investigate, type InvestigateInput } from "./loop";
+export type { InvestigationFocus } from "./prompt";
 export type { SourceReader, SourceResult, SourceRefusal } from "./source";
 export type {
   Budget,

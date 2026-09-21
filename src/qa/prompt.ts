@@ -9,6 +9,7 @@ import {
 } from "@/lib/context/digest";
 import type { GraphItem } from "@/lib/graph/view";
 
+import { buildCatalog, itemLine } from "./catalog";
 import { kindTally } from "./tools";
 
 /**
@@ -63,6 +64,28 @@ export type SystemPromptInput = {
    * nothing: the prompt is simply the one it was before this existed.
    */
   digest?: ProjectDigest | null;
+  /**
+   * What the person pointed at, when the question is "what does this do"
+   * rather than "why is this broken" — 설명하기's deep read (D156).
+   *
+   * Absent is the ordinary case, and the prompt is then exactly the one `/ask`
+   * has always sent: nothing below changes a single line of it.
+   */
+  focus?: InvestigationFocus | null;
+};
+
+/**
+ * One investigation pointed at a place instead of at a symptom.
+ *
+ * The same loop, the same tools, the same ledger — `investigate()` is reused
+ * rather than a second loop written beside it, because a second loop is a
+ * second citation check, and the one thing this product cannot afford is two
+ * of those that disagree. What changes is the brief: who the model is, where it
+ * starts, and what a finished answer looks like.
+ */
+export type InvestigationFocus = {
+  /** The selection, in graph order. Usually one. */
+  items: readonly GraphItem[];
 };
 
 export function buildSystemPrompt(input: SystemPromptInput): string {
@@ -92,8 +115,12 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
     ? renderDigestBlock(input.digest, knownPaths)
     : null;
 
+  const focus = input.focus && input.focus.items.length > 0 ? input.focus : null;
+
   const rules = [
-    "당신은 코드를 직접 읽지 못하는 사람 대신, 증상 하나를 붙잡고 원인을 찾아보는 조사자예요.",
+    focus
+      ? "당신은 코드를 직접 읽지 못하는 사람에게, 그 사람이 지도에서 고른 곳이 무슨 일을 하는지 코드를 직접 읽고 풀어 설명하는 사람이에요."
+      : "당신은 코드를 직접 읽지 못하는 사람 대신, 증상 하나를 붙잡고 원인을 찾아보는 조사자예요.",
     "",
     "이렇게 일해요.",
     "1. 짐작하지 말고 열어보세요. 한 번에 도구 하나만 부르고, 부를 때마다 why에 지금 무엇을 확인하려는지 한 문장으로 적어요. 앞 결과에서 알게 된 건 learned에 한 문장으로 적어요.",
@@ -105,7 +132,9 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
     "5. certain 항목에는 '아마', '…인 것 같아요' 같은 말을 쓰지 마세요. 짐작이면 inferred예요.",
     "6. 답은 한국어 해요체로, 코드를 모르는 사람이 읽을 수 있게 써요. 파일은 장소처럼 부르고, 줄 번호는 그대로 적어요.",
     "7. 사용자의 코드를 탓하지 마세요. '안전하다'는 말은 쓰지 마세요. '노드', '엣지' 대신 '조각', '연결'이라고 해요.",
-    "8. 다 확인했거나 남은 걸음이 얼마 없으면 report를 부르세요. 원인을 못 찾았으면 못 찾았다고 적어요. 그것도 답이에요.",
+    focus
+      ? "8. 다 확인했거나 남은 걸음이 얼마 없으면 report를 부르세요. answer에는 이 곳이 하는 일을 평소 쓰는 말로 두세 문장, findings에는 읽은 줄에 근거한 사실을 한 가지씩 적어요. 읽지 못한 부분은 못 읽었다고 적어요. 그것도 답이에요."
+      : "8. 다 확인했거나 남은 걸음이 얼마 없으면 report를 부르세요. 원인을 못 찾았으면 못 찾았다고 적어요. 그것도 답이에요.",
   ];
 
   if (digestBlock) {
@@ -137,6 +166,27 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
     rules.push(
       "- 이름으로 못 찾으면 search_source로 파일 안쪽 글자를 찾으세요. 사용자가 쓰는 말과 코드에 적힌 말이 다를 때가 많아요.",
       "- 짧은 파일은 read_file로 통째로 읽는 게 read_source를 여러 번 부르는 것보다 나아요.",
+    );
+  }
+
+  if (focus) {
+    /*
+     * Where to start, with the numbers the tools take.
+     *
+     * The catalog is numbered from the same array the loop hands the tools, so
+     * `[n]` here is the `[n]` `open_item` accepts. Without this block the first
+     * two steps of every explanation were spent finding the thing the person
+     * had already pointed at.
+     */
+    const catalog = buildCatalog(input.items);
+    rules.push(
+      "",
+      "이번에 설명할 곳이에요.",
+      ...focus.items.map((item) => `- ${itemLine(catalog, item)}`),
+      input.hasSource
+        ? "- 먼저 이 곳을 read_source로 읽으세요. 파일이 짧으면 read_file로 통째로 읽어도 돼요. 그다음 필요하면 open_item으로 이 곳이 쓰는 것과 이 곳을 쓰는 곳을 한두 군데만 열어 보세요."
+        : "- 이 프로젝트는 파일을 열 수 없어요. open_item으로 이 곳의 연결을 보고, 이름과 연결로 짐작한 것만 inferred로 적어요.",
+      "- 멀리 돌아다니지 마세요. 이 곳이 하는 일을 설명하는 데 필요한 만큼만 열어요.",
     );
   }
 

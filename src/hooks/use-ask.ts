@@ -2,13 +2,14 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { createFrameReader } from "@/lib/ask/frames";
 import {
   applyFrame,
   failSession,
   startSession,
   type AskSession,
 } from "@/lib/ask/session";
+
+import { streamInvestigation } from "./investigation-stream";
 
 /**
  * Asking one question and watching it be answered.
@@ -19,7 +20,8 @@ import {
  * POST, and a POST means reading the response stream by hand.
  *
  * Everything hard about that lives in two tested modules and not here.
- * `frames.ts` does the framing, `session.ts` does the fold. What is left is the
+ * `frames.ts` does the framing, `session.ts` does the fold, and reading the
+ * response is `investigation-stream.ts`, shared with 설명하기's deep read. What is left is the
  * part that genuinely needs React: one request at a time, cancelled when the
  * person asks something else or leaves the page.
  *
@@ -80,53 +82,20 @@ export function useAsk(projectId: string) {
       setSession(startSession(asked));
 
       try {
-        const response = await fetch(`/api/projects/${projectId}/ask`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ question: asked, ...options }),
+        const refusal = await streamInvestigation({
+          url: `/api/projects/${projectId}/ask`,
+          body: { question: asked, ...options },
           signal: controller.signal,
+          onFrame: (frame) => update((previous) => applyFrame(previous, frame)),
         });
 
-        if (!response.ok || !response.body) {
+        if (refusal) {
           // The route refuses in plain language — no model, no map, no such
           // project — and that sentence is the whole point of the refusal.
           // A generic message here would throw away the one thing that tells
           // the person what to do next.
-          const said = await response
-            .json()
-            .then((body: unknown) =>
-              typeof body === "object" && body !== null && "message" in body
-                ? String((body as { message: unknown }).message)
-                : null,
-            )
-            .catch(() => null);
-          update((previous) => failSession(previous, said ?? UNREADABLE));
+          update((previous) => failSession(previous, refusal.refused ?? UNREADABLE));
           return;
-        }
-
-        const reader = response.body.getReader();
-        /*
-         * `stream: true` is not optional here.
-         *
-         * A Korean character is three bytes and a chunk boundary lands in the
-         * middle of one regularly. Decoding each chunk independently turns that
-         * into a replacement character in the middle of a sentence the person
-         * is reading — the kind of fault that only shows up over a real
-         * connection, and only sometimes.
-         */
-        const decoder = new TextDecoder("utf-8");
-        const frames = createFrameReader();
-
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          for (const frame of frames.push(decoder.decode(value, { stream: true }))) {
-            update((previous) => applyFrame(previous, frame));
-          }
-        }
-
-        for (const frame of frames.flush()) {
-          update((previous) => applyFrame(previous, frame));
         }
 
         // Ended without an answer. Not an error anyone caused, and not

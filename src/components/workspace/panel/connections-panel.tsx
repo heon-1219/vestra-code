@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import {
   CERTAINTY_WORDS,
@@ -18,7 +18,9 @@ import {
   ConnectionRow,
   displayName,
   distanceWord,
-  lockOf,
+  hasLock,
+  lockFor,
+  standingOf,
   type ConnectionLock,
   type LockMap,
 } from "./connection-row";
@@ -34,6 +36,13 @@ import {
 } from "./neighbourhood";
 import type { AskSession } from "@/lib/ask/session";
 import { describeAll } from "@/lib/graph/describe";
+import type { SharedScope } from "@/lib/prompt/build";
+import { EXPLAIN_WORDS } from "@/qa/explain";
+import type { PromptPhase } from "@/hooks/use-prompt";
+
+import { ExplainCard } from "../explain/explain-card";
+import { explainKnown } from "../explain/known";
+import { PromptCard, ScopeQuestion } from "../prompt/prompt-card";
 
 import { importCountOf } from "../flow/start";
 import type { FlowControls } from "../flow/use-flow";
@@ -55,16 +64,14 @@ import {
   AnswerState,
   NoKnownConnections,
   NothingSelectedState,
-  PromptState,
   RunFailedState,
   type PanelAnswer,
-  type PanelPrompt,
   type RunProgress,
 } from "./states";
 
 export type { ConnectionLock, LockMap } from "./connection-row";
-export { DEFAULT_LOCK, lockOf } from "./connection-row";
-export type { PanelAnswer, PanelCitation, PanelPrompt, RunProgress } from "./states";
+export { DEFAULT_LOCK, lockFor, lockOf } from "./connection-row";
+export type { PanelAnswer, PanelCitation, RunProgress } from "./states";
 export type { PanelMode } from "./mode";
 export type { ModelChoice, PanelEffort, PanelRequest } from "./model";
 
@@ -107,7 +114,17 @@ export type RightPanelProps = {
    * a different request than the one the person sent.
    */
   onAsk?: (text: string, request: PanelRequest) => void;
-  onMakePrompt?: (text: string, request: PanelRequest) => void;
+  /**
+   * 프롬프트 만들기. Handed the depth the list is showing as well, because the
+   * prompt's 이어진 것 section is that list — same walk, same cap — and the
+   * depth lives here, beside the tabs, rather than in the workspace.
+   */
+  onMakePrompt?: (text: string, request: PanelRequest & { hops: number }) => void;
+  /**
+   * 설명하기. Free and instant: it turns on the explanation of whatever is
+   * selected, which is computed here from the graph already on screen. The
+   * text, if any, is kept for the deep read.
+   */
   onExplain?: (text: string, request: PanelRequest) => void;
   /**
    * 흐름 따라가기's handler. The one mode in this box that needs no model and no
@@ -152,7 +169,35 @@ export type RightPanelProps = {
    * check a verdict, and the account is the whole of what makes it checkable.
    */
   walk?: AskSession | null;
-  prompt?: PanelPrompt | null;
+  /**
+   * 프롬프트 만들기's progress, from the scope question to the finished prompt.
+   * Shown only while its selection is still the one selected: a prompt is
+   * about one place, and showing it under another is two screens in one.
+   */
+  promptPhase?: PromptPhase | null;
+  /** The answer to "only here, or everywhere?". */
+  onChooseScope?: (scope: SharedScope) => void;
+  onCancelPrompt?: () => void;
+  /**
+   * Whether 설명하기 is showing its explanation of the selection. It follows
+   * the selection while it is on — clicking the next thing explains the next
+   * thing, at no cost — which is the reason the mode is remembered at all.
+   */
+  explainOn?: boolean;
+  /**
+   * The deep read kept for one item, if any — for the question that goes with
+   * that item, which only the workspace knows (it was typed when 설명하기 was
+   * pressed, about the place selected then).
+   */
+  deepExplainFor?: (itemId: string) => AskSession | null;
+  /** Start the deep read of one item. Undefined leaves the offer out. */
+  onDeepExplain?: (itemId: string, request: PanelRequest) => void;
+  /**
+   * Told when the person picks a mode, so a result of that mode the workspace
+   * was keeping out of sight can come back — an answer still being found when
+   * something else was asked for is hidden, not thrown away (D167).
+   */
+  onModeChange?: (mode: PanelMode) => void;
   /** How many connections one direction may show before the panel says it capped. */
   limit?: number;
   /**
@@ -188,7 +233,13 @@ export function RightPanel({
   models = NO_MODELS,
   answer = null,
   walk = null,
-  prompt = null,
+  promptPhase = null,
+  onChooseScope,
+  onCancelPrompt,
+  explainOn = false,
+  deepExplainFor,
+  onDeepExplain,
+  onModeChange,
   limit = DEFAULT_LIMIT,
   showRunSteps = true,
 }: RightPanelProps) {
@@ -199,7 +250,11 @@ export function RightPanel({
   // explained is still there after they click the next thing to be explained.
   const [tab, setTab] = useState<PanelTab>("list");
   const [hops, setHops] = useState<number>(DEFAULT_HOPS);
-  const [mode, setMode] = useState<PanelMode>(DEFAULT_PANEL_MODE);
+  const [mode, setModeState] = useState<PanelMode>(DEFAULT_PANEL_MODE);
+  const setMode = (next: PanelMode) => {
+    setModeState(next);
+    onModeChange?.(next);
+  };
   // Null is "nobody has chosen", which is different from a name: it lets the
   // box follow this installation's default instead of pinning the first model
   // the panel happened to be given.
@@ -229,6 +284,64 @@ export function RightPanel({
     () => describeAll({ items: view?.items ?? [], connections: view?.connections ?? [] }),
     [view],
   );
+
+  /*
+   * 설명하기's free half, for whatever is selected right now.
+   *
+   * Computed here, in the render, because it is arithmetic over the graph the
+   * panel already holds: one pass over the connections, median 1.15 ms on this
+   * repository's 4,161 (D155). No state, no effect, nothing in flight — which
+   * is what "renders instantly" means.
+   */
+  const known = useMemo(
+    () => (explainOn && view && selected ? explainKnown(view, selected.id) : null),
+    [explainOn, view, selected],
+  );
+
+  // The model the box would send with, resolved the way the box resolves it.
+  const chosenModel = chooseModel(models, model)?.id ?? null;
+
+  /*
+   * Why the deep read cannot run, when the browser already knows.
+   *
+   * A package or a feature has no file of its own, and nothing connected
+   * means no model to read with; each is said here rather than after a round
+   * trip. What only the server knows — an uploaded folder we kept nothing of —
+   * comes back as its own sentence when the button is pressed.
+   */
+  const deepRefusal =
+    !selected
+      ? null
+      : selected.kind === "package"
+        ? EXPLAIN_WORDS.package
+        : selected.kind === "feature"
+          ? EXPLAIN_WORDS.feature
+          : chosenModel === null
+            ? EXPLAIN_WORDS.noModel
+            : null;
+
+  const promptHere =
+    promptPhase && selected && promptPhase.selectionId === selected.id ? promptPhase : null;
+
+  /*
+   * Bring a new result into view.
+   *
+   * The results sit under the connection list, which can be twenty-four rows
+   * long, so a card that appeared below the fold looked like a button that did
+   * nothing. Keyed on what changed rather than on every render, so reading
+   * further down a card is never interrupted by it jumping back.
+   */
+  const resultRef = useRef<HTMLDivElement>(null);
+  const resultKey = promptHere
+    ? `prompt:${promptHere.status}`
+    : known
+      ? `explain:${known.item.id}`
+      : null;
+  useEffect(() => {
+    if (!resultKey) return;
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    resultRef.current?.scrollIntoView({ block: "start", behavior: reduce ? "auto" : "smooth" });
+  }, [resultKey]);
 
   let body: React.ReactNode;
   if (flow?.session && view) {
@@ -302,9 +415,37 @@ export function RightPanel({
           </div>
         ) : null}
 
-        {prompt && !flow?.session ? (
-          <div className="mt-4">
-            <PromptState prompt={prompt} />
+        {/*
+          프롬프트 만들기 and 설명하기, under the list they are about. Never under
+          a flow, for the rule above, and never both: the workspace clears the
+          other whenever one of them is asked for.
+        */}
+        {!flow?.session && (promptHere || known) ? (
+          <div ref={resultRef} className="mt-5 scroll-mt-4">
+            {promptHere?.status === "choosing" ? (
+              <ScopeQuestion
+                subject={selected}
+                places={promptHere.places}
+                onChoose={(scope) => onChooseScope?.(scope)}
+                onCancel={() => onCancelPrompt?.()}
+              />
+            ) : promptHere ? (
+              <PromptCard phase={promptHere} />
+            ) : known ? (
+              <ExplainCard
+                known={known}
+                deep={deepExplainFor?.(known.item.id) ?? null}
+                onDeep={
+                  onDeepExplain && deepRefusal === null
+                    ? () => onDeepExplain(known.item.id, { model: chosenModel, effort })
+                    : undefined
+                }
+                deepRefusal={deepRefusal}
+                itemsById={itemsById}
+                onSelect={onSelect}
+                onOpen={onOpen}
+              />
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -320,7 +461,9 @@ export function RightPanel({
         effort={effort}
         onEffortChange={setEffort}
         onAsk={onAsk}
-        onMakePrompt={onMakePrompt}
+        onMakePrompt={
+          onMakePrompt ? (text, request) => onMakePrompt(text, { ...request, hops }) : undefined
+        }
         onExplain={onExplain}
         onFlow={onFlow}
       />
@@ -430,7 +573,9 @@ export function ConnectionsPanel({
           same colour and size as the prose it follows.
         */}
         <p className="mt-3 text-[13px] text-said tabular-nums">
-          {reachSentence(around.reach.places, around.reach.pages)}
+          {selected.kind === "feature"
+            ? groupedSentence(around.reach.places)
+            : reachSentence(around.reach.places, around.reach.pages)}
         </p>
 
         {canOpen ? (
@@ -443,7 +588,7 @@ export function ConnectionsPanel({
           <button
             type="button"
             onClick={() => onOpen(selected.id)}
-            className="mt-3 rounded-lg border border-edge-lit px-3 py-1.5 text-[13px] text-said-soft transition-colors hover:border-said-faint hover:bg-ink hover:text-said"
+            className="mt-3 rounded-lg border border-edge-lit px-3 py-1.5 text-[13px] text-said-soft transition-colors hover:border-said-faint hover:bg-ink hover:text-said max-md:min-h-11"
           >
             {selected.kind === "file" || selected.startLine === null
               ? "파일 열어보기"
@@ -494,6 +639,19 @@ export function ConnectionsPanel({
  * about our reading, where "0곳에서 쓰여요" would be a statement about their
  * code, and only one of those is something we know.
  */
+/**
+ * A feature's version of the sentence above.
+ *
+ * Nothing "uses" a feature: its rows are the files a model grouped under it,
+ * joined by `belongs_to`, and `describe.ts` refuses 쓰인다 for one for the same
+ * reason. The header said "45곳에서 쓰여요" over a 설명하기 card that, reading
+ * the same graph, said nobody did — two sentences about one fact.
+ */
+export function groupedSentence(members: number): string {
+  if (members === 0) return "이 기능으로 묶어 둔 것은 아직 못 찾았어요";
+  return `${members.toLocaleString("ko-KR")}개를 이 기능으로 묶어 뒀어요`;
+}
+
 function reachSentence(places: number, pages: number): string {
   if (places === 0) return "쓰는 곳은 아직 찾지 못했어요";
   if (pages === places) return `화면 ${places.toLocaleString("ko-KR")}곳에서 쓰여요`;
@@ -517,7 +675,7 @@ function TabButton({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`rounded-lg px-3 py-1.5 text-[14px] font-medium transition-colors ${
+      className={`rounded-lg px-3 py-1.5 text-[14px] font-medium transition-colors max-md:min-h-11 max-md:min-w-11 ${
         active ? "bg-ink text-said" : "text-said-faint hover:text-said-soft"
       }`}
     >
@@ -586,6 +744,9 @@ function HopControl({ hops, onChange }: { hops: number; onChange: (hops: number)
         indication at all. Putting it back on the input would ring a 36px box
         sitting between two steppers; `focus-within` lights the whole control
         instead, which is the object the person is actually operating.
+
+        Each part is 44 px on a phone (D174). The depth is what 프롬프트
+        만들기's section 3 is built to, and the steppers were 30 px tall there.
       */}
       <div className="flex items-center rounded-md border border-edge-lit transition-colors focus-within:border-lamp-dim">
         <button
@@ -593,7 +754,7 @@ function HopControl({ hops, onChange }: { hops: number; onChange: (hops: number)
           onClick={() => step(-1)}
           disabled={hops <= MIN_HOPS}
           aria-label="한 단계 가깝게"
-          className="px-2 py-1 text-[13px] text-said-faint transition-colors hover:text-said disabled:opacity-40"
+          className="px-2 py-1 text-[13px] text-said-faint transition-colors hover:text-said disabled:opacity-40 max-md:min-h-11 max-md:min-w-11"
         >
           −
         </button>
@@ -609,14 +770,14 @@ function HopControl({ hops, onChange }: { hops: number; onChange: (hops: number)
           onKeyDown={(event) => {
             if (event.key === "Enter") commit(event.currentTarget.value);
           }}
-          className="w-9 bg-transparent py-1 text-center text-[13px] tabular-nums outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+          className="w-9 bg-transparent py-1 text-center text-[13px] tabular-nums outline-none max-md:min-h-11 max-md:w-11 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
         />
         <button
           type="button"
           onClick={() => step(1)}
           disabled={hops >= MAX_HOPS}
           aria-label="한 단계 멀리"
-          className="px-2 py-1 text-[13px] text-said-faint transition-colors hover:text-said disabled:opacity-40"
+          className="px-2 py-1 text-[13px] text-said-faint transition-colors hover:text-said disabled:opacity-40 max-md:min-h-11 max-md:min-w-11"
         >
           +
         </button>
@@ -650,17 +811,24 @@ function ConnectionList({
   const home = around.usedBy.filter((n) => n.relation === "contains");
   const usedBy = around.usedBy.filter((n) => n.relation !== "contains");
   const cap = capNotice(around);
+  const section = { selected: around.selected, locks, onLockChange, onSelect };
+  // Said only when it is true: most selections have nothing written inside them.
+  const opensInside = [...around.uses, ...around.usedBy].some(
+    (n) => hasLock(n.item) && standingOf(n.item, around.selected) !== "around",
+  );
 
   return (
     <div className="mt-4">
       <p className="text-[12px] leading-[1.7] text-said-faint text-pretty">
-        연결된 것은 처음엔 모두 잠겨 있어요. 같이 고쳐도 되는 것만 열어 주세요.
+        {opensInside
+          ? "고른 것 안에 적힌 것은 처음부터 열려 있어요. 그 밖에 연결된 것은 처음엔 잠겨 있으니, 같이 고쳐도 되는 것만 열어 주세요."
+          : "연결된 것은 처음엔 모두 잠겨 있어요. 같이 고쳐도 되는 것만 열어 주세요."}
       </p>
 
-      <Section title="여기가 있는 곳" rows={home} locks={locks} onLockChange={onLockChange} onSelect={onSelect} />
-      <Section title="안에 있는 것" rows={inside} locks={locks} onLockChange={onLockChange} onSelect={onSelect} />
-      <Section title="여기서 쓰는 것" rows={uses} locks={locks} onLockChange={onLockChange} onSelect={onSelect} />
-      <Section title="여기를 쓰는 곳" rows={usedBy} locks={locks} onLockChange={onLockChange} onSelect={onSelect} />
+      <Section title="여기가 있는 곳" rows={home} {...section} />
+      <Section title="안에 있는 것" rows={inside} {...section} />
+      <Section title="여기서 쓰는 것" rows={uses} {...section} />
+      <Section title="여기를 쓰는 곳" rows={usedBy} {...section} />
 
       {cap ? (
         <p className="hairline mt-4 rounded-lg bg-ink px-3 py-2.5 text-[12px] leading-[1.75] text-said-soft tabular-nums text-pretty">
@@ -676,12 +844,15 @@ function ConnectionList({
 function Section({
   title,
   rows,
+  selected,
   locks,
   onLockChange,
   onSelect,
 }: {
   title: string;
   rows: Neighbour[];
+  /** What the rows are around, for the lock each one starts under. */
+  selected: GraphItem;
   locks: LockMap;
   onLockChange: (id: string, lock: ConnectionLock) => void;
   onSelect: (id: string) => void;
@@ -707,7 +878,12 @@ function Section({
           <ConnectionRow
             key={`${neighbour.direction}:${neighbour.item.id}`}
             neighbour={neighbour}
-            lock={lockOf(locks, neighbour.item.id)}
+            // By where it stands, not by id alone: a piece written inside the
+            // selected file starts open, because it is part of what was
+            // selected. The prompt reads the same function (lib/prompt/build.ts),
+            // so the switch a person sees is the list the agent reads.
+            lock={lockFor(locks, neighbour.item, [selected])}
+            standing={standingOf(neighbour.item, selected)}
             onLockChange={onLockChange}
             onSelect={onSelect}
           />
@@ -1032,18 +1208,30 @@ function RequestBox({
   // waiting for text it never promised to read. 흐름 따라가기 takes either — a
   // typed question, resolved against the map by the map's own beam, or
   // whatever is already chosen — so it is live as soon as there is one.
+  //
+  // 프롬프트 만들기 needs both: a prompt is instructions about a place, so the
+  // text alone has nowhere to be about.
   const enough =
     words.needs === "text"
       ? hasText
       : words.needs === "either"
         ? hasText || selected !== null
-        : selected !== null;
+        : words.needs === "both"
+          ? hasText && selected !== null
+          : selected !== null;
+
+  /** The mode needs a click on the map, and there has not been one. */
+  const missingSelection =
+    (words.needs === "selection" || words.needs === "both") && selected === null;
+  /** The mode cannot act on what was clicked, and why. */
+  const cannot = selected ? (words.cannot?.[selected.kind] ?? null) : null;
 
   function fire() {
     const text = read();
     if (!act) return;
-    if (words.needs === "text" && text.length === 0) return;
+    if ((words.needs === "text" || words.needs === "both") && text.length === 0) return;
     if (words.needs === "either" && text.length === 0 && selected === null) return;
+    if (missingSelection || cannot) return;
     // What the row underneath actually shows, resolved the same way it resolves
     // it — not the raw `model`, which can name a provider whose key has since
     // been taken away. Null means nothing is connected, and it is the caller's
@@ -1107,12 +1295,18 @@ function RequestBox({
           event.preventDefault();
           fire();
         }}
-        // Left naming only questions and changes, which is what the box is for
-        // in the two modes that read it. 설명하기 does not, and saying so here
-        // would be advertising the box as useless in a third of its states.
+        // Per mode, because the box means something different in each: a
+        // question, a change, or — for 설명하기 — an optional narrowing of what
+        // gets explained, which the deep read passes on. Changing the
+        // placeholder is an attribute write, not a remount, so a syllable
+        // being composed survives switching modes.
         placeholder={
           selected
-            ? `${displayName(selected)}에 대해 묻거나, 바꾸고 싶은 걸 적어 주세요`
+            ? mode === "prompt"
+              ? `${displayName(selected)}에서 바꾸고 싶은 걸 적어 주세요`
+              : mode === "explain"
+                ? "더 궁금한 게 있으면 적어 주세요. 비워 둬도 돼요"
+                : `${displayName(selected)}에 대해 묻거나, 바꾸고 싶은 걸 적어 주세요`
             : "이 프로젝트에 대해 물어보세요"
         }
         aria-label="질문이나 바꾸고 싶은 내용"
@@ -1141,7 +1335,7 @@ function RequestBox({
       <button
         type="button"
         onClick={fire}
-        disabled={disabled || !act || !enough}
+        disabled={disabled || !act || !enough || cannot !== null}
         aria-label={words.name}
         title={words.name}
         /*
@@ -1190,6 +1384,16 @@ function RequestBox({
       <p className="mt-2 text-[12px] leading-[1.7] text-said-faint text-pretty">
         {act ? words.promise : words.notYet}
       </p>
+      {/*
+        What is missing, when it is a click on the map. Under the promise rather
+        than instead of it: the promise is what the mode does, and this is the
+        one thing between the person and it.
+      */}
+      {act && missingSelection && words.pick ? (
+        <p className="mt-0.5 text-[12px] leading-[1.7] text-said-soft text-pretty">{words.pick}</p>
+      ) : act && cannot ? (
+        <p className="mt-0.5 text-[12px] leading-[1.7] text-said-soft text-pretty">{cannot}</p>
+      ) : null}
     </div>
   );
 }

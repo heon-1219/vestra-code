@@ -23,7 +23,13 @@ import {
   reportSchema,
   UNGROUNDED_SUMMARY,
 } from "./answer";
-import { buildSystemPrompt, NUDGE, stepsLeftNote } from "./prompt";
+import { EXPLAIN_STOP_WORDS } from "./explain";
+import {
+  buildSystemPrompt,
+  NUDGE,
+  stepsLeftNote,
+  type InvestigationFocus,
+} from "./prompt";
 import type { SourceReader } from "./source";
 import { buildTrail, EMPTY_TRAIL, type TrailStep } from "./trail";
 import {
@@ -171,6 +177,12 @@ export type InvestigateInput = {
    * existed — a smaller honest input, not an invented one.
    */
   digest?: ProjectDigest | null;
+  /**
+   * The place this investigation is about, when it is 설명하기's deep read
+   * rather than a question. Changes the brief and the stop sentences; changes
+   * nothing about the tools, the budget checks or the ledger (D156).
+   */
+  focus?: InvestigationFocus | null;
   budget?: Partial<Budget>;
   /**
    * How hard the model should think, passed through to every turn.
@@ -209,7 +221,9 @@ export async function investigate(
     items: input.graph.items,
     hasSource: source !== null,
     digest: input.digest ?? null,
+    focus: input.focus ?? null,
   });
+  const explaining = Boolean(input.focus && input.focus.items.length > 0);
 
   const trace: QaEvent[] = [];
   let seq = 0;
@@ -309,7 +323,7 @@ export async function investigate(
     return {
       question: input.question,
       stop,
-      summary: summary ?? sentenceFor(stop, steps),
+      summary: summary ?? sentenceFor(stop, steps, explaining),
       findings,
       refused,
       ruledOut: presentable(checked),
@@ -484,7 +498,9 @@ export async function investigate(
 
       // The model's own paragraph travels only when something under it
       // survived, and only when it is written in words this product uses.
-      if (findings.length === 0) summary = UNGROUNDED_SUMMARY;
+      if (findings.length === 0) {
+        summary = explaining ? EXPLAIN_STOP_WORDS.ungrounded : UNGROUNDED_SUMMARY;
+      }
       else if (forbiddenWordsIn(report.answer).length > 0) {
         summary = GROUNDED_FALLBACK_SUMMARY;
       } else summary = report.answer;
@@ -563,16 +579,27 @@ function rejection(refused: readonly RefusedFinding[]): string {
  * and a sentence that reaches for a conclusion is how an unfinished
  * investigation gets read as a finished one.
  */
-function sentenceFor(stop: StopReason, steps: number): string {
+function sentenceFor(stop: StopReason, steps: number, explaining = false): string {
+  /*
+   * "원인을 짚지 못했어요" is the right admission for a symptom and the wrong one
+   * for 설명하기, where nothing was broken and there was no cause to find — and
+   * "다시 물어봐 주세요" is wrong under a card whose button says 다시 읽어 보기.
+   * The budget sentences change one clause; the rest are 설명하기's own
+   * (`EXPLAIN_STOP_WORDS`).
+   */
+  const unfinished = explaining ? "아직 다 풀어 드리지 못했어요" : "아직 원인을 짚지 못했어요";
+  if (explaining && (stop === "truncated" || stop === "no_answer" || stop === "llm_failed" || stop === "stopped")) {
+    return EXPLAIN_STOP_WORDS[stop];
+  }
   switch (stop) {
     case "answered":
       return GROUNDED_FALLBACK_SUMMARY;
     case "steps_spent":
-      return `${steps}번까지 찾아봤는데 아직 원인을 짚지 못했어요. 어디를 봤는지는 아래에 남겨 뒀어요.`;
+      return `${steps}번까지 찾아봤는데 ${unfinished}. 어디를 봤는지는 아래에 남겨 뒀어요.`;
     case "tokens_spent":
-      return "한 번에 살펴볼 수 있는 분량을 다 썼어요. 아직 원인을 짚지 못했어요.";
+      return `한 번에 살펴볼 수 있는 분량을 다 썼어요. ${unfinished}.`;
     case "time_spent":
-      return "시간이 다 돼서 여기서 멈췄어요. 아직 원인을 짚지 못했어요.";
+      return `시간이 다 돼서 여기서 멈췄어요. ${unfinished}.`;
     case "stopped":
       return "찾아보다가 중간에 멈췄어요.";
     case "truncated":
